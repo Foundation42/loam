@@ -11,6 +11,12 @@
 //! the geometric test; the first two are what the summaries buy, and
 //! `use_summaries = false` turns them off so the gate can measure exactly
 //! that — and so the seedbed can print it (`--no-skip`).
+//!
+//! `traceSurface` is the carrier's leaf (Phase 2, R8): a sphere tracer
+//! stepped by |φ|/L with L the brick's Lipschitz bound from its summary,
+//! over the leaves the cursor hands it. A sound L means a step never
+//! lands inside; G11 counts the steps that do, and the mutation that
+//! doubles the step is what makes the count move.
 
 const std = @import("std");
 const lattice = @import("lattice.zig");
@@ -43,7 +49,7 @@ pub const RegionView = struct {
     t_exit: f64,
 
     pub fn sample(self: RegionView, bit: u6, p: [3]f64) f32 {
-        return self.brick.trilinear(bit, p);
+        return self.brick.spline(bit, p);
     }
 };
 
@@ -148,8 +154,115 @@ pub const Cursor = struct {
     }
 };
 
+pub const Hit = struct {
+    t: f64,
+    p: [3]f64,
+    /// The unit gradient of the carrier at the hit: the outward normal.
+    n: [3]f64,
+    /// The carrier's value where the march stopped, |φ| ≤ eps.
+    phi: f32,
+};
+
+pub const TraceOptions = struct {
+    /// The step is step_scale · |φ| / L; 1 is the sound step, 2 the G11
+    /// mutation.
+    step_scale: f64 = 1.0,
+    /// A point within this of the zero set is the hit, lattice units.
+    eps: f64 = 1e-3,
+    /// Never step less than this: the march converges linearly at a
+    /// grazing angle and must end.
+    min_step: f64 = 1e-4,
+    max_steps: u32 = 1024,
+};
+
+pub const TraceStats = struct {
+    steps: u64 = 0,
+    /// Steps that landed inside by more than eps: with a sound L, none.
+    overshoots: u64 = 0,
+    leaves: u64 = 0,
+    /// Marches that ran out of steps before reaching eps.
+    stalls: u64 = 0,
+};
+
+/// March the segment from t_min to t_max against the carrier's zero set:
+/// the first point where φ ≤ eps, found by stepping |φ|/L inside each
+/// leaf the cursor hands over, near to far. A ray that starts inside a
+/// leaf's surface is a hit at its entry. Null where the segment meets no
+/// surface.
+pub fn traceSurface(gpa: std.mem.Allocator, snap: *const tree.Snapshot, origin: [3]f64, dir: [3]f64, t_min: f64, t_max: f64, opts: TraceOptions, stats: ?*TraceStats) !?Hit {
+    const sbit = channel.Channel.surface.bit();
+    var cur = try Cursor.init(gpa, snap, .{ .origin = origin, .dir = dir, .t_min = t_min, .t_max = t_max, .channels = channel.Channel.surface.mask() });
+    defer cur.deinit();
+    var steps: u32 = 0;
+    while (try cur.next()) |rv| {
+        if (stats) |s| s.leaves += 1;
+        const b = rv.brick;
+        const L: f64 = @max(@as(f64, b.summary.lipschitz), 1e-6);
+        var t = @max(rv.t_enter, t_min);
+        var prev_t: ?f64 = null;
+        var prev_phi: f32 = 0;
+        while (t <= rv.t_exit) {
+            const p = [3]f64{ origin[0] + dir[0] * t, origin[1] + dir[1] * t, origin[2] + dir[2] * t };
+            const phi = b.spline(sbit, p);
+            steps += 1;
+            if (stats) |s| s.steps += 1;
+            if (@as(f64, phi) <= opts.eps) {
+                var ht = t;
+                var hphi = phi;
+                if (@as(f64, phi) < -opts.eps) {
+                    // Inside by more than eps: an overshoot (or an entry
+                    // inside). Bisect back to the crossing when there is a
+                    // point outside to bisect from.
+                    if (stats) |s| if (prev_t != null) {
+                        s.overshoots += 1;
+                    };
+                    if (prev_t) |pt| {
+                        var lo = pt;
+                        var hi = t;
+                        var lo_phi = prev_phi;
+                        _ = &lo_phi;
+                        var it: u32 = 0;
+                        while (it < 40) : (it += 1) {
+                            const mid = 0.5 * (lo + hi);
+                            const mp = [3]f64{ origin[0] + dir[0] * mid, origin[1] + dir[1] * mid, origin[2] + dir[2] * mid };
+                            const mphi = b.spline(sbit, mp);
+                            if (mphi > 0) lo = mid else hi = mid;
+                        }
+                        ht = hi;
+                        const hp = [3]f64{ origin[0] + dir[0] * ht, origin[1] + dir[1] * ht, origin[2] + dir[2] * ht };
+                        hphi = b.spline(sbit, hp);
+                    }
+                }
+                const hp = [3]f64{ origin[0] + dir[0] * ht, origin[1] + dir[1] * ht, origin[2] + dir[2] * ht };
+                const jet = b.splineJet(sbit, hp);
+                var n = [3]f64{ jet.grad[0], jet.grad[1], jet.grad[2] };
+                const nl = @sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                if (nl > 1e-12) {
+                    n[0] /= nl;
+                    n[1] /= nl;
+                    n[2] /= nl;
+                }
+                return .{ .t = ht, .p = hp, .n = n, .phi = hphi };
+            }
+            if (steps >= opts.max_steps) {
+                if (stats) |s| s.stalls += 1;
+                return null;
+            }
+            prev_t = t;
+            prev_phi = phi;
+            const step = @max(opts.min_step, opts.step_scale * @as(f64, phi) / L);
+            if (t == rv.t_exit) break;
+            t = @min(t + step, rv.t_exit);
+        }
+    }
+    return null;
+}
+
 /// A summary can answer the query: some requested channel with a tracked
-/// range is above zero, or some requested channel without one is present.
+/// range is above zero — or, for the carrier, at or below it, since a
+/// subtree whose surface minimum is positive holds no zero set (the
+/// reconstruction is a convex combination of the coefficients) — or
+/// some requested channel without one is present.
 fn relevant(s: *const summary.Summary, q: *const Query) bool {
     var untracked_present = false;
     var tracked_requested = false;
@@ -158,7 +271,9 @@ fn relevant(s: *const summary.Summary, q: *const Query) bool {
         if (channel.has(q.channels, bit) and channel.has(s.mask, bit)) {
             if (s.rangeOf(bit)) |r| {
                 tracked_requested = true;
-                if (r.positive()) return true;
+                if (bit == channel.Channel.surface.bit()) {
+                    if (!r.isEmpty() and r.min <= 0) return true;
+                } else if (r.positive()) return true;
             } else {
                 untracked_present = true;
             }

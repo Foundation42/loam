@@ -38,6 +38,7 @@ class Binding(unittest.TestCase):
         w = loam.World(seed=1)
         self.assertEqual(w.channel("density"), 0)
         self.assertEqual(w.channel("material"), 12)
+        self.assertEqual(w.channel("surface"), 16)
         bit = w.register("moisture", 0.0, 1.0)
         self.assertEqual(bit, 32)
         with self.assertRaises(loam.LoamError):
@@ -72,13 +73,13 @@ class Binding(unittest.TestCase):
         a = sapling()
         b = sapling()
         self.assertEqual(a.root_hash(), b.root_hash())
-        self.assertGreater(a.total("material"), 0)
+        self.assertGreater(a.inside_count(), 0)
         self.assertGreaterEqual(len(a.fronts()), 1)
         c = sapling(seed=8)
         self.assertNotEqual(a.root_hash(), c.root_hash())
         # A slice and a projection come back the right size.
-        self.assertEqual(len(a.slice("material", "z", 0, (-32, -32), (32, 32), 16)), 256)
-        self.assertEqual(len(a.project("material", "z", (-32, -16, -32), (32, 80, 32), 16)), 256)
+        self.assertEqual(len(a.slice("surface", "z", 0, (-32, -32), (32, 32), 16)), 256)
+        self.assertEqual(len(a.project("surface", "z", (-32, -16, -32), (32, 80, 32), 16)), 256)
 
     def test_dump_round_trips_through_struple(self):
         w = sapling(steps=10)
@@ -90,7 +91,13 @@ class Binding(unittest.TestCase):
         self.assertEqual(d["content_hash"], w.content_hash())
         self.assertEqual(d["vid"], w.stats()["vid"])
         names = {n for b in d["bricks"] for n in b["planes"]}
-        self.assertIn("material", names)
+        self.assertIn("surface", names)
+        # A capsule authored from Python is inside on its axis and outside past its radius.
+        c = loam.World(seed=1)
+        c.capsule((-6, 0, 0), (6, 0, 0), 2.0)
+        c.apply()
+        self.assertLess(c.sample("surface", (0, 0, 0)), 0)
+        self.assertGreater(c.sample("surface", (0, 2.6, 0)), 0)
         self.assertEqual(len(d["fronts"]), w.stats()["fronts"])
 
 

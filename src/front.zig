@@ -66,10 +66,16 @@ pub const Params = struct {
     /// around the front — the resource a front uses up as it passes, so
     /// dormancy is exhaustion and a wound's restored potential is local.
     consume: f32 = 1.0,
-    /// Material sampled one radius ahead above this inhibits the front.
-    /// Potential is read at the same point: a front grows into what is
-    /// ahead of it, not what it stands in.
-    inhibit: f32 = 0.6,
+    /// The carrier one radius ahead below this — inside tissue — inhibits
+    /// the front. Potential is read at the same point: a front grows
+    /// into what is ahead of it, not what it stands in. Lattice units;
+    /// zero is the surface itself.
+    inhibit: f32 = 0.0,
+    /// Collar radius k of the front's smooth union (R10), lattice units.
+    /// Zero — the hard union — in P2.1: a chain of a front's own capsules
+    /// smooth-unioned with k > 0 dips k/4 at every joint (beads); the
+    /// gradient-gated collar is P2.2's, with G12.
+    collar: f32 = 0.0,
     // Branching: a slot whose |residual| exceeds bud_threshold × envelope
     // for bud_rings consecutive rings is a bud; a bud fires when the front
     // is old enough and its cooldown has run.
@@ -103,6 +109,14 @@ pub const Front = struct {
     params: Params = .{},
     /// The brick under the front's position, as of the last step.
     brick: lattice.Key,
+    /// The previous ring — where the next sweep starts (R11). At birth
+    /// it is the seed itself, so the first step sweeps from the seed.
+    prev_pos: [3]f64 = .{ 0, 0, 0 },
+    prev_dir: [3]f64 = .{ 0, 1, 0 },
+    prev_normal: [3]f64 = .{ 0, 0, 1 },
+    prev_roll: f64 = 0,
+    prev_envelope: f32 = 0,
+    prev_r: [SLOTS]f32 = [_]f32{0} ** SLOTS,
 
     /// Canonical bytes: every field, fixed layout, no padding — what the
     /// hash and the dump agree on.
@@ -136,6 +150,12 @@ pub const Front = struct {
             }
         }
         try w.writeInt(u64, self.brick.raw(), .little);
+        inline for (.{ self.prev_pos, self.prev_dir, self.prev_normal }) |v| {
+            for (v) |c| try w.writeInt(u64, @bitCast(c), .little);
+        }
+        try w.writeInt(u64, @bitCast(self.prev_roll), .little);
+        try w.writeInt(u32, @bitCast(self.prev_envelope), .little);
+        for (self.prev_r) |r| try w.writeInt(u32, @bitCast(r), .little);
     }
 
     pub fn hashInto(self: *const Front, h: *std.crypto.hash.Blake3) void {

@@ -125,6 +125,10 @@ def _declare(L: ctypes.CDLL) -> None:
     L.loam_stats.argtypes = [P, ctypes.POINTER(Stats)]
     L.loam_total.restype = d
     L.loam_total.argtypes = [P, u32]
+    L.loam_inside_count.restype = u64
+    L.loam_inside_count.argtypes = [P]
+    L.loam_capsule.restype = ctypes.c_int
+    L.loam_capsule.argtypes = [P, d, d, d, d, d, d, d, f, u32]
     L.loam_fronts.restype = ctypes.c_size_t
     L.loam_fronts.argtypes = [P, ctypes.c_size_t, ctypes.POINTER(d)]
     L.loam_ray_count.restype = ctypes.c_int
@@ -195,6 +199,10 @@ class World:
     def damage(self, lo, hi) -> None:
         self._check(self._L.loam_damage(self._h, *lo, *hi))
 
+    def capsule(self, p0, p1, radius: float, k: float = 0.0, gauge: int = 0) -> None:
+        """A straight capsule into the carrier (`surface`): signed distance, smooth-unioned with collar k."""
+        self._check(self._L.loam_capsule(self._h, *p0, *p1, radius, k, gauge))
+
     def clear(self, channel: str) -> None:
         self._check(self._L.loam_clear(self._h, self.channel(channel)))
 
@@ -262,6 +270,10 @@ class World:
 
     def total(self, channel: str) -> float:
         return self._L.loam_total(self._h, self.channel(channel))
+
+    def inside_count(self) -> int:
+        """Samples of the carrier that are inside (φ < 0): the amount of tissue."""
+        return self._L.loam_inside_count(self._h)
 
     def fronts(self) -> list:
         cap = 1024

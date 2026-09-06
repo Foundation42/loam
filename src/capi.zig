@@ -280,6 +280,22 @@ export fn loam_total(h: ?*Handle, channel: u32) f64 {
     return seedbed.total(&hh.world, @intCast(channel));
 }
 
+/// Samples of the carrier that are inside (φ < 0): the amount of tissue.
+export fn loam_inside_count(h: ?*Handle) u64 {
+    const hh = h orelse return 0;
+    return seedbed.insideCount(&hh.world);
+}
+
+/// Queue a straight capsule of radius `r` (world units) between two world
+/// points into the carrier, smooth-unioned with collar `k`; `loam_apply`
+/// commits.
+export fn loam_capsule(h: ?*Handle, x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64, r: f64, k: f32, gauge: u32) c_int {
+    const hh = h orelse return -1;
+    const d = hh.world.domain;
+    seedbed.capsuleLattice(&hh.world, d.toLattice(.{ x0, y0, z0 }), d.toLattice(.{ x1, y1, z1 }), d.lengthToLattice(r), k, @intCast(gauge)) catch |e| return fail(hh, e);
+    return 0;
+}
+
 /// Live front positions (xyz interleaved, world units) into `out[cap*3]`;
 /// returns how many there are (which may exceed `cap`).
 export fn loam_fronts(h: ?*Handle, cap: usize, out: [*]f64) usize {

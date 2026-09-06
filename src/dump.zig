@@ -5,8 +5,10 @@
 //! dumps, so the format is fixed by the content and nothing else:
 //! struple's `appendMap` sorts keys, bricks ride in key order, fronts in
 //! id order, planes as little-endian f32 bytes so the reader gets exact
-//! values with `array('f')`. The struple Python port reads this with no
-//! loam code — `tools/read_dump.py` and `py/loam/dump.py`.
+//! values with `array('f')`. A plane is the whole 11³ block, halo
+//! included (R7): what a reader reconstructs from is what it gets. The
+//! struple Python port reads this with no loam code — `tools/read_dump.py`
+//! and `py/loam/dump.py`.
 
 const std = @import("std");
 const struple = @import("struple");
@@ -19,7 +21,7 @@ const world_mod = @import("world.zig");
 
 const Brick = brick.Brick;
 
-pub const FORMAT: i64 = 1;
+pub const FORMAT: i64 = 2;
 
 const Entry = [2][]const u8;
 
@@ -110,6 +112,8 @@ pub fn write(gpa: std.mem.Allocator, w: *const world_mod.World) ![]u8 {
     try top.append(.{ try key(a, "seed"), try uint(a, snap.seed) });
     try top.append(.{ try key(a, "lattice_bits"), try int(a, lattice.BITS) });
     try top.append(.{ try key(a, "brick_cells"), try int(a, brick.CELLS) });
+    try top.append(.{ try key(a, "halo"), try int(a, 1) });
+    try top.append(.{ try key(a, "band_cells"), try f64v(a, channel.SURFACE_BAND_CELLS) });
     try top.append(.{ try key(a, "slots"), try int(a, front.SLOTS) });
     const rh = snap.rootHash();
     try top.append(.{ try key(a, "root_hash"), try bytes(a, &rh) });

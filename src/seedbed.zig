@@ -19,6 +19,7 @@ const world_mod = @import("world.zig");
 const operators = @import("operators.zig");
 const ray = @import("ray.zig");
 const update = @import("update.zig");
+const fmath = @import("fmath.zig");
 
 const World = world_mod.World;
 const Key = lattice.Key;
@@ -115,6 +116,73 @@ fn blobFill(ctx: *BlobCtx, i: usize) void {
     }
 }
 
+/// Author a straight capsule — the signed distance to the segment p0–p1
+/// at radius r, lattice units — into the carrier as one surface op with
+/// collar k, on bricks at `gauge` within the band of it. The G13
+/// instrument's primitive, and G9–G11's scene. Queued; `apply` commits.
+pub fn capsuleLattice(w: *World, p0: [3]f64, p1: [3]f64, r: f64, k: f32, gauge: u5) !void {
+    const level: u5 = gauge + lattice.BRICK_LOG2;
+    const side: i64 = @as(i64, 1) << level;
+    const reach: f64 = r + channel.band(@as(u32, 1) << gauge);
+    var lo: [3]i64 = undefined;
+    var hi: [3]i64 = undefined;
+    inline for (0..3) |a| {
+        lo[a] = @max(@as(i64, 0), tree.floorI(@min(p0[a], p1[a]) - reach));
+        hi[a] = @min(@as(i64, lattice.CELLS), tree.floorI(@max(p0[a], p1[a]) + reach) + 1);
+    }
+    var keys = std.AutoArrayHashMapUnmanaged(u64, void){};
+    defer keys.deinit(w.gpa);
+    var cover = std.ArrayListUnmanaged(Key){};
+    defer cover.deinit(w.gpa);
+    var z = lo[2] - @mod(lo[2], side);
+    while (z < hi[2]) : (z += side) {
+        var y = lo[1] - @mod(lo[1], side);
+        while (y < hi[1]) : (y += side) {
+            var x = lo[0] - @mod(lo[0], side);
+            while (x < hi[0]) : (x += side) {
+                cover.clearRetainingCapacity();
+                try w.published().coverCube(Key.ofBrick(gauge, .{ @intCast(x), @intCast(y), @intCast(z) }), w.gpa, &cover);
+                for (cover.items) |ck| try keys.put(w.gpa, ck.raw(), {});
+            }
+        }
+    }
+    const axis = [3]f64{ p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+    const len2 = world_mod.dot(axis, axis);
+    const order = w.buffer.next_order;
+    w.buffer.next_order += 1;
+    for (keys.keys()) |raw| {
+        const key = Key.fromRaw(raw);
+        const ru = try w.author(key);
+        const alloc = w.buffer.arena.allocator();
+        const band = channel.band(key.spacing());
+        const o = key.origin();
+        const sp: i64 = key.spacing();
+        var op: ?*brick.Plane = null;
+        var kk: u32 = 0;
+        while (kk < brick.N) : (kk += 1) {
+            var j: u32 = 0;
+            while (j < brick.N) : (j += 1) {
+                var i: u32 = 0;
+                while (i < brick.N) : (i += 1) {
+                    const q = [3]f64{
+                        @floatFromInt(@as(i64, o[0]) + @as(i64, i) * sp),
+                        @floatFromInt(@as(i64, o[1]) + @as(i64, j) * sp),
+                        @floatFromInt(@as(i64, o[2]) + @as(i64, kk) * sp),
+                    };
+                    const d = [3]f64{ q[0] - p0[0], q[1] - p0[1], q[2] - p0[2] };
+                    var s: f64 = 0;
+                    if (len2 > 1e-18) s = @min(1.0, @max(0.0, world_mod.dot(d, axis) / len2));
+                    const rad = [3]f64{ d[0] - s * axis[0], d[1] - s * axis[1], d[2] - s * axis[2] };
+                    const phi: f32 = @floatCast(world_mod.len3(rad) - r);
+                    if (phi >= band) continue;
+                    if (op == null) op = try ru.surfaceOp(alloc, k, order);
+                    op.?[Brick.index(i, j, kk)] = @max(phi, -band);
+                }
+            }
+        }
+    }
+}
+
 /// Spawn a front at a world position with a heading. Queued; `apply` or
 /// the next step assigns its id.
 pub fn plant(w: *World, pos_world: [3]f64, dir: [3]f64, params: front.Params) !void {
@@ -140,25 +208,31 @@ pub fn sceneToLattice(p: [3]f64) [3]f64 {
     return .{ c + p[0], c + p[1], c + p[2] };
 }
 
-/// A wall of damage: inside the world box, Material goes to zero and
-/// Damage to one. Queued; `apply` commits.
+/// A wall of damage: the world box is CUT from the carrier — the CSG
+/// difference with the box's own signed distance, so the wound's walls
+/// are as continuous as the tissue was — Material goes to zero and
+/// Damage to one inside it. Queued; `apply` commits.
 pub fn damage(w: *World, lo_world: [3]f64, hi_world: [3]f64) !void {
     const lo = w.domain.toLattice(lo_world);
     const hi = w.domain.toLattice(hi_world);
     const snap = w.published();
     const bs = try snap.bricks(w.gpa);
     defer w.gpa.free(bs);
+    const order = w.buffer.next_order;
+    w.buffer.next_order += 1;
     for (bs) |b| {
         const o = b.origin();
         const side: f64 = @floatFromInt(b.key.side());
+        const band = b.band();
         var overlaps = true;
         inline for (0..3) |a| {
             const bl: f64 = @floatFromInt(o[a]);
-            if (bl + side < lo[a] or bl > hi[a]) overlaps = false;
+            if (bl + side < lo[a] - band or bl > hi[a] + band) overlaps = false;
         }
         if (!overlaps) continue;
         const ru = try w.author(b.key);
         const alloc = w.buffer.arena.allocator();
+        var op: ?*brick.Plane = null;
         var k: u32 = 0;
         while (k < brick.N) : (k += 1) {
             var j: u32 = 0;
@@ -166,13 +240,33 @@ pub fn damage(w: *World, lo_world: [3]f64, hi_world: [3]f64) !void {
                 var i: u32 = 0;
                 while (i < brick.N) : (i += 1) {
                     const p = b.pointAt(i, j, k);
+                    const idx = Brick.index(i, j, k);
+                    // Signed distance to the box: negative inside.
                     var inside = true;
+                    var d_out: f64 = 0;
+                    var d_in: f64 = std.math.inf(f64);
                     inline for (0..3) |a| {
                         const pa: f64 = @floatFromInt(p[a]);
-                        if (pa < lo[a] or pa > hi[a]) inside = false;
+                        const below = lo[a] - pa;
+                        const above = pa - hi[a];
+                        const outside = @max(below, above);
+                        if (outside > 0) {
+                            inside = false;
+                            d_out += outside * outside;
+                        } else {
+                            d_in = @min(d_in, -outside);
+                        }
+                    }
+                    const d_box: f32 = @floatCast(if (inside) -d_in else @sqrt(d_out));
+                    if (b.has(Channel.surface.bit()) and d_box < band) {
+                        // The cut only matters where tissue is: the op says
+                        // nothing where the carrier is already far.
+                        if (b.get(Channel.surface.bit(), i, j, k) < band) {
+                            if (op == null) op = try ru.surfaceOpMode(alloc, 0, order, .cut);
+                            op.?[idx] = d_box;
+                        }
                     }
                     if (!inside) continue;
-                    const idx = Brick.index(i, j, k);
                     const m = b.get(Channel.material.bit(), i, j, k);
                     if (m != 0) try ru.add(alloc, Channel.material.bit(), idx, -m);
                     const dmg = b.get(Channel.damage.bit(), i, j, k);
@@ -190,12 +284,21 @@ pub fn clearChannel(w: *World, bit: u6) !void {
     const snap = w.published();
     const bs = try snap.bricks(w.gpa);
     defer w.gpa.free(bs);
+    std.debug.assert(bit != Channel.surface.bit()); // the carrier is cut, not zeroed
     for (bs) |b| {
         const pl = b.plane(bit) orelse continue;
         const ru = try w.author(b.key);
         const alloc = w.buffer.arena.allocator();
-        for (pl, 0..) |v, idx| {
-            if (v != 0) try ru.add(alloc, bit, idx, -v);
+        var k: u32 = 0;
+        while (k < brick.N) : (k += 1) {
+            var j: u32 = 0;
+            while (j < brick.N) : (j += 1) {
+                var i: u32 = 0;
+                while (i < brick.N) : (i += 1) {
+                    const idx = Brick.index(i, j, k);
+                    if (pl[idx] != 0) try ru.add(alloc, bit, idx, -pl[idx]);
+                }
+            }
         }
     }
 }
@@ -232,12 +335,14 @@ pub fn freeAxes(axis: u2) [2]u2 {
     };
 }
 
-/// Max-projection of a channel along `axis` over the world box: the
-/// slice's honest sibling for a thin structure, which a single plane
-/// mostly misses. Row-major like `slice`.
+/// Max-projection of a channel along `axis` over the world box — the
+/// carrier's MIN, since inside is negative — the slice's honest sibling
+/// for a thin structure, which a single plane mostly misses. Row-major
+/// like `slice`.
 pub fn project(w: *const World, gpa: std.mem.Allocator, bit: u6, axis: u2, lo: [3]f64, hi: [3]f64, res: u32, depth: u32) ![]f32 {
     const out = try gpa.alloc(f32, @as(usize, res) * res);
-    @memset(out, 0);
+    const carrier = bit == Channel.surface.bit();
+    @memset(out, if (carrier) channel.band(1) else 0);
     const snap = w.published();
     const free = freeAxes(axis);
     var v: u32 = 0;
@@ -247,16 +352,22 @@ pub fn project(w: *const World, gpa: std.mem.Allocator, bit: u6, axis: u2, lo: [
             var p: [3]f64 = undefined;
             p[free[0]] = lo[free[0]] + (hi[free[0]] - lo[free[0]]) * (@as(f64, @floatFromInt(u)) + 0.5) / @as(f64, @floatFromInt(res));
             p[free[1]] = lo[free[1]] + (hi[free[1]] - lo[free[1]]) * (@as(f64, @floatFromInt(v)) + 0.5) / @as(f64, @floatFromInt(res));
-            var m: f32 = 0;
+            var m: f32 = if (carrier) channel.band(1) else 0;
             var d: u32 = 0;
             while (d < depth) : (d += 1) {
                 p[axis] = lo[axis] + (hi[axis] - lo[axis]) * (@as(f64, @floatFromInt(d)) + 0.5) / @as(f64, @floatFromInt(depth));
-                m = @max(m, snap.sample(bit, w.domain.toLattice(p)));
+                const v_here = snap.sample(bit, w.domain.toLattice(p));
+                m = if (carrier) @min(m, v_here) else @max(m, v_here);
             }
             out[@as(usize, v) * res + u] = m;
         }
     }
     return out;
+}
+
+/// The carrier as occupancy for a picture: 1 inside, 0 outside, in place.
+pub fn occupancy(values: []f32) void {
+    for (values) |*v| v.* = if (v.* < 0) 1 else 0;
 }
 
 /// Connected components (6-connectivity in the plane) of `values > threshold`
@@ -291,9 +402,11 @@ pub fn components(gpa: std.mem.Allocator, values: []const f32, res: u32, thresho
 }
 
 /// 3-D connected components (6-connectivity on lattice points) of young
-/// material: Material > `threshold` laid within the last `window_s`
-/// seconds of fed time. Live tips each own one; the G2 instrument.
-pub fn youngComponents(w: *const World, gpa: std.mem.Allocator, threshold: f32, window_s: f32) !usize {
+/// tissue: the carrier below `phi_max` (zero: inside) laid within the
+/// last `window_s` seconds of fed time, counting components of at least
+/// `min_points` — the window's trailing edge cuts a ring and leaves
+/// slivers of a point or three. Live tips each own one; the G2 instrument.
+pub fn youngComponents(w: *const World, gpa: std.mem.Allocator, phi_max: f32, window_s: f32, min_points: usize) !usize {
     const snap = w.published();
     const now_s: f32 = @floatCast(@as(f64, @floatFromInt(snap.time_ns)) / 1e9);
     var points = std.AutoHashMapUnmanaged(u64, void){};
@@ -301,7 +414,7 @@ pub fn youngComponents(w: *const World, gpa: std.mem.Allocator, threshold: f32, 
     const bs = try snap.bricks(gpa);
     defer gpa.free(bs);
     for (bs) |b| {
-        const m = b.plane(Channel.material.bit()) orelse continue;
+        const m = b.plane(Channel.surface.bit()) orelse continue;
         const age = b.plane(Channel.age.bit()) orelse continue;
         var k: u32 = 0;
         while (k < brick.N) : (k += 1) {
@@ -310,7 +423,7 @@ pub fn youngComponents(w: *const World, gpa: std.mem.Allocator, threshold: f32, 
                 var i: u32 = 0;
                 while (i < brick.N) : (i += 1) {
                     const idx = Brick.index(i, j, k);
-                    if (m[idx] <= threshold) continue;
+                    if (m[idx] >= phi_max) continue;
                     if (age[idx] == 0 or now_s - age[idx] >= window_s) continue;
                     const p = b.pointAt(i, j, k);
                     try points.put(gpa, lattice.morton(p[0], p[1], p[2]), {});
@@ -326,10 +439,11 @@ pub fn youngComponents(w: *const World, gpa: std.mem.Allocator, threshold: f32, 
     var it = points.keyIterator();
     while (it.next()) |start| {
         if (seen.contains(start.*)) continue;
-        count += 1;
+        var size: usize = 0;
         try seen.put(gpa, start.*, {});
         try stack.append(gpa, start.*);
         while (stack.pop()) |code| {
+            size += 1;
             const p = lattice.demorton(code);
             const nbrs = [6][3]i64{
                 .{ @as(i64, p[0]) - 1, p[1], p[2] }, .{ @as(i64, p[0]) + 1, p[1], p[2] },
@@ -344,6 +458,7 @@ pub fn youngComponents(w: *const World, gpa: std.mem.Allocator, threshold: f32, 
                 try stack.append(gpa, qc);
             }
         }
+        if (size >= min_points) count += 1;
     }
     return count;
 }
@@ -395,12 +510,72 @@ pub fn total(w: *const World, bit: u6) f64 {
     var ctx = Ctx{ .bit = bit };
     w.published().forEachBrick(&ctx, struct {
         fn f(c: *Ctx, b: *const Brick) void {
-            if (b.plane(c.bit)) |pl| {
-                for (pl) |v| c.sum += v;
+            const pl = b.plane(c.bit) orelse return;
+            var k: u32 = 0;
+            while (k < brick.N) : (k += 1) {
+                var j: u32 = 0;
+                while (j < brick.N) : (j += 1) {
+                    var i: u32 = 0;
+                    while (i < brick.N) : (i += 1) c.sum += pl[Brick.index(i, j, k)];
+                }
             }
         }
     }.f);
     return ctx.sum;
+}
+
+/// Samples of the carrier that are inside (φ < 0), over every brick's
+/// own samples — the amount of tissue, in the sense G2 needs (monotone
+/// where nothing is cut), with shared faces counted once per holder.
+pub fn insideCount(w: *const World) u64 {
+    const Ctx = struct { n: u64 = 0 };
+    var ctx = Ctx{};
+    w.published().forEachBrick(&ctx, struct {
+        fn f(c: *Ctx, b: *const Brick) void {
+            const pl = b.plane(Channel.surface.bit()) orelse return;
+            var k: u32 = 0;
+            while (k < brick.N) : (k += 1) {
+                var j: u32 = 0;
+                while (j < brick.N) : (j += 1) {
+                    var i: u32 = 0;
+                    while (i < brick.N) : (i += 1) if (pl[Brick.index(i, j, k)] < 0) {
+                        c.n += 1;
+                    };
+                }
+            }
+        }
+    }.f);
+    return ctx.n;
+}
+
+/// Centroid of the inside samples of the carrier, lattice units, and how
+/// many: the G3 measure, occupancy-weighted.
+pub fn insideCentroid(w: *const World) struct { c: [3]f64, n: u64 } {
+    const Ctx = struct { n: u64 = 0, m: [3]f64 = .{ 0, 0, 0 } };
+    var ctx = Ctx{};
+    w.published().forEachBrick(&ctx, struct {
+        fn f(c: *Ctx, b: *const Brick) void {
+            const pl = b.plane(Channel.surface.bit()) orelse return;
+            var k: u32 = 0;
+            while (k < brick.N) : (k += 1) {
+                var j: u32 = 0;
+                while (j < brick.N) : (j += 1) {
+                    var i: u32 = 0;
+                    while (i < brick.N) : (i += 1) {
+                        if (pl[Brick.index(i, j, k)] >= 0) continue;
+                        const p = b.pointAt(i, j, k);
+                        c.n += 1;
+                        c.m[0] += @floatFromInt(p[0]);
+                        c.m[1] += @floatFromInt(p[1]);
+                        c.m[2] += @floatFromInt(p[2]);
+                    }
+                }
+            }
+        }
+    }.f);
+    if (ctx.n == 0) return .{ .c = .{ 0, 0, 0 }, .n = 0 };
+    const nf: f64 = @floatFromInt(ctx.n);
+    return .{ .c = .{ ctx.m[0] / nf, ctx.m[1] / nf, ctx.m[2] / nf }, .n = ctx.n };
 }
 
 /// Centroid of a channel's mass, lattice units, and the mass.
@@ -417,7 +592,7 @@ pub fn centroid(w: *const World, bit: u6) struct { c: [3]f64, mass: f64 } {
                     var i: u32 = 0;
                     while (i < brick.N) : (i += 1) {
                         const v: f64 = pl[Brick.index(i, j, k)];
-                        if (v == 0) continue;
+                        if (v == 0) continue; // additive channels: absent is zero
                         const p = b.pointAt(i, j, k);
                         c.sum += v;
                         c.m[0] += v * @as(f64, @floatFromInt(p[0]));
@@ -480,11 +655,11 @@ pub fn tStudent975(df: usize) f64 {
 /// chooses it, so no axis is privileged.
 pub fn seededDirection(seed: u64) [3]f64 {
     const theta = 2 * std.math.pi * @as(f64, @import("rng.zig").unitOf(@import("rng.zig").hash4(seed, 0x7a3, 0, 0)));
-    return .{ @cos(theta), 0, @sin(theta) };
+    return .{ fmath.cos(theta), 0, fmath.sin(theta) };
 }
 
-/// Material centroid of the sapling grown `steps` steps with the
-/// stimulus at `stimulus` (world units), or none.
+/// Tissue centroid (inside samples of the carrier) of the sapling grown
+/// `steps` steps with the stimulus at `stimulus` (world units), or none.
 fn tropismRun(gpa: std.mem.Allocator, seed: u64, stimulus: ?[3]f64, coeff: f32, steps: u32) ![3]f64 {
     var w = try World.init(gpa, .{ .seed = seed });
     defer w.deinit();
@@ -492,7 +667,7 @@ fn tropismRun(gpa: std.mem.Allocator, seed: u64, stimulus: ?[3]f64, coeff: f32, 
     try scene.build(&w, .sapling);
     var i: u64 = 0;
     while (i <= steps) : (i += 1) try w.step(.{ .frame = i, .time_ns = i * std.time.ns_per_s }, null);
-    return centroid(&w, Channel.material.bit()).c;
+    return insideCentroid(&w).c;
 }
 
 /// One run of the ensemble: which seed, which condition.

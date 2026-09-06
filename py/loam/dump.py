@@ -4,7 +4,7 @@ Python port and no loam code.
     from loam.dump import read
     d = read("snapshot.struple")
     d["vid"], d["root_hash"].hex(), len(d["bricks"])
-    b = d["bricks"][0]; b["planes"]["material"]   # array('f'), 729 samples
+    b = d["bricks"][0]; b["planes"]["surface"]   # array('f'), the 11³ block: 9³ samples plus one halo layer
 
 Planes decode to ``array('f')`` (little-endian f32, exact); rings to a list
 of (r, dz, tag, age) per slot.
@@ -24,7 +24,7 @@ for cand in (os.environ.get("STRUPLE_PY"), os.path.join(_HERE, "..", "..", "..",
 
 import struple  # noqa: E402
 
-FORMAT = 1
+FORMAT = 2
 
 
 def _plane(raw: bytes) -> array:

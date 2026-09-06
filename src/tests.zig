@@ -200,9 +200,10 @@ test "G7: a shadow-class query gathers fewer channel bytes than a primary one" {
     try testing.expect(@as(f64, @floatFromInt(s)) <= thresholds.G7_MAX_SHADOW_FRACTION * @as(f64, @floatFromInt(p)));
 }
 
-/// Channel bytes a query gathers: eight samples of four bytes per plane
-/// touched, for each requested channel the brick holds. The narrow
-/// query's instrument — the mutation (ignore the mask) makes this equal.
+/// Channel bytes a query gathers: the B-spline's 64 coefficients of four
+/// bytes per plane touched, for each requested channel the brick holds.
+/// The narrow query's instrument — the mutation (ignore the mask) makes
+/// this equal.
 fn gatherBytes(snap: *const loam.Snapshot, channels: channel.Mask) !u64 {
     var cur = try ray.Cursor.init(testing.allocator, snap, .{ .origin = .{ 524288 - 40, 524288, 524288 }, .dir = .{ 1, 0, 0 }, .channels = channels });
     defer cur.deinit();
@@ -210,7 +211,7 @@ fn gatherBytes(snap: *const loam.Snapshot, channels: channel.Mask) !u64 {
     while (try cur.next()) |rv| {
         var t = rv.t_enter;
         while (t <= rv.t_exit) : (t += 1) {
-            bytes += 8 * 4 * @as(u64, @popCount(rv.brick.mask & channels));
+            bytes += 64 * 4 * @as(u64, @popCount(rv.brick.mask & channels));
         }
     }
     return bytes;
@@ -450,10 +451,10 @@ const OnceAcc = struct {
 
 // ── P1.4: fronts ─────────────────────────────────────────────────────────
 
-/// The G2 run: the sapling for G2_STEPS, sampling the young-material
+/// The G2 run: the sapling for G2_STEPS, sampling the young-tissue
 /// component count at every checkpoint, since tips are live in the middle
-/// of the run and dormant by its end.
-const G2Run = struct { max_young: usize = 0, material_half: f64 = 0, material_full: f64 = 0, branches: usize = 0 };
+/// of the run and dormant by its end. Tissue is the carrier's inside.
+const G2Run = struct { max_young: usize = 0, tissue_half: u64 = 0, tissue_full: u64 = 0, branches: usize = 0 };
 
 fn g2Run(gpa: std.mem.Allocator, scene_in: seedbed.Scene) !G2Run {
     var w = try World.init(gpa, .{ .seed = 7 });
@@ -465,11 +466,11 @@ fn g2Run(gpa: std.mem.Allocator, scene_in: seedbed.Scene) !G2Run {
     while (i <= thresholds.G2_STEPS) : (i += 1) {
         try w.step(now(i), null);
         if (i % thresholds.G2_CHECK_EVERY == 0) {
-            r.max_young = @max(r.max_young, try seedbed.youngComponents(&w, gpa, 0.3, thresholds.G2_YOUNG_WINDOW_S));
+            r.max_young = @max(r.max_young, try seedbed.youngComponents(&w, gpa, 0.0, thresholds.G2_YOUNG_WINDOW_S, thresholds.G2_MIN_COMPONENT_POINTS));
         }
-        if (i == thresholds.G2_STEPS / 2) r.material_half = seedbed.total(&w, Channel.material.bit());
+        if (i == thresholds.G2_STEPS / 2) r.tissue_half = seedbed.insideCount(&w);
     }
-    r.material_full = seedbed.total(&w, Channel.material.bit());
+    r.tissue_full = seedbed.insideCount(&w);
     r.branches = w.published().fronts.len - 1;
     try guards.check(w.published());
     return r;
@@ -478,8 +479,8 @@ fn g2Run(gpa: std.mem.Allocator, scene_in: seedbed.Scene) !G2Run {
 test "G2: a seeded front produces persistent, branching, deposited structure with no mesh" {
     const gpa = testing.allocator;
     const r = try g2Run(gpa, .{});
-    std.debug.print("\nG2: material {d:.1} at N/2 → {d:.1} at N, {d} branches, {d} young-material components at peak\n", .{ r.material_half, r.material_full, r.branches, r.max_young });
-    try testing.expect(r.material_full > 0 and r.material_full >= r.material_half); // persistent: no reset
+    std.debug.print("\nG2: tissue {d} samples at N/2 → {d} at N, {d} branches, {d} young-tissue components at peak\n", .{ r.tissue_half, r.tissue_full, r.branches, r.max_young });
+    try testing.expect(r.tissue_full > 0 and r.tissue_full >= r.tissue_half); // persistent: no reset
     try testing.expect(r.branches >= thresholds.G2_MIN_BRANCHES); // the mechanism fired
     try testing.expect(r.max_young >= thresholds.G2_MIN_YOUNG_COMPONENTS); // and the FIELD shows it
 }
@@ -487,16 +488,16 @@ test "G2: a seeded front produces persistent, branching, deposited structure wit
 test "G2 mutation: branching off → one component of young material while material still grows" {
     const gpa = testing.allocator;
     const r = try g2Run(gpa, .{ .max_generation = 0 });
-    std.debug.print("\nG2 mutation: material {d:.1}, {d} branches, {d} young-material components at peak\n", .{ r.material_full, r.branches, r.max_young });
-    try testing.expect(r.material_full > 0);
+    std.debug.print("\nG2 mutation: tissue {d}, {d} branches, {d} young-tissue components at peak\n", .{ r.tissue_full, r.branches, r.max_young });
+    try testing.expect(r.tissue_full > 0);
     try testing.expectEqual(@as(usize, 0), r.branches);
     try testing.expectEqual(@as(usize, 1), r.max_young);
 }
 
-test "G2 mutation: zero deposit rate → no material" {
+test "G2 mutation: zero deposit → no tissue" {
     const gpa = testing.allocator;
     const r = try g2Run(gpa, .{ .deposit = 0 });
-    try testing.expectEqual(@as(f64, 0), r.material_full);
+    try testing.expectEqual(@as(u64, 0), r.tissue_full);
     try testing.expectEqual(@as(usize, 0), r.max_young);
 }
 
@@ -575,8 +576,9 @@ fn woundRun(gpa: std.mem.Allocator, g: *GrownWorld, heal: bool) !*loam.Snapshot 
     return before;
 }
 
-fn materialInBox(w: *const World, lo: [3]f64, hi: [3]f64) f64 {
-    var sum: f64 = 0;
+/// Lattice points in the world box where the carrier is inside.
+fn tissueInBox(w: *const World, lo: [3]f64, hi: [3]f64) u64 {
+    var n: u64 = 0;
     const snap = w.published();
     var y = lo[1];
     while (y <= hi[1]) : (y += 1) {
@@ -584,11 +586,11 @@ fn materialInBox(w: *const World, lo: [3]f64, hi: [3]f64) f64 {
         while (z <= hi[2]) : (z += 1) {
             var x = lo[0];
             while (x <= hi[0]) : (x += 1) {
-                sum += snap.sample(Channel.material.bit(), w.domain.toLattice(.{ x, y, z }));
+                if (snap.sample(Channel.surface.bit(), w.domain.toLattice(.{ x, y, z })) < 0) n += 1;
             }
         }
     }
-    return sum;
+    return n;
 }
 
 test "G4: removing material re-activates evolution locally only" {
@@ -598,7 +600,7 @@ test "G4: removing material re-activates evolution locally only" {
     defer before.release();
     defer g.deinit();
     const box = DamageBox{};
-    const regrown = materialInBox(&g.world, box.lo, box.hi);
+    const regrown = tissueInBox(&g.world, box.lo, box.hi);
     // Every brick outside the dilated box is the SAME brick as before the
     // wound — identity, not merely equality — and the touched ones lie
     // inside it.
@@ -626,7 +628,7 @@ test "G4: removing material re-activates evolution locally only" {
             if (outside <= 5) std.debug.print("\n  outside: brick at ({d}, {d}, {d}) vs box lattice [{d:.0}..{d:.0}, {d:.0}..{d:.0}, {d:.0}..{d:.0}]", .{ o[0], o[1], o[2], lo_l[0], hi_l[0], lo_l[1], hi_l[1], lo_l[2], hi_l[2] });
         }
     }
-    std.debug.print("\nG4: {d} bricks touched by the repair, {d} outside dilate(box, {d}); material regrown in box {d:.1}; {d} fronts\n", .{ touched, outside, thresholds.G4_DILATE_BRICKS, regrown, after.fronts.len });
+    std.debug.print("\nG4: {d} bricks touched by the repair, {d} outside dilate(box, {d}); tissue regrown in box {d} points; {d} fronts\n", .{ touched, outside, thresholds.G4_DILATE_BRICKS, regrown, after.fronts.len });
     try testing.expect(regrown > 0);
     try testing.expect(touched > 0);
     try testing.expectEqual(@as(usize, 0), outside);
@@ -640,7 +642,7 @@ test "G4 mutation: remove the healing operator → no reactivation" {
     defer before.release();
     defer g.deinit();
     const box = DamageBox{};
-    try testing.expectEqual(@as(f64, 0), materialInBox(&g.world, box.lo, box.hi));
+    try testing.expectEqual(@as(u64, 0), tissueInBox(&g.world, box.lo, box.hi));
 }
 
 // ── P1.5: the active set ─────────────────────────────────────────────────
@@ -789,20 +791,26 @@ test "guards self-test: each invariant, corrupted, is refused by name" {
     victim.finalize(gpa); // drops the zero plane
     try guards.check(snap);
 
-    // 3. A stale leaf summary: a sample edited without finalize.
+    // 3. A stale leaf summary: a boundary sample edited without finalize.
     var edited: ?*Brick = null;
     var edited_idx: usize = 0;
     var edited_old: f32 = 0;
     for (bs) |b| {
         const pl = b.plane(Channel.light.bit()) orelse continue;
-        var idx: usize = 0;
-        while (idx < brick.SAMPLES) : (idx += 1) {
-            const ijk = Brick.unindex(idx);
-            if (Brick.isBoundary(ijk[0], ijk[1], ijk[2]) and pl[idx] > 0.1) {
-                edited = @constCast(b);
-                edited_idx = idx;
-                edited_old = pl[idx];
-                break;
+        var k: u32 = 0;
+        while (k < brick.N and edited == null) : (k += 1) {
+            var j: u32 = 0;
+            while (j < brick.N and edited == null) : (j += 1) {
+                var i: u32 = 0;
+                while (i < brick.N) : (i += 1) {
+                    const idx = Brick.index(i, j, k);
+                    if (Brick.isBoundary(i, j, k) and pl[idx] > 0.1) {
+                        edited = @constCast(b);
+                        edited_idx = idx;
+                        edited_old = pl[idx];
+                        break;
+                    }
+                }
             }
         }
         if (edited != null) break;
@@ -816,6 +824,20 @@ test "guards self-test: each invariant, corrupted, is refused by name" {
     patchLeafSummary(root, eb);
     try testing.expectError(guards.Violation.SeamDisagrees, guards.check(snap));
     eb.planes[channel.planeIndex(eb.mask, Channel.light.bit())][edited_idx] = edited_old;
+    eb.finalize(gpa);
+    patchLeafSummary(root, eb);
+    try guards.check(snap);
+
+    // 4b. A halo entry that is not what its neighbour holds (R7): the
+    // summary patched so only the halo rule can catch it.
+    const halo_idx = Brick.bindex(0, 5, 5);
+    const hpl = eb.planes[channel.planeIndex(eb.mask, Channel.light.bit())];
+    const halo_old = hpl[halo_idx];
+    hpl[halo_idx] = halo_old + 0.25;
+    eb.finalize(gpa);
+    patchLeafSummary(root, eb);
+    try testing.expectError(guards.Violation.HaloStale, guards.check(snap));
+    hpl[halo_idx] = halo_old;
     eb.finalize(gpa);
     patchLeafSummary(root, eb);
     try guards.check(snap);
@@ -871,5 +893,430 @@ test "dump: two worlds fed the same inputs write the same bytes, and the bytes n
     defer gpa.free(db);
     try testing.expectEqualSlices(u8, da, db);
     try testing.expect(std.mem.indexOf(u8, da, "root_hash") != null);
-    try testing.expect(std.mem.indexOf(u8, da, "material") != null);
+    try testing.expect(std.mem.indexOf(u8, da, "surface") != null);
+}
+
+// ── Phase 2: the continuous carrier ──────────────────────────────────────
+//
+// G13 first: the instrument the reconstruction is checked with before
+// anything is grown on it. Its threshold was written before the sweep
+// ran, against theory (`tools/g13_predict.py`, frozen in thresholds.zig).
+
+const Recon = enum { spline, trilinear };
+
+/// The carrier at `p` by the named reconstruction, through the leaf that
+/// holds it — the instrument's two arms.
+fn probe(snap: *const loam.Snapshot, p: [3]f64, recon: Recon) f32 {
+    const b = snap.findLeaf(.{ tree.floorI(p[0]), tree.floorI(p[1]), tree.floorI(p[2]) }) orelse return channel.band(1);
+    return switch (recon) {
+        .spline => b.spline(Channel.surface.bit(), p),
+        .trilinear => b.trilinear(Channel.surface.bit(), p),
+    };
+}
+
+const G13Row = struct { r_over_h: f32, survives: bool, rec_min: f32, rec_max: f32 };
+
+/// A frame for one orientation: the axis and two perpendiculars, as in
+/// the predictor.
+fn g13Frame(kind: u8) struct { d: [3]f64, e1: [3]f64, e2: [3]f64 } {
+    const d: [3]f64 = switch (kind) {
+        0 => .{ 0, 0, 1 },
+        1 => loam.world.normalize(.{ 1, 1, 0 }),
+        else => loam.world.normalize(.{ 1, 1, 1 }),
+    };
+    const t: [3]f64 = if (@abs(d[0]) < 0.9) .{ 1, 0, 0 } else .{ 0, 1, 0 };
+    const e1 = loam.world.normalize(loam.world.cross(d, t));
+    const e2 = loam.world.cross(d, e1);
+    return .{ .d = d, .e1 = e1, .e2 = e2 };
+}
+
+/// The sweep: for every r/h, a straight capsule at radius (r/h)·h on
+/// bricks at `gauge`, in three orientations and nine axis offsets in the
+/// cell; whether the zero set survives on the axis, and where the
+/// reconstruction crosses zero on perpendicular rays (worst and best of
+/// r_rec/r). The same geometry and the same root finder as the
+/// predictor, so a disagreement is the reconstruction's.
+fn g13Sweep(gpa: std.mem.Allocator, gauge: u5, recon: Recon, radii_in_cells: bool) ![thresholds.G13_SWEEP.len]G13Row {
+    var rows: [thresholds.G13_SWEEP.len]G13Row = undefined;
+    const h: f64 = @floatFromInt(@as(u32, 1) << gauge);
+    const centre = seedbed.sceneToLattice(.{ 0, 0, 0 });
+    for (thresholds.G13_SWEEP, 0..) |roh, ri| {
+        // The radius in lattice units: r/h cells of this gauge, or — the
+        // coarsening mutation — r/h lattice units whatever the gauge.
+        const r: f64 = if (radii_in_cells) @as(f64, roh) * h else @as(f64, roh);
+        const r_eff: f64 = r / h;
+        var axis_max: f32 = -std.math.inf(f32);
+        var rec_min: f64 = std.math.inf(f64);
+        var rec_max: f64 = -std.math.inf(f64);
+        var kind: u8 = 0;
+        while (kind < 3) : (kind += 1) {
+            const fr = g13Frame(kind);
+            const offsets = [_]f64{ 0, 0.25, 0.5 };
+            for (offsets) |ou| {
+                for (offsets) |ov| {
+                    var w = try World.init(gpa, .{ .seed = 1 });
+                    defer w.deinit();
+                    var p0: [3]f64 = undefined;
+                    inline for (0..3) |a| p0[a] = centre[a] + (ou * fr.e1[a] + ov * fr.e2[a]) * h;
+                    const half: f64 = 16 * h;
+                    const a0 = [3]f64{ p0[0] - fr.d[0] * half, p0[1] - fr.d[1] * half, p0[2] - fr.d[2] * half };
+                    const a1 = [3]f64{ p0[0] + fr.d[0] * half, p0[1] + fr.d[1] * half, p0[2] + fr.d[2] * half };
+                    try seedbed.capsuleLattice(&w, a0, a1, r, 0, gauge);
+                    try w.apply();
+                    const snap = w.published();
+                    // On the axis: does the zero set survive?
+                    var si: u32 = 0;
+                    while (si < 8) : (si += 1) {
+                        const s = @as(f64, @floatFromInt(si)) * 0.5 * h;
+                        const q = [3]f64{ p0[0] + fr.d[0] * s, p0[1] + fr.d[1] * s, p0[2] + fr.d[2] * s };
+                        axis_max = @max(axis_max, probe(snap, q, recon));
+                    }
+                    // Perpendicular rays at four axial positions and 24 angles:
+                    // the first crossing from inside to outside, interpolated
+                    // between 400 samples, as the predictor does.
+                    var sa: u32 = 0;
+                    while (sa < 8) : (sa += 2) {
+                        const s = @as(f64, @floatFromInt(sa)) * 0.5 * h;
+                        var th: u32 = 0;
+                        while (th < 24) : (th += 1) {
+                            const ang = 2 * std.math.pi * @as(f64, @floatFromInt(th)) / 24.0;
+                            var dir: [3]f64 = undefined;
+                            inline for (0..3) |a| dir[a] = @cos(ang) * fr.e1[a] + @sin(ang) * fr.e2[a];
+                            const t_end = (r_eff + 2.5) * h;
+                            var prev: f32 = undefined;
+                            var ti: u32 = 0;
+                            while (ti < 400) : (ti += 1) {
+                                const t = t_end * @as(f64, @floatFromInt(ti)) / 399.0;
+                                const q = [3]f64{ p0[0] + fr.d[0] * s + dir[0] * t, p0[1] + fr.d[1] * s + dir[1] * t, p0[2] + fr.d[2] * s + dir[2] * t };
+                                const v = probe(snap, q, recon);
+                                if (ti > 0 and prev < 0 and v >= 0) {
+                                    const t_prev = t_end * @as(f64, @floatFromInt(ti - 1)) / 399.0;
+                                    const t0 = t_prev + (t - t_prev) * (-@as(f64, prev)) / (@as(f64, v) - @as(f64, prev));
+                                    rec_min = @min(rec_min, t0 / h);
+                                    rec_max = @max(rec_max, t0 / h);
+                                    break;
+                                }
+                                prev = v;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        const survives = axis_max < 0;
+        rows[ri] = .{
+            .r_over_h = @floatCast(r_eff),
+            .survives = survives,
+            .rec_min = if (survives and rec_min < std.math.inf(f64)) @floatCast(rec_min / r_eff) else 0,
+            .rec_max = if (survives and rec_max > -std.math.inf(f64)) @floatCast(rec_max / r_eff) else 0,
+        };
+    }
+    return rows;
+}
+
+fn printG13(label: []const u8, rows: []const G13Row) void {
+    std.debug.print("\n{s}:\n", .{label});
+    for (rows, 0..) |row, i| {
+        const pred = thresholds.G13_PREDICTED[i];
+        if (row.survives) {
+            std.debug.print("  r/h {d:5.2}  survives  r_rec/r {d:.4} … {d:.4}  (predicted {d:.4} … {d:.4})  bias {d:.1}% … {d:.1}%\n", .{ row.r_over_h, row.rec_min, row.rec_max, pred.rec_min, pred.rec_max, 100 * (row.rec_min - 1), 100 * (row.rec_max - 1) });
+        } else {
+            std.debug.print("  r/h {d:5.2}  VANISHES  (predicted {s})\n", .{ row.r_over_h, if (pred.survives) "survives" else "vanishes" });
+        }
+    }
+}
+
+test "G13: a thin capsule survives the B-spline as the prediction says, at r/h >= 1, faithfully at r/h >= 2" {
+    const gpa = testing.allocator;
+    const rows = try g13Sweep(gpa, 0, .spline, true);
+    printG13("G13 (gauge 0, B-spline)", &rows);
+    var worst_bias: f32 = 0;
+    for (rows, 0..) |row, i| {
+        const pred = thresholds.G13_PREDICTED[i];
+        // (a) The instrument reads the prediction.
+        try testing.expectEqual(pred.survives, row.survives);
+        if (row.survives) {
+            try testing.expect(@abs(row.rec_min - pred.rec_min) <= thresholds.G13_PREDICTION_TOL);
+            try testing.expect(@abs(row.rec_max - pred.rec_max) <= thresholds.G13_PREDICTION_TOL);
+        }
+        // (b) Survival at and above the survival floor.
+        if (row.r_over_h >= thresholds.G13_SURVIVE_R_OVER_H) try testing.expect(row.survives);
+        // (c) Faithful at and above the faithful floor.
+        if (row.r_over_h >= thresholds.G13_FAITHFUL_R_OVER_H) {
+            try testing.expect(@abs(row.rec_min - 1) <= thresholds.G13_MAX_BIAS);
+            try testing.expect(@abs(row.rec_max - 1) <= thresholds.G13_MAX_BIAS);
+            worst_bias = @max(worst_bias, @abs(row.rec_min - 1));
+        }
+    }
+    std.debug.print("G13: worst bias at r/h >= {d}: {d:.2}% (threshold {d:.0}%)\n", .{ thresholds.G13_FAITHFUL_R_OVER_H, 100 * worst_bias, 100 * thresholds.G13_MAX_BIAS });
+}
+
+test "G13 mutation: the gauge doubled without refinement → the capsule at r/h 1 vanishes and at 2 thins by more than the floor" {
+    const gpa = testing.allocator;
+    // The same radii in lattice units, on gauge-1 bricks: r/h halves.
+    const rows = try g13Sweep(gpa, 1, .spline, false);
+    printG13("G13 mutation (gauge 1, radii unchanged)", &rows);
+    for (rows, 0..) |row, i| {
+        const label = thresholds.G13_SWEEP[i];
+        if (label == 1.0 or label == 1.5) try testing.expect(!row.survives);
+        if (label == 2.0) try testing.expect(row.survives and @abs(row.rec_min - 1) > thresholds.G13_MAX_BIAS);
+    }
+}
+
+test "G13 variation: trilinear in place of the B-spline survives thinner and thins less — a different instrument, recorded" {
+    const gpa = testing.allocator;
+    const rows = try g13Sweep(gpa, 0, .trilinear, true);
+    printG13("G13 variation (gauge 0, trilinear)", &rows);
+    // Survival at 0.75, where the B-spline's tube is gone: the two
+    // reconstructions differ, and the gate can tell them apart.
+    for (rows, 0..) |row, i| {
+        if (thresholds.G13_SWEEP[i] == 0.75) try testing.expect(row.survives);
+        if (thresholds.G13_SWEEP[i] == 2.0) try testing.expect(row.rec_min > thresholds.G13_PREDICTED[i].rec_min + thresholds.G13_PREDICTION_TOL);
+    }
+}
+
+// ── G9: C2 across a same-gauge seam ──────────────────────────────────────
+
+/// A capsule scene on one gauge, diagonal so it crosses many faces.
+fn capsuleScene(gpa: std.mem.Allocator, halo: bool) !World {
+    var w = try World.init(gpa, .{ .seed = 1, .policy = .{ .halo = halo } });
+    errdefer w.deinit();
+    const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
+    try seedbed.capsuleLattice(&w, .{ c[0] - 14, c[1] - 9, c[2] - 6 }, .{ c[0] + 13, c[1] + 11, c[2] + 7 }, 3.2, 0, 0);
+    try seedbed.capsuleLattice(&w, .{ c[0] - 4, c[1] + 6, c[2] - 12 }, .{ c[0] + 6, c[1] - 8, c[2] + 12 }, 2.4, 0, 0);
+    try w.apply();
+    return w;
+}
+
+const SeamJets = struct { max_dv: f32 = 0, max_dg: f32 = 0, max_dh: f32 = 0, pairs: usize = 0 };
+
+/// Over every shared face point between same-gauge holders, and points
+/// between samples on the face, the largest disagreement in value,
+/// gradient and Hessian between the two holders' B-splines.
+fn seamJets(snap: *const loam.Snapshot, gpa: std.mem.Allocator) !SeamJets {
+    var out = SeamJets{};
+    const bs = try snap.bricks(gpa);
+    defer gpa.free(bs);
+    var holders: [8]*const Brick = undefined;
+    for (bs) |b| {
+        if (!b.has(Channel.surface.bit())) continue;
+        var k: u32 = 0;
+        while (k < brick.N) : (k += 1) {
+            var j: u32 = 0;
+            while (j < brick.N) : (j += 1) {
+                var i: u32 = 0;
+                while (i < brick.N) : (i += 1) {
+                    if (!Brick.isBoundary(i, j, k)) continue;
+                    const p = b.pointAt(i, j, k);
+                    const q0 = [3]f64{ @floatFromInt(p[0]), @floatFromInt(p[1]), @floatFromInt(p[2]) };
+                    // The point, and a few off-lattice points on the same face.
+                    const dels = [_][3]f64{ .{ 0, 0, 0 }, .{ 0.5, 0, 0 }, .{ 0, 0.5, 0 }, .{ 0, 0, 0.5 }, .{ 0.3, 0.7, 0 }, .{ 0, 0.3, 0.7 }, .{ 0.7, 0, 0.3 } };
+                    for (dels) |dl| {
+                        const q = [3]f64{ q0[0] + dl[0], q0[1] + dl[1], q0[2] + dl[2] };
+                        const pi = [3]i64{ tree.floorI(q[0]), tree.floorI(q[1]), tree.floorI(q[2]) };
+                        const nh = snap.findAll(pi, &holders);
+                        if (nh < 2) continue;
+                        var first: ?loam.Brick.Jet = null;
+                        for (holders[0..nh]) |h| {
+                            if (!guards.holdsReal(h.key, q)) continue;
+                            if (h.gauge() != b.gauge()) continue;
+                            if (!h.has(Channel.surface.bit())) continue;
+                            const jet = h.splineJet(Channel.surface.bit(), q);
+                            if (first) |f| {
+                                out.pairs += 1;
+                                out.max_dv = @max(out.max_dv, @abs(jet.v - f.v));
+                                inline for (0..3) |a| out.max_dg = @max(out.max_dg, @abs(jet.grad[a] - f.grad[a]));
+                                inline for (0..6) |a| out.max_dh = @max(out.max_dh, @abs(jet.hess[a] - f.hess[a]));
+                            } else first = jet;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return out;
+}
+
+test "G9: the carrier is C2 across a same-gauge seam — both holders' B-splines agree in value, gradient and Hessian" {
+    const gpa = testing.allocator;
+    var w = try capsuleScene(gpa, true);
+    defer w.deinit();
+    try guards.check(w.published());
+    const j = try seamJets(w.published(), gpa);
+    std.debug.print("\nG9: {d} pairs; max |Δv| {e:.2}, |Δ∇| {e:.2}, |Δ∇²| {e:.2}\n", .{ j.pairs, j.max_dv, j.max_dg, j.max_dh });
+    try testing.expect(j.pairs > 100);
+    try testing.expect(j.max_dv <= thresholds.G9_TOL);
+    try testing.expect(j.max_dg <= thresholds.G9_TOL);
+    try testing.expect(j.max_dh <= thresholds.G9_TOL);
+}
+
+test "G9 mutation: no halo copy → the two holders reconstruct from different coefficients and the derivatives disagree" {
+    const gpa = testing.allocator;
+    var w = try capsuleScene(gpa, false);
+    defer w.deinit();
+    try testing.expectError(guards.Violation.HaloStale, guards.check(w.published()));
+    const j = try seamJets(w.published(), gpa);
+    std.debug.print("\nG9 mutation: {d} pairs; max |Δv| {e:.2}, |Δ∇| {e:.2}, |Δ∇²| {e:.2}\n", .{ j.pairs, j.max_dv, j.max_dg, j.max_dh });
+    try testing.expect(j.max_dg > thresholds.G9_TOL);
+}
+
+// ── G10: the summary's Lipschitz bound is conservative ───────────────────
+
+const BoundCheck = struct { pairs: u64 = 0, violations: u64 = 0, tightest: f64 = 0 };
+
+/// Random pairs inside every brick with a surface plane: |φ(x) − φ(y)|
+/// against L‖x − y‖, L from the summary or — the mutation — from the
+/// interior finite differences along axes alone.
+fn boundCheck(snap: *const loam.Snapshot, gpa: std.mem.Allocator, mutated: bool) !BoundCheck {
+    var out = BoundCheck{};
+    const bs = try snap.bricks(gpa);
+    defer gpa.free(bs);
+    var rng = std.Random.DefaultPrng.init(7);
+    const rnd = rng.random();
+    for (bs) |b| {
+        const pl = b.plane(Channel.surface.bit()) orelse continue;
+        var L: f64 = b.summary.lipschitz;
+        if (mutated) {
+            // The old definition: the largest axis difference over the
+            // brick's own samples, no root-sum-square, no halo.
+            var m: f32 = 0;
+            const sp: f32 = @floatFromInt(b.spacing());
+            var k: u32 = 0;
+            while (k < brick.N) : (k += 1) {
+                var j: u32 = 0;
+                while (j < brick.N) : (j += 1) {
+                    var i: u32 = 0;
+                    while (i < brick.N) : (i += 1) {
+                        const v = pl[Brick.index(i, j, k)];
+                        if (i + 1 < brick.N) m = @max(m, @abs(pl[Brick.index(i + 1, j, k)] - v) / sp);
+                        if (j + 1 < brick.N) m = @max(m, @abs(pl[Brick.index(i, j + 1, k)] - v) / sp);
+                        if (k + 1 < brick.N) m = @max(m, @abs(pl[Brick.index(i, j, k + 1)] - v) / sp);
+                    }
+                }
+            }
+            L = m;
+        }
+        const o = b.origin();
+        const side: f64 = @floatFromInt(b.key.side());
+        var n: u32 = 0;
+        while (n < 300) : (n += 1) {
+            var x: [3]f64 = undefined;
+            var y: [3]f64 = undefined;
+            inline for (0..3) |a| {
+                x[a] = @as(f64, @floatFromInt(o[a])) + rnd.float(f64) * side;
+                // Half the pairs close together, half anywhere.
+                y[a] = if (n % 2 == 0) @as(f64, @floatFromInt(o[a])) + rnd.float(f64) * side else @min(@as(f64, @floatFromInt(o[a])) + side, @max(@as(f64, @floatFromInt(o[a])), x[a] + (rnd.float(f64) - 0.5) * 1.5));
+            }
+            const d = loam.world.len3(.{ x[0] - y[0], x[1] - y[1], x[2] - y[2] });
+            if (d < 1e-9) continue;
+            const dv = @abs(@as(f64, b.spline(Channel.surface.bit(), x)) - @as(f64, b.spline(Channel.surface.bit(), y)));
+            out.pairs += 1;
+            if (dv > L * d * (1 + 1e-5) + 1e-6) out.violations += 1;
+            if (L > 0) out.tightest = @max(out.tightest, dv / (L * d));
+        }
+    }
+    return out;
+}
+
+test "G10: the summary's Lipschitz bound is never exceeded by the reconstruction" {
+    const gpa = testing.allocator;
+    var w = try capsuleScene(gpa, true);
+    defer w.deinit();
+    const c = try boundCheck(w.published(), gpa, false);
+    std.debug.print("\nG10: {d} pairs, {d} violations; the tightest pair reached {d:.3} of its bound\n", .{ c.pairs, c.violations, c.tightest });
+    try testing.expect(c.pairs > 1000);
+    try testing.expectEqual(@as(u64, 0), c.violations);
+}
+
+test "G10 mutation: L from interior axis differences alone → pairs exceed it" {
+    const gpa = testing.allocator;
+    var w = try capsuleScene(gpa, true);
+    defer w.deinit();
+    const c = try boundCheck(w.published(), gpa, true);
+    std.debug.print("\nG10 mutation: {d} pairs, {d} violations\n", .{ c.pairs, c.violations });
+    try testing.expect(c.violations > 0);
+}
+
+// ── G11: the sphere tracer never overshoots the zero set ─────────────────
+
+const TraceCheck = struct { rays: u64 = 0, hits: u64 = 0, disagreements: u64 = 0, late: u64 = 0, off_surface: u64 = 0, stats: ray.TraceStats = .{} };
+
+/// N rays from a sphere around the scene toward points near its centre:
+/// the sphere tracer against a dense march at a sixteenth of a cell
+/// (bisected), on hit/miss, on never passing the first crossing, and on
+/// the hit lying on the zero set.
+fn traceCheck(snap: *const loam.Snapshot, gpa: std.mem.Allocator, n: u32, opts: ray.TraceOptions) !TraceCheck {
+    var out = TraceCheck{};
+    var rng = std.Random.DefaultPrng.init(11);
+    const rnd = rng.random();
+    const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        // Origin on a sphere of radius 40; aim at a point within 12 of the centre.
+        var d = loam.world.normalize(.{ rnd.float(f64) - 0.5, rnd.float(f64) - 0.5, rnd.float(f64) - 0.5 });
+        const o = [3]f64{ c[0] + d[0] * 40, c[1] + d[1] * 40, c[2] + d[2] * 40 };
+        const aim = [3]f64{ c[0] + (rnd.float(f64) - 0.5) * 24, c[1] + (rnd.float(f64) - 0.5) * 24, c[2] + (rnd.float(f64) - 0.5) * 24 };
+        d = loam.world.normalize(.{ aim[0] - o[0], aim[1] - o[1], aim[2] - o[2] });
+        const t_max: f64 = 80;
+        // The dense march.
+        var t_dense: ?f64 = null;
+        {
+            const step: f64 = 1.0 / 16.0;
+            var t: f64 = 0;
+            var prev = snap.sample(Channel.surface.bit(), o);
+            if (prev <= 0) t_dense = 0;
+            while (t_dense == null and t < t_max) : (t += step) {
+                const q = [3]f64{ o[0] + d[0] * (t + step), o[1] + d[1] * (t + step), o[2] + d[2] * (t + step) };
+                const v = snap.sample(Channel.surface.bit(), q);
+                if (prev > 0 and v <= 0) {
+                    var lo = t;
+                    var hi = t + step;
+                    var it: u32 = 0;
+                    while (it < 40) : (it += 1) {
+                        const mid = 0.5 * (lo + hi);
+                        const mq = [3]f64{ o[0] + d[0] * mid, o[1] + d[1] * mid, o[2] + d[2] * mid };
+                        if (snap.sample(Channel.surface.bit(), mq) > 0) lo = mid else hi = mid;
+                    }
+                    t_dense = hi;
+                }
+                prev = v;
+            }
+        }
+        const hit = try ray.traceSurface(gpa, snap, o, d, 0, t_max, opts, &out.stats);
+        out.rays += 1;
+        if ((hit != null) != (t_dense != null)) {
+            out.disagreements += 1;
+            continue;
+        }
+        if (hit) |h| {
+            out.hits += 1;
+            // Never past the first crossing (tunnelling), and on the surface.
+            if (h.t > t_dense.? + 1e-3) out.late += 1;
+            if (@abs(@as(f64, h.phi)) > opts.eps) out.off_surface += 1;
+        }
+    }
+    return out;
+}
+
+test "G11: a march stepped by |φ|/L never lands inside, never tunnels, and agrees with a dense march on every ray" {
+    const gpa = testing.allocator;
+    var w = try capsuleScene(gpa, true);
+    defer w.deinit();
+    const c = try traceCheck(w.published(), gpa, thresholds.G11_RAYS, .{});
+    std.debug.print("\nG11: {d} rays, {d} hits, {d} hit/miss disagreements, {d} late, {d} off the surface; {d} steps ({d:.1} per ray), {d} overshoots, {d} stalls, {d} leaves\n", .{ c.rays, c.hits, c.disagreements, c.late, c.off_surface, c.stats.steps, @as(f64, @floatFromInt(c.stats.steps)) / @as(f64, @floatFromInt(c.rays)), c.stats.overshoots, c.stats.stalls, c.stats.leaves });
+    try testing.expect(c.hits > c.rays / 4); // the gate ran where rays hit
+    try testing.expectEqual(@as(u64, 0), c.disagreements);
+    try testing.expectEqual(@as(u64, 0), c.late);
+    try testing.expectEqual(@as(u64, 0), c.off_surface);
+    try testing.expectEqual(@as(u64, 0), c.stats.overshoots);
+    try testing.expectEqual(@as(u64, 0), c.stats.stalls);
+}
+
+test "G11 mutation: stepping by 2|φ|/L lands inside" {
+    const gpa = testing.allocator;
+    var w = try capsuleScene(gpa, true);
+    defer w.deinit();
+    const c = try traceCheck(w.published(), gpa, thresholds.G11_RAYS / 4, .{ .step_scale = 2.0 });
+    std.debug.print("\nG11 mutation: {d} rays, {d} overshoots\n", .{ c.rays, c.stats.overshoots });
+    try testing.expect(c.stats.overshoots > 0);
 }

@@ -33,7 +33,7 @@ const usage =
     \\  --consume C          potential drawn down per second around a front (default 1)
     \\  --no-heal            mount no healing operator
     \\  --damage x0,y0,z0,x1,y1,z1@step   clear material in the box at step
-    \\  --slice CH:AXIS:COORD:RES:FILE    write a PGM slice at the end (e.g. material:z:0:128:out.pgm)
+    \\  --slice CH:AXIS:COORD:RES:FILE    write a PGM slice at the end (e.g. surface:z:0:128:out.pgm; the carrier is drawn as inside = 1)
     \\  --project CH:AXIS:RES:FILE        write a PGM max-projection along AXIS at the end
     \\  --dump FILE          write the snapshot as a struple map at the end
     \\  --ray ox,oy,oz,dx,dy,dz           count leaves a ray samples vs crosses at the end
@@ -292,8 +292,8 @@ pub fn main() !void {
                 if (!f.alive) continue;
                 if (f.dormant) dormant += 1 else live += 1;
             }
-            try stdout.print("step {d:>4}  active {d:>5}→{d:<5} evals {d:>6}  fronts {d}/{d} dormant  changed {d:>4} (+{d} new, {d} seam)  spawns {d}  {d:.2} ms\n", .{
-                step, s.active_in, s.active_out, s.region_evals, live, dormant, s.bricks_changed, s.bricks_materialised, s.seam_bricks, s.spawns, ms,
+            try stdout.print("step {d:>4}  active {d:>5}→{d:<5} evals {d:>6}  fronts {d}/{d} dormant  changed {d:>4} (+{d} new, {d} seam)  writes {d}/{d} seam/halo  spawns {d}  {d:.2} ms\n", .{
+                step, s.active_in, s.active_out, s.region_evals, live, dormant, s.bricks_changed, s.bricks_materialised, s.seam_bricks, s.seam_writes, s.halo_writes, s.spawns, ms,
             });
             if (opts.phases) try stdout.print("           operate {d:.2}  fronts {d:.2}  apply {d:.2}  frontier {d:.2}  seams {d:.2}  finalize {d:.2}  build {d:.2}  publish {d:.2} ms\n", .{
                 @as(f64, @floatFromInt(s.ns_operate)) / 1e6, @as(f64, @floatFromInt(s.ns_fronts)) / 1e6, @as(f64, @floatFromInt(s.ns_apply)) / 1e6, @as(f64, @floatFromInt(s.ns_frontier)) / 1e6, @as(f64, @floatFromInt(s.ns_seams)) / 1e6, @as(f64, @floatFromInt(s.ns_finalize)) / 1e6, @as(f64, @floatFromInt(s.ns_build)) / 1e6, @as(f64, @floatFromInt(s.ns_publish)) / 1e6,
@@ -303,10 +303,10 @@ pub fn main() !void {
     const snap = world.published();
     try stdout.print("done: {d} steps in {d:.1} ms ({d:.2} ms/step), {d} bricks, {d} nodes, {d} fronts, vid {d}\n", .{ opts.steps, total_ms, total_ms / @as(f64, @floatFromInt(opts.steps + 1)), snap.brick_count, snap.node_count, snap.fronts.len, snap.vid });
     try stdout.print("root_hash    {s}\ncontent_hash {s}\n", .{ loam.dump.hex(snap.rootHash()), loam.dump.hex(snap.contentHash()) });
-    try stdout.print("material {d:.3}  growth {d:.3}  activity {d:.3}\n", .{ seedbed.total(&world, Channel.material.bit()), seedbed.total(&world, Channel.growth.bit()), seedbed.total(&world, Channel.activity.bit()) });
+    try stdout.print("inside {d}  growth {d:.3}  activity {d:.3}\n", .{ seedbed.insideCount(&world), seedbed.total(&world, Channel.growth.bit()), seedbed.total(&world, Channel.activity.bit()) });
 
     if (opts.ray) |r| {
-        const c = try seedbed.rayCount(&world, .{ r[0], r[1], r[2] }, .{ r[3], r[4], r[5] }, Channel.material.mask() | Channel.density.mask(), .primary);
+        const c = try seedbed.rayCount(&world, .{ r[0], r[1], r[2] }, .{ r[3], r[4], r[5] }, Channel.surface.mask() | Channel.density.mask(), .primary);
         try stdout.print("ray: sampled {d} of {d} leaves crossed, {d} nodes tested\n", .{ c.sampled, c.crossed, c.nodes_tested });
     }
     if (opts.active) {
@@ -321,12 +321,14 @@ pub fn main() !void {
         const half: f64 = 64;
         const vals = try seedbed.slice(&world, gpa, sl.bit, sl.axis, sl.coord, .{ -half, -half }, .{ half, half }, sl.res);
         defer gpa.free(vals);
+        if (sl.bit == Channel.surface.bit()) seedbed.occupancy(vals);
         try seedbed.writePgm(sl.path, sl.res, vals, 1.0);
         try stdout.print("slice {s} axis {d} at {d:.1} → {s}\n", .{ registry.name(sl.bit), sl.axis, sl.coord, sl.path });
     }
     for (opts.projections.items) |pr| {
         const vals = try seedbed.project(&world, gpa, pr.bit, pr.axis, .{ -64, -16, -64 }, .{ 64, 112, 64 }, pr.res, pr.res);
         defer gpa.free(vals);
+        if (pr.bit == Channel.surface.bit()) seedbed.occupancy(vals);
         try seedbed.writePgm(pr.path, pr.res, vals, 1.0);
         const comps = try seedbed.components(gpa, vals, pr.res, 0.3);
         try stdout.print("projection {s} along axis {d} → {s} ({d} components above 0.3)\n", .{ registry.name(pr.bit), pr.axis, pr.path, comps });
@@ -340,12 +342,12 @@ pub fn main() !void {
 test "argument grammar: a vector, a damage box, a slice, and a refusal" {
     const gpa = std.testing.allocator;
     const registry = loam.channel.Registry.init();
-    var o = try parseArgs(gpa, &.{ "--scene", "wound", "--steps", "5", "--light", "1,2,3", "--damage", "0,0,0,1,1,1@3", "--slice", "material:z:0:64:x.pgm" }, &registry);
+    var o = try parseArgs(gpa, &.{ "--scene", "wound", "--steps", "5", "--light", "1,2,3", "--damage", "0,0,0,1,1,1@3", "--slice", "surface:z:0:64:x.pgm" }, &registry);
     defer o.slices.deinit(gpa);
     try std.testing.expectEqual(seedbed.Preset.wound, o.scene);
     try std.testing.expectEqual(@as(f64, 2), o.light.?[1]);
     try std.testing.expectEqual(@as(u32, 3), o.damage.?.step);
-    try std.testing.expectEqual(Channel.material.bit(), o.slices.items[0].bit);
+    try std.testing.expectEqual(Channel.surface.bit(), o.slices.items[0].bit);
     try std.testing.expectError(error.UnknownScene, parseArgs(gpa, &.{ "--scene", "oak" }, &registry));
     try std.testing.expectError(error.BadVector, parseArgs(gpa, &.{ "--light", "1,2" }, &registry));
 }

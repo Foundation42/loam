@@ -42,9 +42,10 @@ pub const Range = struct {
 };
 
 /// Channels whose ranges a summary tracks by name. Density and extinction
-/// (transport), emission (emission-only queries), material (what fronts
-/// build). Others are answered by the mask alone.
-pub const tracked = [_]channel.Channel{ .density, .extinction, .emission, .material };
+/// (transport), emission (emission-only queries), material (volumes),
+/// surface (the carrier: a subtree whose surface minimum is positive
+/// holds no zero set). Others are answered by the mask alone.
+pub const tracked = [_]channel.Channel{ .density, .extinction, .emission, .material, .surface };
 
 pub const Summary = struct {
     /// Tight lattice-point bounds of non-zero support, inclusive. Empty
@@ -56,9 +57,15 @@ pub const Summary = struct {
     extinction: Range = .{},
     emission: Range = .{},
     material: Range = .{},
-    /// Largest |finite difference| between adjacent samples, any channel,
-    /// per lattice unit.
+    surface: Range = .{},
+    /// A Lipschitz bound on every channel's reconstruction over the brick,
+    /// per lattice unit: the root-sum-square over axes of the largest
+    /// adjacent coefficient difference along each — the B-spline's
+    /// derivative is a convex combination of those differences (R8).
     max_gradient: f32 = 0,
+    /// The same bound for the surface channel alone: what a sphere tracer
+    /// steps by (|φ|/L). Zero where there is no surface plane.
+    lipschitz: f32 = 0,
     /// Transport majorant: max of density and extinction. Optional in the
     /// spec; here it is derived so it cannot disagree with the ranges.
     majorant: f32 = 0,
@@ -83,7 +90,9 @@ pub const Summary = struct {
             .extinction = Range.merge(a.extinction, b.extinction),
             .emission = Range.merge(a.emission, b.emission),
             .material = Range.merge(a.material, b.material),
+            .surface = Range.merge(a.surface, b.surface),
             .max_gradient = @max(a.max_gradient, b.max_gradient),
+            .lipschitz = @max(a.lipschitz, b.lipschitz),
             .majorant = @max(a.majorant, b.majorant),
             .version = @max(a.version, b.version),
         };
@@ -100,6 +109,7 @@ pub const Summary = struct {
         if (bit == channel.Channel.extinction.bit()) return self.extinction;
         if (bit == channel.Channel.emission.bit()) return self.emission;
         if (bit == channel.Channel.material.bit()) return self.material;
+        if (bit == channel.Channel.surface.bit()) return self.surface;
         return null;
     }
 
@@ -119,7 +129,9 @@ pub const Summary = struct {
         if (!rangeCovers(a.extinction, b.extinction)) return false;
         if (!rangeCovers(a.emission, b.emission)) return false;
         if (!rangeCovers(a.material, b.material)) return false;
+        if (!rangeCovers(a.surface, b.surface)) return false;
         if (a.max_gradient < b.max_gradient) return false;
+        if (a.lipschitz < b.lipschitz) return false;
         if (a.majorant < b.majorant) return false;
         if (a.version < b.version) return false;
         return true;
@@ -136,11 +148,12 @@ pub const Summary = struct {
         h.update(std.mem.asBytes(&self.lo));
         h.update(std.mem.asBytes(&self.hi));
         h.update(std.mem.asBytes(&self.mask));
-        inline for (.{ self.density, self.extinction, self.emission, self.material }) |r| {
+        inline for (.{ self.density, self.extinction, self.emission, self.material, self.surface }) |r| {
             h.update(std.mem.asBytes(&r.min));
             h.update(std.mem.asBytes(&r.max));
         }
         h.update(std.mem.asBytes(&self.max_gradient));
+        h.update(std.mem.asBytes(&self.lipschitz));
         h.update(std.mem.asBytes(&self.majorant));
         h.update(std.mem.asBytes(&self.version));
     }

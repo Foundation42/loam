@@ -7,9 +7,11 @@ whole reader. This is the cross-language half of the dump gate — a
 format only Zig can read is a format with one witness. Run by
 `zig build verify-dump`, which produces a dump with loam-run first.
 
-Checks the shape: every brick's planes are 729 floats, its mask names
-exactly the planes present, keys are ascending and unique, fronts are in
-id order, and the root hash is 32 bytes. Exits non-zero on disagreement.
+Checks the shape: every brick's planes are 11³ floats (the 9³ samples and
+one halo layer, R7), its mask names exactly the planes present, no plane
+says nothing over the brick's own samples (zero, or the band for the
+carrier), keys are ascending and unique, fronts are in id order, and the
+root hash is 32 bytes. Exits non-zero on disagreement.
 """
 
 import os
@@ -34,7 +36,18 @@ def main(path):
         fail("hashes are not 32 bytes")
     channels = d["channels"]
     by_bit = {v: k for k, v in channels.items()}
-    samples = (d["brick_cells"] + 1) ** 3
+    n = d["brick_cells"] + 1
+    hn = n + 2 * d["halo"]
+    samples = hn ** 3
+    band_cells = d["band_cells"]
+
+    def interior(pl):
+        for k in range(1, n + 1):
+            for j in range(1, n + 1):
+                base = hn * (j + hn * k)
+                for i in range(1, n + 1):
+                    yield pl[base + i]
+
     keys = [b["key"] for b in d["bricks"]]
     if keys != sorted(keys) or len(set(keys)) != len(keys):
         fail("brick keys are not ascending and unique")
@@ -43,11 +56,16 @@ def main(path):
         present = {by_bit[i] for i in range(64) if (b["mask"] >> i) & 1}
         if present != set(b["planes"]):
             fail(f"brick {b['key']}: mask names {sorted(present)} but planes are {sorted(b['planes'])}")
+        band = band_cells * (2 ** b["gauge"])
         for name, pl in b["planes"].items():
             if len(pl) != samples:
                 fail(f"brick {b['key']} plane {name}: {len(pl)} samples, not {samples}")
-            if not any(pl):
-                fail(f"brick {b['key']} plane {name}: all zero — an absent channel was instantiated")
+            if name == "surface":
+                present = any(v < band for v in interior(pl))
+            else:
+                present = any(v != 0 for v in interior(pl))
+            if not present:
+                fail(f"brick {b['key']} plane {name}: says nothing — an absent channel was instantiated")
             nonzero += 1
     ids = [f["id"] for f in d["fronts"]]
     if ids != list(range(len(ids))):

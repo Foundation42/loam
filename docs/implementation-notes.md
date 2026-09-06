@@ -3,6 +3,9 @@
 **Status:** Phase 1 built, 2026-09-06: P1.1–P1.7, G1–G8 green and bitten.
 Phase 2 opened the same evening: the first loam-grown thing on screen
 (matryoshka branch `loam`, "Renderer integration, beat 1" below).
+**P2.1 built Sunday 2026-09-06** — the continuous carrier: R7 and G13
+struck by Christian, G13, G9, G10, G11 green and bitten, G1 re-baselined,
+the tree on the lawn with no facets ("P2.1 — the carrier" below).
 Reviewed the same day (Claude Chat against `3ecbb37`, forwarded by
 Christian); the review's three recommendations adopted, see "Review
 2026-09-06" below. Every threshold PROPOSED (brief §2,
@@ -158,6 +161,10 @@ code had to make.
   word, kept on purpose).
 
 ## Gates, as they stand (Debug, serial, seed 7 unless stated)
+
+Phase 1's table, as measured on the Phase 1 carrier (Material); the
+P2.1 entry below has the same gates re-measured on `surface`, and the
+four new ones.
 
 | gate | measure | value | threshold | mutation | bit? |
 |---|---|---|---|---|---|
@@ -661,6 +668,162 @@ second semantics at commit, and machinery Astra asked us not to add
 unless the number forces it; the number does not, it locates the
 customer.
 
+## P2.1 — the carrier (Sunday 2026-09-06, G13, G9, G10, G11, G1 again)
+
+Christian: "Strike both. Dig." R7 (halo + cubic B-spline) and G13 (the
+three-part threshold, exactly as proposed) struck; the ruling he drew
+from it is the one that matters downstream — **a structural feature of
+radius r belongs at a gauge with h ≤ r/2**, and below that "Loam hasn't
+rendered it badly; the feature belongs at a finer gauge." The biology
+can drive the hierarchy: a front that wants radius r knows before
+depositing whether its gauge can carry it.
+
+**What was built.** Every plane is an 11³ block: the brick's 9³ samples
+and one halo layer beyond each face (`brick.zig`: `index` for the
+brick's own samples, `bindex` for the block, `blockPoint`, `isHalo`).
+Reconstruction is the uniform cubic B-spline over the block with the
+samples as control values — `spline`, and `splineJet` with the analytic
+gradient and Hessian; `trilinear` stays as the hanging-node rule's
+interpolant and as G13's instrument variation. The summary's ranges,
+support and Lipschitz bound are taken over the whole block, since the
+reconstruction inside the cube is a convex combination of block
+coefficients, halo included; `max_gradient` is now the root-sum-square
+over axes of the largest adjacent coefficient difference (the B-spline's
+derivative is a convex combination of those differences — the proof is
+one line and G10 is the check), and `lipschitz` is the same for the
+carrier alone. The `surface` channel (bit 16): a signed implicit,
+negative inside, stored clamped to ±3 cells of the brick's gauge; +band
+is "far", the absent value, and a plane whose own samples are all far is
+dropped like an all-zero one (`channel.absentValue`, `isAbsent`,
+`reaches`). The commit composes it: a `SurfaceOp` on the update entry is
+a plane of signed distances (+∞ where it says nothing) with a collar k,
+an order, and a mode — join (`smin`, far the identity) or cut (`max(φ,
+−δ)`, the CSG difference a wound makes); ops are applied in order,
+front id or authoring order, never summed. Fronts sweep a lofted
+capsule between their previous ring and this one (`Capsule` in
+`world.zig`; the front now carries `prev_*`), the profile interpolated
+between the two rings' 24 slots in their own transported frames and
+faded to the envelope on the axis so θ's singularity does not reach the
+bound; Age is set once where the capsule is inside, Activity follows a
+soft step of φ. The frontier materialises a neighbour where a face
+sample is above the floor or nearer than the band. After the seams, the
+HALO PASS (`reconcileHalos`): every changed brick's halo, and every
+neighbour's halo entries inside its cube, recomputed by the anchor rule
+one layer deeper — finest holder's sample, coarse interpolant off the
+coarse lattice, absent in the void — collected in parallel as writes and
+applied in key order through the seam pass's own apply. The guard
+recomputes every halo from the snapshot (`HaloStale`). The sphere tracer
+(`ray.traceSurface`) steps |φ|/L through the cursor's leaves. The
+seedbed authors capsules; `damage` cuts. Matryoshka's leaf reads the
+block with the same B-spline and sphere-traces by the object's L.
+
+**The gates.** G13 first, as the instrument (the numbers below are what
+`zig build test` prints):
+
+| gate | measure | value | threshold | mutation | bit? |
+|---|---|---|---|---|---|
+| G13 | survival and r_rec/r over the sweep, three orientations, nine offsets, on gauge-0 bricks across the seams at the lattice centre | vanishes at 0.5, 0.75; 0.7022…0.8112 at 1.0; 0.9088…0.9191 at 1.5; 0.9541…0.9561 at 2.0; 0.9808 at 3; 0.9894 at 4; 0.9953 at 6 — the prediction to four decimals | prediction to 1%; survive ≥ 1.0; 5% at ≥ 2.0 (worst 4.59%) | gauge doubled → vanishes at 1.0 and 1.5, −30% at 2.0; trilinear → survives at 0.75, 0.9659 at 2.0 | yes; yes (variation) |
+| G9 | 91,193 same-gauge face pairs, value/gradient/Hessian from both holders | max Δ exactly 0 | ≤ 1e-5 | no halo copy → Δ∇ 5.3 | yes |
+| G10 | 19,800 random pairs in bricks with surface | 0 violations; the tightest pair reached 0.707 of its bound | 0 | L from interior axis differences → 45 violations | yes |
+| G11 | 4096 rays against a dense march at h/16 | 1767 hits, 0 hit/miss disagreements, 0 late, 0 off the surface; 21.3 steps per ray; 0 overshoots, 0 stalls | 0, 0, 0, 0 | step 2\|φ\|/L → 167 overshoots in 1024 rays | yes |
+| G1 | frozen reference | `aff19f32…` (from `74cc820b…`) | identical | commit order reversed (P1.6, hand) | yes |
+| G2 | on tissue (inside samples) | 4181 → 5880; 19 branches; 7 young-tissue components | ≥ 3; ≥ 3; no reset | branching off → 1 component; deposit 0 → no tissue | yes; yes |
+| G3 | inside-sample centroid | r̄ 25.69, lower 24.05, 6/6, σ₀ 6.12 | as before | as before | yes |
+| G4 | bricks touched vs dilate 2, by identity | 78 touched, 0 outside, 2276 points regrown | 0 outside | no healing → 0 | yes |
+| G5 | evals over 80 steps | 14,972 (of 584,320) | == Σ active × ops | all-regions | yes |
+
+G13's agreement to four decimals was the halo pass's witness before the
+guard was: the sweep's capsules sit on the lattice centre, a brick
+corner, so every probe straddles eight bricks' seams, and the Zig
+instrument reading `tools/g13_predict.py`'s infinite lattice to 1e-4
+means the halos are what the neighbours hold. G9's exact zero is not
+luck: at a shared face one holder is at cell 7 with t = 1 and the other
+at cell 0 with t = 0, the zero-weighted coefficient contributes an exact
+0, and the three nonzero products are summed in the same association —
+the same sums in the same order. G10's tightest pair at 0.707 of the
+bound is the root-sum-square's own slack on a flat-ish field (one axis
+carries the difference; the bound allows √2 of it); recorded, not
+tightened. G11's 21 steps a ray is the sphere tracer's convergence at
+grazing angles; the renderer's leaf caps it and lives with the rim.
+
+**Three bugs the gates found, and one the doors found.** (1) Diffusion's
+interior stencil still stepped `N` and `N²` through an 11-stride block:
+mass went 1 → 3.25 in the closed-form gate. (2) The frontier created a
+fine neighbour and, later in the same loop, a coarse neighbour into the
+same void — `GaugeConflict` at the tree build in the mixed-gauge seam
+gate. It now collects requests and resolves them finest first through
+`coverCube` against a view that holds what finer requests created, so a
+coarse request over a cube fine requests are filling completes it at
+their gauge. (3) The guards self-test edited a halo entry thinking it a
+face sample, because `unindex` now returns block coordinates; the test
+walks samples by `index`, and the halo corruption became a case of its
+own (`HaloStale`). (4) The Python door and the CLI door disagreed on the
+content hash after agreeing on every brick: front 1's direction, one ulp,
+after a branch — `libloam.so` links glibc's libm, `loam-run` uses
+compiler_rt's musl port, and the brief's "a different libm is
+unmeasured" was measured. `src/fmath.zig` now owns the sim's sin, cos and
+exp (musl's kernels and medium reduction, a Sun exp, pinned bits in a
+test); nothing on the sim path calls a libm. The frozen reference did not
+move — the port is compiler_rt's bits — and the two doors agree.
+
+**Findings.** *Beads:* a chain of a front's own consecutive capsules
+smooth-unioned with k > 0 dips k/4 at every joint, since smin(a, a) =
+a − k/4 — corrugation at every ring. P2.1 deposits with k = 0 (the hard
+union; the zero set of min is the union of zero sets, exact for a tube)
+and records the collar as P2.2's, G12, where a gradient-gated k (blend
+where ∇a·∇b disagree, not along a tube) is the candidate. *Slivers:* the
+G2 mutation read three young components with one front, all at the
+window's trailing edge: one- to three-point clusters born at the oldest
+young step with neighbours a step older. The capsule sweep makes birth
+crisp per ring, so an 8-second window cuts through one; the measure now
+counts components of at least ⟨10⟩ points (a tip's is 130–250). *The
+frontier and the band:* a face sample at exactly +band lets the
+neighbour stay void while the reconstruction just inside the face dips
+to band − h/6 — the truncation seam, ≥ 2.8 cells from any zero set, and
+the tracer never visits a leaf whose surface minimum is positive, so it
+sees nothing of it. *Cross-gauge:* the hanging-node interpolant is still
+trilinear, so a fine face's coefficients are coarse-trilinear values and
+the two B-splines agree to C0 there, not exactly — R9's D2 item, and no
+scene in P2.1 has a tree across a gauge change. *The stencil rule:* a
+plane is a block; nothing may index it by `N`.
+
+**Timings (Debug, serial, seed 7, 60 steps):** 34 ms a step against
+Phase 1's 15; the seam-and-halo phase 33 ms at step 60 (80 changed
+bricks, 5751 halo writes), finalize 23 ms (the 11³ summary), fronts 2.6
+ms. The halo pass first cost 100 ms a step through per-point holder
+lookups; a slab copy for same-gauge neighbours (the value rule is the
+same; the hash did not move) halved the step. The slab copy's first cut
+treated a VOID neighbour cell as a copy of nothing, and the guard
+caught it in the diffusion gate's point mass at a brick corner: a halo
+entry at the edge of a face slab lies on the boundary between cells,
+and a brick in the next cell held it. The void takes the general path,
+and a brick's own halo is recomputed when any neighbour changed, not
+per cell — the guard is the witness, the cache is not. Fetch count per
+reconstruction: 64 against trilinear's 8 (R7 asked for the number); the
+render is untroubled by it. ReleaseFast (200 steps, seed 7, one run
+after the suite went green): 7.82 ms a step serial, 2.70 ms at 16
+threads, the same content hash at both — against Phase 1's 0.69 ms at
+16 threads. Four times the cost at the same thread count, and only 2.9×
+from 16 threads: the serial parts of the commit (the two sorted apply
+passes, the tree build, publish) now lead; the halo pass's general path
+for the void, and the 11³ finalize, are the first things to look at
+when the profile is asked for. Not a crutch: Debug is what we iterate in.
+
+**What stays a node quantity** (R14): Growth, Age, Activity, Light,
+Stimulus, Damage unchanged; Material is no longer written by fronts and
+stays for volumes; the healing operator, inhibition and avoid-self read
+the carrier (inhibited where φ one radius ahead is below `inhibit`, now
+a distance defaulting to 0; avoid-self follows +∇φ). The sapling's habit
+changed with it — it grows more sideways, with long low branches — a
+scene question for Christian's eyes, not a gate's.
+
+**The look.** `matryoshka test_scene --loam -13,0,3 --loam-scale 0.06
+--loam-speed 20 --cam -13.77,3,5.31,0.78,-0.42 --fixed-dt --frames 480
+--shot`: 159 steps, 211 bricks packed. No facets, no shelves, no cracks,
+no view-dependent spikes; smooth collars where the hard union joins;
+the shadow and the reflection; and the finest tips end in nothing,
+which G13 said before the code was written.
+
 ## P1.7 — the seedbed (2026-09-06)
 
 - `loam-run`: named scenes, `--damage box@step`, `--slice`, `--project`
@@ -694,7 +857,11 @@ customer.
 | Refinement / coarsening (D2) | `Snapshot.coverCube` already resolves mixed gauges; `tree.build` refuses overlap loudly | first scene where an organism needs finer bricks than its environment was authored at |
 | Renderer integration (D1) | `ray.Cursor`, `Summary.majorant`, `RegionView.sample` | first loam-grown thing on screen |
 | GPU backend (D3) | Morton keys address bricks already; values are f32 | a capture that misses budget |
-| Reconstruction bases per channel (D4) | `Brick.trilinear` is the one path | measure before choosing |
+| Reconstruction bases per channel (D4) | `Brick.spline` is the one path; `trilinear` the hanging-node interpolant | a channel that wants interpolation (a mask, a label) |
+| The collar (G12): gradient-gated smooth union | `SurfaceOp.k`, `channel.smin`; fronts deposit with k = 0 | P2.2 — a branch base with a crease in a capture |
+| Spline-consistent prolongation across a gauge change | the hang rule copies `trilinear`; the two B-splines agree to C0 | D2's first item (R9): a tree across a gauge change |
+| Halo slab copy for mixed gauges | `haloEmit`, the general path, per point | a mixed-gauge scene where the seam phase leads the profile |
+| Bands for the picture | the carrier is band 0; bark is the ring residual through the capsule | P2.2, P2.3 |
 | Operator scheduling (D5) | fixed order in `World.operators` | rill as host |
 | Ring inheritance at a branch | `World.budSpawn` starts a fresh ring | a branch base that looks wrong in a capture |
 | Frontier into partly filled cubes | `materialiseFrontier` skips an inner node | a diffusion mass check across a gauge boundary that leaks |

@@ -37,31 +37,48 @@ w.run(60)
 print(w.root_hash().hex(), w.stats()["fronts"])
 ```
 
-## Status — Phase 1 green and bitten; the first loam-grown thing is on screen
+## Status — Phase 2.1: the continuous carrier
 
-Matryoshka's `loam` branch mounts a world through `src/loam_bridge.zig`
-and renders its material bricks as a leaf of the dynamic tree, marched
-to an iso-surface from the field's own 9³ samples: a tree on the grass
-beside Suzanne, ray-traced with its shadow, no triangle anywhere in it.
+Matter is the zero set of a continuous signed implicit, `surface`,
+stored in 11³ blocks (the brick's 9³ samples and one halo layer from the
+neighbours) and reconstructed by a cubic B-spline: C2 inside a brick and
+across a same-gauge seam, with a Lipschitz bound in every summary so a
+renderer sphere-traces it by |φ|/L and never overshoots. Fronts sweep
+lofted capsules into it; a wound cuts it. Matryoshka's `loam` branch
+mounts a world through `src/loam_bridge.zig` and renders the carrier's
+bricks as a leaf of the dynamic tree with the same B-spline and the same
+step: a tree on the grass beside Suzanne, ray-traced with its shadow, no
+facet, no seam, no triangle anywhere in it.
 
 ```
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --cam -13.77,3,5.31,0.78,-0.42
 ```
 
-Christian's pose, from the P key. The ridges on the bark are the ring's
-residuals — loop-loft's heat map, made solid — and the collars are where
-buds left; the shadow is the sun's, and the tree stands in the green
-sphere's reflection because the reflection walk found the leaf unasked.
+The representation states what it can know — a structural feature of
+radius r belongs at a gauge with h ≤ r/2 (G13, struck by Christian from
+`tools/g13_predict.py`'s theory before the sweep ran) — and the finest
+tips of the sapling's twigs are missing from the picture by exactly that
+ruling, the first customer of refinement.
+
+### Phase 2.1, the carrier's gates
+
+| gate | claim | as measured (Debug, serial) |
+|---|---|---|
+| G13 thin feature | sub-gauge structure survives the B-spline as theory predicts | survival and radius agree with the predictor to four decimals across three orientations and nine offsets; a capsule at r/h ≥ 1 survives, at r/h ≥ 2 its radius is within 4.6%; the gauge doubled loses it |
+| G9 continuity | the carrier is C2 across a same-gauge seam | 91,193 shared-face pairs, value, gradient and Hessian from both holders: exactly equal; no halo → they differ |
+| G10 bound | the summary's Lipschitz bound is conservative | 19,800 random pairs, 0 exceed it; the old axis-only bound is exceeded 45 times |
+| G11 sphere trace | a march stepped by \|φ\|/L never lands inside or tunnels | 4096 rays against a dense march: 0 disagreements, 0 late, 0 overshoots; stepping 2\|φ\|/L overshoots 167 times in 1024 |
+| G1 again | replay with the new carrier | one frozen reference, from Zig, from Python, across processes, with any thread count; the sim owns its sin, cos and exp so no libm can move it |
 
 ### Phase 1, all eight gates
 
 | gate | claim | as measured (Debug, serial, seed 7) |
 |---|---|---|
 | G1 replay | (seed, fields, operators) → byte-identical snapshot | same hash serial and over the JobSystem; across two processes; from Python and from the CLI; equal to a frozen reference in Debug and ReleaseFast |
-| G2 growth | a seeded front builds persistent branching structure, no mesh | 9 branches; 5 components of young material at peak (1 with branching off); material never resets |
+| G2 growth | a seeded front builds persistent branching structure, no mesh | 19 branches; 7 components of young tissue at peak (1 with branching off); tissue never resets |
 | G3 tropism | matched ± stimulus pairs across 6 seeded directions produce a positive directional centroid response | 95% lower confidence bound > 0, every pair has the correct sign, mean response exceeds 3× natural wander RMS; zero-coefficient and reversed-gradient mutations both fail |
-| G4 repair | removing material re-activates locally only | 54 bricks touched, 0 beyond two bricks of the wound; untouched bricks are the same pointers |
-| G5 dormancy | dormant tissue costs nothing | 12,480 evaluations where iterating every brick would be 584,320 |
+| G4 repair | cutting tissue re-activates locally only | 78 bricks touched, 0 beyond two bricks of the wound; untouched bricks are the same pointers |
+| G5 dormancy | dormant tissue costs nothing | 14,972 evaluations where iterating every brick would be 584,320 |
 | G6 skip | a ray rejects subtrees from summaries alone | 12 of 64 crossed leaves sampled |
 | G7 narrow query | shadow queries do less work than primary | shadow gathers 25% of primary's channel bytes |
 | G8 snapshot safety | N readable while N+1 simulates | 10 full re-hashes of vid 22 while the writer reached 62, zero mismatches, no lock |
@@ -75,7 +92,7 @@ Bit-identity is claimed per binary on one machine.
 
 ```sh
 zig build                                   # library, libloam.so (the C seam), loam-run
-zig build run -- --steps 120 --project material:z:256:tree.pgm
+zig build run -- --steps 120 --project surface:z:256:tree.pgm
 zig build run -- --scene wound --damage -10,18,-10,10,30,10@100 --steps 160 --phases
 zig build run -- --all-regions --steps 40   # the G5 mutation, as a number
 zig build run -- --threads 16 --steps 200 --phases      # the parallel phases over common's JobSystem; same hash
@@ -94,24 +111,26 @@ count.
 |---|---|
 | `src/lattice.zig` | the 20-bit dyadic lattice, Morton keys, the world↔lattice door |
 | `src/channel.zig` | channel bits, the registry with its user range, per-channel clamps |
-| `src/brick.zig` | 8-cell bricks at a gauge, 9³ node-centred samples, popcount-packed planes |
-| `src/summary.zig` | the conservative node payload: tight bounds, mask, ranges, gradient, majorant, version |
+| `src/brick.zig` | 8-cell bricks at a gauge, 11³ blocks (9³ samples and a halo), the cubic B-spline and its derivatives, popcount-packed planes |
+| `src/summary.zig` | the conservative node payload: tight bounds, mask, ranges, Lipschitz bounds, majorant, version |
+| `src/fmath.zig` | the sim's own sin, cos and exp: the same bits in every binary |
 | `src/tree.zig` | the persistent 8-way tree, Merkle hashes, snapshots, point lookup and sampling |
-| `src/update.zig` | region-local update buffers: deltas, materialise, spawns |
-| `src/world.zig` | the step: operate → fronts → commit (frontier, seams, summaries) → publish; the hazard-slot reader |
+| `src/update.zig` | region-local update buffers: deltas, surface ops (join, cut), materialise, spawns |
+| `src/world.zig` | the step: operate → fronts (the capsule sweep) → commit (frontier, seams, halos, summaries) → publish; the hazard-slot reader |
 | `src/operators.zig` | Diffusion, Decay, Advection, Healing; the operator vtable |
 | `src/front.zig` | the Lagrangian front carrying loop-loft's ring |
-| `src/ray.zig` | the traversal cursor: near-to-far, summary rejection, the `--no-skip` instrument |
+| `src/ray.zig` | the traversal cursor: near-to-far, summary rejection, the `--no-skip` instrument; the sphere tracer |
 | `src/guards.zig` | every invariant, checkable; corrupted one by one in the self-test |
 | `src/dump.zig` | the snapshot as one canonical struple map |
 | `src/seedbed.zig` | the authoring verbs and the named scenes |
 | `src/run.zig` | `loam-run` |
 | `src/capi.zig` | the C seam (`libloam.so`) |
-| `src/thresholds.zig` | the gate numbers, PROPOSED |
+| `src/thresholds.zig` | the gate numbers, PROPOSED until struck; G13's are struck, with the prediction frozen beside them |
 | `src/tests.zig` | the gates, each with its named mutation |
 | `py/loam/` | the ctypes binding and the dump reader |
 | `py/tests/` | the Python gates |
 | `tools/read_dump.py` | the cross-language dump reader (`zig build verify-dump`) |
+| `tools/g13_predict.py` | G13's theory: what the B-spline does to a thin capsule, before the sweep ran |
 | `docs/` | the spec, the brief, loop-loft, and the ledger |
 
 ## Depends on

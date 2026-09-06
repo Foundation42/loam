@@ -14,10 +14,12 @@ and age is structured history around that carrier.
 
 ## 1. Rulings asked (Christian's to strike before P2.1)
 
-Status at the close of 2026-09-06: Astra's tie-breaker
-(`representation2.md`) recommends striking R7 for the halo + B-spline,
-adopting `surface`, adding G13, keeping the field canonical, and starting
-P2.1 in a fresh session from this brief. Christian's word is the strike.
+Status, Sunday 2026-09-06: **R7 STRUCK** and **G13 STRUCK** by Christian
+("Strike both. Dig."), with the ruling he drew from the number — a
+structural feature of radius r belongs at a gauge with h ≤ r/2; below
+that the feature belongs at a finer gauge, not at a prefilter. P2.1 is
+built (the ledger, "P2.1 — the carrier"); R8–R14 stand as proposed
+against the code.
 
 **R7 — Reconstruction: a scalar halo and a cubic B-spline.** Every
 channel stays one plane; a brick stores an 11³ block — its 9³ samples and
@@ -100,7 +102,7 @@ that must bite.
 | G10 Bound | the summary's L is conservative | for every brick, max over probe pairs of \|φ(x) − φ(y)\|/‖x − y‖ ≤ L | ≤ L, exactly | L from finite differences instead of coefficients → a pair exceeds it |
 | G11 Sphere trace | a march stepped by \|φ\|/L never overshoots the zero set | for N random rays, the first sign change lies within one bisection tolerance of the hit; no hit missed that a dense march finds | 0 misses in ⟨4096⟩ rays | step by 2\|φ\|/L → overshoots |
 | G12 Collar | smooth union is smooth at a branch | \|∇φ\| continuous across the junction; provenance-blended band signal continuous | no jump above ⟨…⟩ | hard min → a crease; nearest-front ownership → the bark rotates |
-| G13 Thin feature | sub-gauge structure survives the B-spline | a straight capsule across a radius sweep ⟨0.5 … 6⟩ r/h, nine axis offsets in the cell, three orientations: whether the zero set survives, and r_rec/r worst and best | (a) the instrument reads the prediction: survival matches, r_rec/r within ⟨1%⟩ of `tools/g13_predict.py`; (b) survives at r/h ≥ ⟨1.0⟩; (c) \|r_rec − r\|/r ≤ ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and thinner is refinement's problem | gauge doubled without refinement → vanishes at 1.0, thins 30% at 2.0 (bites b, c); control values half a cell off → ±40% at 2.0 (bites a, c); trilinear → survives lower, thins less (bites a only: the instrument's variation, recorded) |
+| G13 Thin feature (STRUCK) | sub-gauge structure survives the B-spline | a straight capsule across a radius sweep ⟨0.5 … 6⟩ r/h, nine axis offsets in the cell, three orientations: whether the zero set survives, and r_rec/r worst and best | (a) the instrument reads the prediction: survival matches, r_rec/r within ⟨1%⟩ of `tools/g13_predict.py`; (b) survives at r/h ≥ ⟨1.0⟩; (c) \|r_rec − r\|/r ≤ ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and thinner is refinement's problem | gauge doubled without refinement → vanishes at 1.0, thins 30% at 2.0 (bites b, c); control values half a cell off → ±40% at 2.0 (bites a, c); trilinear → survives lower, thins less (bites a only: the instrument's variation, recorded) |
 | G1 again | replay, end to end, with the new carrier | frozen reference, re-baselined as a reviewed event with old and new in the ledger | identical | commit order reversed |
 | The look | the trunk with no facets | the close-up at `--loam-scale 0.06` | Christian's eyes | — |
 
@@ -155,7 +157,7 @@ sliver; the dense march runs at a sixteenth of a cell.
 
 ## 3. Beats
 
-**P2.1 — the carrier.** Halo blocks; B-spline reconstruction and its
+**P2.1 — the carrier** (built 2026-09-06; the ledger has the numbers). Halo blocks; B-spline reconstruction and its
 analytic gradient; `max_gradient` from coefficients; the `surface`
 channel with narrow-band frontier (a brick is materialised where the
 band reaches a face, and a brick whose φ minimum is positive holds no

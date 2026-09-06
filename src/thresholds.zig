@@ -16,6 +16,12 @@ pub const G2_MIN_YOUNG_COMPONENTS: usize = 3; // PROPOSED
 pub const G2_YOUNG_WINDOW_S: f32 = 8; // PROPOSED
 /// G2: fronts spawned by branching (not by seeding) — the mechanism firing.
 pub const G2_MIN_BRANCHES: usize = 3; // PROPOSED
+/// G2: a young component counts only from this many lattice points. The
+/// carrier's birth times are crisp per swept capsule, so the window's
+/// trailing edge cuts through a ring and leaves one- to three-point
+/// slivers whose neighbours were born a step earlier; a live tip's young
+/// tissue is a hundred points and more (P2.1: 130–250 at the checkpoints).
+pub const G2_MIN_COMPONENT_POINTS: usize = 10; // PROPOSED
 /// G2: steps for the growth run; checkpoints every G2_CHECK_EVERY.
 pub const G2_STEPS: u32 = 160; // PROPOSED
 pub const G2_CHECK_EVERY: u32 = 10; // PROPOSED
@@ -63,7 +69,9 @@ pub const G7_MAX_SHADOW_FRACTION: f64 = 0.5; // PROPOSED
 ///
 /// The thresholds were written from that prediction BEFORE the sweep ran
 /// (Claude Chat, Sunday 2026-09-06: "otherwise the first result becomes
-/// the threshold, which is the G3 situation again"). Three parts:
+/// the threshold, which is the G3 situation again"), and STRUCK by
+/// Christian the same day, exactly as proposed. The sweep then read the
+/// prediction to four decimals (the ledger, P2.1). Three parts:
 ///   (a) the INSTRUMENT agrees with the prediction — survival matches at
 ///       every swept r/h, and r_rec/r (worst and best over the same
 ///       offsets and orientations) is within G13_PREDICTION_TOL of it;
@@ -87,11 +95,11 @@ pub const G7_MAX_SHADOW_FRACTION: f64 = 0.5; // PROPOSED
 /// −40%/+31% at 2.0 — bites (a) and (c); trilinear in place of the
 /// B-spline survives lower (0.71) and thins less (−3.4% at 2.0) — bites
 /// (a) only, and is recorded as the instrument's variation, not a defect.
-pub const G13_SWEEP = [_]f32{ 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0 }; // PROPOSED
-pub const G13_SURVIVE_R_OVER_H: f32 = 1.0; // PROPOSED
-pub const G13_FAITHFUL_R_OVER_H: f32 = 2.0; // PROPOSED
-pub const G13_MAX_BIAS: f32 = 0.05; // PROPOSED — of r
-pub const G13_PREDICTION_TOL: f32 = 0.01; // PROPOSED — of r, worst and best separately
+pub const G13_SWEEP = [_]f32{ 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0 }; // STRUCK 2026-09-06
+pub const G13_SURVIVE_R_OVER_H: f32 = 1.0; // STRUCK 2026-09-06
+pub const G13_FAITHFUL_R_OVER_H: f32 = 2.0; // STRUCK 2026-09-06 — "a structural feature of radius r belongs at a gauge with h ≤ r/2"
+pub const G13_MAX_BIAS: f32 = 0.05; // STRUCK 2026-09-06 — of r
+pub const G13_PREDICTION_TOL: f32 = 0.01; // STRUCK 2026-09-06 — of r, worst and best separately
 pub const G13Prediction = struct { r_over_h: f32, survives: bool, rec_min: f32, rec_max: f32 };
 /// `python3 tools/g13_predict.py --radii 0.5,0.75,1.0,1.5,2.0,3.0,4.0,6.0 --zig`, 2026-09-06.
 pub const G13_PREDICTED = [_]G13Prediction{
@@ -105,6 +113,15 @@ pub const G13_PREDICTED = [_]G13Prediction{
     .{ .r_over_h = 6.00, .survives = true, .rec_min = 0.9953, .rec_max = 0.9953 },
 };
 
+/// G9 (Phase 2): both holders of a same-gauge face reconstruct from the
+/// same 64 coefficients, so value, gradient and Hessian agree to float
+/// tolerance — the same sums in the same order.
+pub const G9_TOL: f32 = 1e-5; // PROPOSED
+
+/// G11 (Phase 2): rays in the sphere-tracer gate. Zero misses, zero
+/// overshoots, zero late hits, in all of them.
+pub const G11_RAYS: u32 = 4096; // PROPOSED
+
 /// The change floor: a brick whose largest committed delta is below this
 /// is not active next step, and a boundary sample below it does not
 /// materialise a neighbour.
@@ -116,5 +133,8 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// order changed this hash and G1 still passed, because both runs
 /// reversed. Re-baseline only as a reviewed event, with the old and new
 /// values in the ledger and the reason beside them. Baselines: P1.6
-/// `371e0e2d…`; review 2026-09-06 `74cc820b…` (Age became birth time).
-pub const G1_REFERENCE: []const u8 = "74cc820b93395e24d24e4def8e52b2a7030d006ff1100fe991c2cd0d5cbd9554";
+/// `371e0e2d…`; review 2026-09-06 `74cc820b…` (Age became birth time);
+/// P2.1 `aff19f32…` (the carrier: fronts sweep capsules into `surface`,
+/// planes are 11³ blocks, the wound is a cut, fronts carry their
+/// previous ring).
+pub const G1_REFERENCE: []const u8 = "aff19f3260151289dfaa53e939f89a70fccf892760f1e6774aa32fa2b0c05211";

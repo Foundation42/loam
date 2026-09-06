@@ -9,11 +9,17 @@
 //!   - SUMMARY: a leaf's summary is its brick's, recomputed; a parent's
 //!     covers each child's (bounds, mask, ranges, gradient, majorant,
 //!     version). Conservative all the way up.
-//!   - PLANES: `planes.len == popCount(mask)`; no plane is all zero
-//!     (absent channels are not instantiated).
+//!   - PLANES: `planes.len == popCount(mask)`; no plane says nothing over
+//!     the brick's own samples (absent channels are not instantiated).
 //!   - SEAM: every holder of a shared lattice point reconstructs the same
 //!     value there, for every channel any holder has; and at points
 //!     between shared samples on a shared face, too.
+//!   - HALO: every halo entry of every brick is what the anchor rule one
+//!     layer deeper says — the finest holder's sample, the coarse
+//!     interpolant off the coarse lattice, the absent value in the void —
+//!     recomputed here from the snapshot by the slow general path. Same-
+//!     gauge neighbours then share their 64 coefficients across the face
+//!     and the B-spline is C2 there; G9 measures it.
 //!   - ACTIVE: every active key is a brick or a live front's brick; every
 //!     dirty key is a brick; both are sorted and unique.
 
@@ -33,6 +39,7 @@ pub const Violation = error{
     PlaneCountMismatch,
     AbsentChannelAllocated,
     SeamDisagrees,
+    HaloStale,
     ActiveKeyUnknown,
     DirtyKeyUnknown,
     KeysNotSortedUnique,
@@ -42,6 +49,7 @@ pub const Violation = error{
 pub fn check(s: *const tree.Snapshot) Violation!void {
     if (s.root) |r| try checkNode(s.gpa, r);
     try checkSeams(s);
+    try checkHalos(s);
     try checkKeys(s);
 }
 
@@ -49,8 +57,12 @@ fn checkNode(gpa: std.mem.Allocator, n: *const tree.Node) Violation!void {
     switch (n.kind) {
         .leaf => |b| {
             if (b.planes.len != @popCount(b.mask)) return Violation.PlaneCountMismatch;
-            for (b.planes) |pl| {
-                if (Brick.planeMaxAbs(pl) == 0) return Violation.AbsentChannelAllocated;
+            var bit: u6 = 0;
+            while (true) : (bit += 1) {
+                if (b.plane(bit)) |pl| {
+                    if (b.planeAbsent(bit, pl)) return Violation.AbsentChannelAllocated;
+                }
+                if (bit == 63) break;
             }
             // Recompute through a scratch clone so the brick is untouched.
             const c = Brick.clone(gpa, b) catch return Violation.OutOfMemory;
@@ -128,6 +140,55 @@ fn agree(hs_all: []const *const Brick, q: [3]f64) Violation!void {
             }
         }
         if (bit == 63) break;
+    }
+}
+
+/// The value a halo entry must hold, from the snapshot alone: the finest
+/// holder of the point (ties by lowest key — equal by the seam contract),
+/// its sample or its interpolant; the absent value where nothing holds it.
+pub fn expectedHalo(s: *const tree.Snapshot, target: *const Brick, bit: u6, p: [3]i64) f32 {
+    const bd = target.band();
+    if (p[0] < 0 or p[1] < 0 or p[2] < 0 or p[0] > lattice.CELLS or p[1] > lattice.CELLS or p[2] > lattice.CELLS) return channel.absentValue(bit, bd);
+    var hs: [8]*const Brick = undefined;
+    const n = s.findAll(p, &hs);
+    if (n == 0) return channel.absentValue(bit, bd);
+    var finest = hs[0];
+    for (hs[1..n]) |h| {
+        if (h.key.level < finest.key.level or (h.key.level == finest.key.level and h.key.raw() < finest.key.raw())) finest = h;
+    }
+    var v: f32 = undefined;
+    if (finest.localOf(p)) |l| {
+        v = finest.get(bit, l[0], l[1], l[2]);
+    } else {
+        v = finest.trilinear(bit, .{ @floatFromInt(p[0]), @floatFromInt(p[1]), @floatFromInt(p[2]) });
+    }
+    if (bit == channel.Channel.surface.bit()) v = @min(v, bd);
+    return v;
+}
+
+fn checkHalos(s: *const tree.Snapshot) Violation!void {
+    const bs = s.bricks(s.gpa) catch return Violation.OutOfMemory;
+    defer s.gpa.free(bs);
+    for (bs) |b| {
+        var bk: u32 = 0;
+        while (bk < brick.HN) : (bk += 1) {
+            var bj: u32 = 0;
+            while (bj < brick.HN) : (bj += 1) {
+                var bi: u32 = 0;
+                while (bi < brick.HN) : (bi += 1) {
+                    const hb = [3]u32{ bi, bj, bk };
+                    if (!Brick.isHalo(hb)) continue;
+                    const p = b.blockPoint(hb);
+                    const idx = Brick.bindex(bi, bj, bk);
+                    var mask = b.mask;
+                    while (mask != 0) {
+                        const bit: u6 = @intCast(@ctz(mask));
+                        mask &= mask - 1;
+                        if (b.plane(bit).?[idx] != expectedHalo(s, b, bit, p)) return Violation.HaloStale;
+                    }
+                }
+            }
+        }
     }
 }
 

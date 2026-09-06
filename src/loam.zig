@@ -31,6 +31,7 @@ const std = @import("std");
 pub const lattice = @import("lattice.zig");
 pub const channel = @import("channel.zig");
 pub const rng = @import("rng.zig");
+pub const fmath = @import("fmath.zig");
 pub const thresholds = @import("thresholds.zig");
 pub const summary = @import("summary.zig");
 pub const brick = @import("brick.zig");
@@ -64,6 +65,7 @@ test {
     _ = lattice;
     _ = channel;
     _ = rng;
+    _ = fmath;
     _ = summary;
     _ = brick;
     _ = tree;

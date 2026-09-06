@@ -351,14 +351,23 @@ pub const Snapshot = struct {
         }
     }
 
-    /// Continuous reconstruction of `bit` at `p` (lattice units): zero
-    /// outside every brick. Any holder of a shared point answers the
-    /// same by the seam contract.
+    /// Continuous reconstruction of `bit` at `p` (lattice units): the
+    /// cubic B-spline of the holder's block (R7); the absent value
+    /// outside every brick — zero, or for the carrier the band at the
+    /// finest gauge, a lower bound on how far the nearest surface is.
+    /// Same-gauge holders of a shared point answer the same to C2 by the
+    /// seam contract; across a gauge change the coefficients agree and
+    /// the reconstructions agree to C0 (R9, D2 for the rest).
     pub fn sample(self: *const Snapshot, bit: u6, p: [3]f64) f32 {
-        const b = self.findLeaf(.{ floorI(p[0]), floorI(p[1]), floorI(p[2]) }) orelse return null_or_zero;
-        return b.trilinear(bit, p);
+        const b = self.findLeaf(.{ floorI(p[0]), floorI(p[1]), floorI(p[2]) }) orelse return channel.absentValue(bit, channel.band(1));
+        return b.spline(bit, p);
     }
-    const null_or_zero: f32 = 0;
+
+    /// The reconstruction with its analytic derivatives, or null in the void.
+    pub fn sampleJet(self: *const Snapshot, bit: u6, p: [3]f64) ?brick.Brick.Jet {
+        const b = self.findLeaf(.{ floorI(p[0]), floorI(p[1]), floorI(p[2]) }) orelse return null;
+        return b.splineJet(bit, p);
+    }
 
     /// Central-difference gradient at `p` with step `h`, per lattice unit.
     pub fn gradient(self: *const Snapshot, bit: u6, p: [3]f64, h: f64) [3]f64 {

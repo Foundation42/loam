@@ -24,9 +24,16 @@
 //!      face governs the face; the fine brick loses face detail and gains
 //!      C⁰ continuity across the seam.
 //!
-//! `guards.zig` checks both by reconstructing every shared face from both
-//! sides. This is the whole point of P1.2 and the gate that pays for it
-//! straddles two gauges.
+//!   3. HALO (R7). A brick's block carries one layer beyond each face,
+//!      copied from whoever holds that point by the same rule taken one
+//!      layer deeper — the finest holder's sample, or the coarse
+//!      interpolant where the point is off the coarse lattice. Two
+//!      same-gauge neighbours then reconstruct the shared face from the
+//!      same 64 coefficients: C2 across the seam, which G9 measures.
+//!
+//! `guards.zig` checks all three by reconstructing every shared face and
+//! recomputing every halo from the snapshot. This is the whole point of
+//! P1.2 and the gate that pays for it straddles two gauges.
 //!
 //! ── Activity ─────────────────────────────────────────────────────────────
 //!
@@ -51,6 +58,7 @@ const front = @import("front.zig");
 const update = @import("update.zig");
 const operators = @import("operators.zig");
 const rng = @import("rng.zig");
+const fmath = @import("fmath.zig");
 const thresholds = @import("thresholds.zig");
 
 const Key = lattice.Key;
@@ -74,6 +82,10 @@ pub const Policy = struct {
     default_gauge: u5 = 0,
     /// Active bricks per job in the parallel phase.
     chunk: u32 = 8,
+    /// The halo pass. False is G9's mutation: the halos stay at the absent
+    /// value and the two holders of a face reconstruct from different
+    /// coefficients — C0 at best. Never false outside a gate.
+    halo: bool = true,
 };
 
 pub const StepStats = struct {
@@ -85,6 +97,7 @@ pub const StepStats = struct {
     bricks_materialised: u64 = 0,
     seam_bricks: u64 = 0,
     seam_writes: u64 = 0,
+    halo_writes: u64 = 0,
     spawns: u64 = 0,
     deaths: u64 = 0,
     diffusion_clamped: u64 = 0,
@@ -533,7 +546,11 @@ pub const World = struct {
             }.lt);
             for (sk.entries.items) |local| {
                 const ru = try self.buffer.region(local.key);
-                var mask = local.mask;
+                // The carrier's ops ride across whole: composed at commit,
+                // in id order, never summed (R10).
+                for (local.surface_ops.items) |op| try ru.surface_ops.append(self.buffer.arena.allocator(), op);
+                if (local.surface_ops.items.len > 0) ru.mask |= Channel.surface.mask();
+                var mask = local.mask & ~Channel.surface.mask();
                 while (mask != 0) {
                     const bit: u6 = @intCast(@ctz(mask));
                     mask &= mask - 1;
@@ -576,14 +593,16 @@ pub const World = struct {
         return .{ f.pos[0] + f.dir[0] * (r + 1), f.pos[1] + f.dir[1] * (r + 1), f.pos[2] + f.dir[2] * (r + 1) };
     }
 
-    /// Growth potential one radius ahead of the front, and nothing of its
-    /// own kind in the way there (inhibition).
+    /// Growth potential one radius ahead of the front, and no tissue in
+    /// the way there (inhibition): the carrier one radius ahead is not
+    /// below `inhibit`. A front's own cap ends one radius short of that
+    /// point, so it does not inhibit itself.
     fn canGrow(_: *World, base: *const Snapshot, f: *const Front) bool {
         const ahead = aheadOf(f);
         const g = base.sample(Channel.growth.bit(), ahead);
         if (g <= thresholds.EPSILON) return false;
-        const m = base.sample(Channel.material.bit(), ahead);
-        return m <= f.params.inhibit;
+        const phi = base.sample(Channel.surface.bit(), ahead);
+        return phi >= f.params.inhibit;
     }
 
     fn stepFront(self: *World, base: *const Snapshot, f: *Front, dt: f64, sink: *Sink) !void {
@@ -594,11 +613,12 @@ pub const World = struct {
         const h: f64 = @max(1.0, @as(f64, p.radius) * 0.5);
         const gl = base.gradient(Channel.light.bit(), f.pos, h);
         const gs = base.gradient(Channel.stimulus.bit(), f.pos, h);
-        const gm = base.gradient(Channel.material.bit(), f.pos, h);
+        // The carrier rises away from tissue, so avoid-self follows +∇φ.
+        const gphi = base.gradient(Channel.surface.bit(), f.pos, h);
         const nz = [3]f64{ stream.gauss(), stream.gauss(), stream.gauss() };
         var v: [3]f64 = undefined;
         inline for (0..3) |a| {
-            v[a] = @as(f64, p.tropism_light) * gl[a] + @as(f64, p.tropism_stimulus) * gs[a] - @as(f64, p.avoid_self) * gm[a] + @as(f64, p.persist) * f.dir[a] + @as(f64, p.wander) * nz[a];
+            v[a] = @as(f64, p.tropism_light) * gl[a] + @as(f64, p.tropism_stimulus) * gs[a] + @as(f64, p.avoid_self) * gphi[a] + @as(f64, p.persist) * f.dir[a] + @as(f64, p.wander) * nz[a];
         }
         const vl = len3(v);
         const old_dir = f.dir;
@@ -626,7 +646,7 @@ pub const World = struct {
 
         // The ring CA — loop-loft's update, one ring per step.
         const t: f32 = @floatCast(@min(1.0, f.s / @as(f64, p.length)));
-        const envelope: f32 = p.radius * (1 - p.taper * t) * (1 + p.bulge * @sin(2 * std.math.pi * p.waves * t));
+        const envelope: f32 = p.radius * (1 - p.taper * t) * (1 + p.bulge * fmath.sinf(2 * std.math.pi * p.waves * t));
         ringStep(f, &stream, envelope);
 
         // Deposit the ring into the field; draw down the potential around it.
@@ -652,6 +672,13 @@ pub const World = struct {
         }
 
         f.brick = self.brickUnder(base, f.pos);
+        // This ring is the next sweep's start.
+        f.prev_pos = f.pos;
+        f.prev_dir = f.dir;
+        f.prev_normal = f.normal;
+        f.prev_roll = f.roll;
+        f.prev_envelope = envelope;
+        for (f.ring, 0..) |sl, i| f.prev_r[i] = sl.r;
     }
 
     fn ringStep(f: *Front, stream: *rng.Stream, envelope: f32) void {
@@ -684,7 +711,7 @@ pub const World = struct {
             var d: i32 = -w;
             while (d <= w) : (d += 1) {
                 const i: usize = @intCast(@mod(c + d, @as(i32, @intCast(N))));
-                f.ring[i].r += s * (0.5 + 0.5 * @cos(std.math.pi * @as(f32, @floatFromInt(d)) / @as(f32, @floatFromInt(w))));
+                f.ring[i].r += s * (0.5 + 0.5 * fmath.cosf(std.math.pi * @as(f32, @floatFromInt(d)) / @as(f32, @floatFromInt(w))));
             }
         }
         // jitter clamp, and the bud enzyme: hot for k rings earns the tag
@@ -707,12 +734,14 @@ pub const World = struct {
         const theta: f64 = 2 * std.math.pi * @as(f64, @floatFromInt(si)) / @as(f64, front.SLOTS) + f.roll;
         const bin = cross(f.dir, f.normal);
         var radial: [3]f64 = undefined;
-        inline for (0..3) |a| radial[a] = @cos(theta) * f.normal[a] + @sin(theta) * bin[a];
+        const ct = fmath.cos(theta);
+        const st = fmath.sin(theta);
+        inline for (0..3) |a| radial[a] = ct * f.normal[a] + st * bin[a];
         const rr: f64 = envelope + f.ring[si].r;
         var pos: [3]f64 = undefined;
         var dir: [3]f64 = undefined;
-        const ca = @cos(@as(f64, p.branch_angle));
-        const sa = @sin(@as(f64, p.branch_angle));
+        const ca = fmath.cos(@as(f64, p.branch_angle));
+        const sa = fmath.sin(@as(f64, p.branch_angle));
         inline for (0..3) |a| {
             pos[a] = f.pos[a] + radial[a] * rr;
             dir[a] = ca * f.dir[a] + sa * radial[a];
@@ -745,30 +774,38 @@ pub const World = struct {
         return @intCast(@min(@as(i64, lattice.CELLS), @max(@as(i64, 0), v)));
     }
 
-    /// Stamp the ring into Material, Activity and Age; draw down Growth
-    /// in a sphere of two radii. Age holds the FED TIME at which a sample
-    /// was first laid, so the age of tissue is `now − Age` — derivable
-    /// without an ageing operator touching dormant bricks, which is the
-    /// only encoding of history G5 allows.
+    /// Sweep the capsule from the previous ring to this one into the
+    /// carrier (R11), stamp Activity and Age, and draw down Growth in a
+    /// sphere of two radii. Between ring k−1 and ring k the front sweeps
+    /// a lofted capsule whose radius at (s, θ) interpolates the two
+    /// rings' profiles; at every node in reach it evaluates the signed
+    /// implicit ρ − r(s, θ) and hands it to the commit as a surface op,
+    /// smooth-unioned in with the front's collar. Nothing is quantised:
+    /// the ring's residuals are the bark, laid at the ring's own
+    /// resolution and reconstructed by the B-spline. Age holds the FED
+    /// TIME at which a sample first fell inside, so the age of tissue is
+    /// `now − Age` — derivable without an ageing operator touching
+    /// dormant bricks, which is the only encoding of history G5 allows.
     fn stamp(self: *World, base: *const Snapshot, f: *const Front, dt: f64, envelope: f32, avail: f32, sink: *Sink) !void {
         const p = f.params;
         const now_s: f32 = @floatCast(@as(f64, @floatFromInt(self.time_ns)) / 1e9);
         var rmax: f32 = 0;
         for (f.ring) |sl| rmax = @max(rmax, @abs(sl.r));
+        for (f.prev_r) |r| rmax = @max(rmax, @abs(r));
         const soft: f64 = 0.75;
-        const reach: f64 = @as(f64, envelope + rmax) + soft;
-        const half_len: f64 = @max(@as(f64, p.speed) * dt, 1.0) * 0.5 + soft;
+        const band0: f64 = channel.band(@as(u32, 1) << self.policy.default_gauge);
+        const reach: f64 = @as(f64, @max(envelope, f.prev_envelope) + rmax) + band0;
         const draw_r: f64 = 2.0 * @as(f64, p.radius);
         const draw: f32 = p.consume * @as(f32, @floatCast(dt));
-        const ext = @max(reach + half_len, draw_r);
+        const depositing = p.deposit > 0 and avail > 0;
+        const ext = @max(reach, draw_r);
         var lo: [3]i64 = undefined;
         var hi: [3]i64 = undefined;
         inline for (0..3) |a| {
-            lo[a] = @max(@as(i64, 0), tree.floorI(f.pos[a] - ext));
-            hi[a] = @min(@as(i64, lattice.CELLS), tree.floorI(f.pos[a] + ext) + 1);
+            lo[a] = @max(@as(i64, 0), tree.floorI(@min(f.pos[a], f.prev_pos[a]) - ext));
+            hi[a] = @min(@as(i64, lattice.CELLS), tree.floorI(@max(f.pos[a], f.prev_pos[a]) + ext) + 1);
         }
-        const bin = cross(f.dir, f.normal);
-        const deposit: f32 = p.deposit * @as(f32, @floatCast(dt)) * @min(1.0, avail);
+        const cap = Capsule.of(f, envelope);
         const gpa = self.gpa;
 
         // Bricks under the box: what covers each default-gauge cube —
@@ -795,8 +832,10 @@ pub const World = struct {
             const ru = try sink.region(key);
             const o = key.origin();
             const sp: i64 = key.spacing();
+            const band: f32 = channel.band(key.spacing());
             const alloc = sink.alloc;
             const existing = base.brickAt(key);
+            var op: ?*Plane = null;
             var k: u32 = 0;
             while (k < brick.N) : (k += 1) {
                 const pz: i64 = @as(i64, o[2]) + @as(i64, k) * sp;
@@ -825,48 +864,97 @@ pub const World = struct {
                                 }
                             }
                         }
-                        const w = ringWeight(f, envelope, bin, half_len, soft, q);
-                        if (w <= 0) continue;
-                        if (deposit > 0) {
-                            const cur: f32 = if (existing) |b| b.get(Channel.material.bit(), i, j, k) else 0;
-                            // Material saturates: deposit what the sample can still take.
-                            const room = @max(0.0, 1.0 - cur);
-                            const d = @min(room, deposit * w);
-                            if (d > 0) {
-                                try ru.add(alloc, Channel.material.bit(), idx, d);
-                                const born: f32 = if (existing) |b| b.get(Channel.age.bit(), i, j, k) else 0;
-                                const pending: f32 = if (ru.deltas[Channel.age.bit()]) |dp| dp[idx] else 0;
-                                if (born == 0 and pending == 0) try ru.add(alloc, Channel.age.bit(), idx, now_s);
-                            }
+                        if (!depositing) continue;
+                        const phi = cap.signed(q);
+                        if (phi >= band) continue;
+                        if (op == null) op = try ru.surfaceOp(alloc, p.collar, f.id);
+                        op.?[idx] = @max(phi, -band);
+                        if (phi < 0) {
+                            const born: f32 = if (existing) |b| b.get(Channel.age.bit(), i, j, k) else 0;
+                            const pending: f32 = if (ru.deltas[Channel.age.bit()]) |dp| dp[idx] else 0;
+                            if (born == 0 and pending == 0) try ru.add(alloc, Channel.age.bit(), idx, now_s);
                         }
-                        try ru.add(alloc, Channel.activity.bit(), idx, w);
+                        const w: f32 = @floatCast(smooth(soft, -soft, phi));
+                        if (w > 0) try ru.add(alloc, Channel.activity.bit(), idx, w);
                     }
                 }
             }
         }
     }
 
-    /// Weight of a lattice point under the ring: inside the ring's radius
-    /// at that angle, within the ring's axial slab, both softened.
-    fn ringWeight(f: *const Front, envelope: f32, bin: [3]f64, half_len: f64, soft: f64, q: [3]f64) f32 {
-        const d = [3]f64{ q[0] - f.pos[0], q[1] - f.pos[1], q[2] - f.pos[2] };
-        const ax = dot(d, f.dir);
-        const aw = smooth(half_len, half_len - soft, @abs(ax));
-        if (aw <= 0) return 0;
-        const rad = [3]f64{ d[0] - ax * f.dir[0], d[1] - ax * f.dir[1], d[2] - ax * f.dir[2] };
-        const rho = len3(rad);
-        const theta = std.math.atan2(dot(rad, bin), dot(rad, f.normal)) - f.roll;
-        const N: f64 = front.SLOTS;
-        var u = @mod(theta, 2 * std.math.pi) / (2 * std.math.pi) * N;
-        if (u >= N) u -= N;
-        const slot0: usize = @intFromFloat(@floor(u));
-        const fr: f32 = @floatCast(u - @floor(u));
-        const r0 = f.ring[slot0 % front.SLOTS].r;
-        const r1 = f.ring[(slot0 + 1) % front.SLOTS].r;
-        const ring_r: f64 = @max(0.25, envelope + std.math.lerp(r0, r1, fr));
-        const rw = smooth(ring_r + soft, ring_r - soft, rho);
-        return @floatCast(rw * aw);
-    }
+    /// The lofted capsule between a front's previous ring and its current
+    /// one: the signed implicit ρ − r(s, θ), with r interpolated along the
+    /// segment between the two rings' profiles and read around each ring
+    /// in its own transported frame. Beyond the ends it is the end ring's
+    /// cap. The profile's residual fades to zero on the axis so the
+    /// implicit stays Lipschitz there (θ is not defined on the axis).
+    const Capsule = struct {
+        p0: [3]f64,
+        p1: [3]f64,
+        axis: [3]f64,
+        len2: f64,
+        n0: [3]f64,
+        b0: [3]f64,
+        roll0: f64,
+        env0: f32,
+        r0: *const [front.SLOTS]f32,
+        n1: [3]f64,
+        b1: [3]f64,
+        roll1: f64,
+        env1: f32,
+        ring1: *const [front.SLOTS]front.Slot,
+
+        fn of(f: *const Front, envelope: f32) Capsule {
+            const axis = [3]f64{ f.pos[0] - f.prev_pos[0], f.pos[1] - f.prev_pos[1], f.pos[2] - f.prev_pos[2] };
+            return .{
+                .p0 = f.prev_pos,
+                .p1 = f.pos,
+                .axis = axis,
+                .len2 = dot(axis, axis),
+                .n0 = f.prev_normal,
+                .b0 = cross(f.prev_dir, f.prev_normal),
+                .roll0 = f.prev_roll,
+                .env0 = f.prev_envelope,
+                .r0 = &f.prev_r,
+                .n1 = f.normal,
+                .b1 = cross(f.dir, f.normal),
+                .roll1 = f.roll,
+                .env1 = envelope,
+                .ring1 = &f.ring,
+            };
+        }
+
+        /// The profile's residual at angle θ (radians about the ring's
+        /// frame): the ring's 24 slots, linearly interpolated.
+        fn residual(rs: [front.SLOTS]f32, theta: f64) f32 {
+            const N: f64 = front.SLOTS;
+            var u = @mod(theta, 2 * std.math.pi) / (2 * std.math.pi) * N;
+            if (u >= N) u -= N;
+            const slot0: usize = @intFromFloat(@floor(u));
+            const fr: f32 = @floatCast(u - @floor(u));
+            const a = rs[slot0 % front.SLOTS];
+            const b = rs[(slot0 + 1) % front.SLOTS];
+            return std.math.lerp(a, b, fr);
+        }
+
+        fn signed(self: *const Capsule, q: [3]f64) f32 {
+            const d = [3]f64{ q[0] - self.p0[0], q[1] - self.p0[1], q[2] - self.p0[2] };
+            var s: f64 = 0;
+            if (self.len2 > 1e-18) s = @min(1.0, @max(0.0, dot(d, self.axis) / self.len2));
+            const rad = [3]f64{ d[0] - s * self.axis[0], d[1] - s * self.axis[1], d[2] - s * self.axis[2] };
+            const rho = len3(rad);
+            const th0 = std.math.atan2(dot(rad, self.b0), dot(rad, self.n0)) - self.roll0;
+            const th1 = std.math.atan2(dot(rad, self.b1), dot(rad, self.n1)) - self.roll1;
+            var r1: [front.SLOTS]f32 = undefined;
+            for (self.ring1, 0..) |sl, i| r1[i] = sl.r;
+            const env: f32 = std.math.lerp(self.env0, self.env1, @as(f32, @floatCast(s)));
+            const res: f32 = std.math.lerp(residual(self.r0.*, th0), residual(r1, th1), @as(f32, @floatCast(s)));
+            // The residual fades to nothing on the axis.
+            const fade: f32 = @floatCast(@min(1.0, rho / @max(0.5 * @as(f64, env), 1e-6)));
+            const r: f32 = @max(0.25, env + res * fade);
+            return @as(f32, @floatCast(rho)) - r;
+        }
+    };
 
     /// 1 at or below `one`, 0 at or above `zero`, smooth between.
     fn smooth(zero: f64, one: f64, x: f64) f64 {
@@ -943,12 +1031,16 @@ pub const World = struct {
             const pre_root = try tree.build(gpa, base.root, overrides.items);
             defer if (pre_root) |r| r.release(gpa);
             const pre = Snapshot{ .gpa = gpa, .vid = 0, .epoch = 0, .time_ns = 0, .seed = 0, .root = pre_root };
-            var i: usize = 0;
-            const n0 = order.items.len;
-            while (i < n0) : (i += 1) {
-                const c = changed.get(order.items[i]).?;
-                try self.materialiseFrontier(&pre, c.b, &changed, &order);
-            }
+            // Every neighbour cube a changed brick asks for, at its own
+            // gauge; then resolved finest first, so a coarse request over
+            // a cube that finer requests are filling completes it at the
+            // finer gauge instead of colliding with it (a fine brick and a
+            // coarse neighbour materialised into one void in one commit
+            // was a GaugeConflict at the tree build, P2.1).
+            var requests = std.ArrayListUnmanaged(Key){};
+            defer requests.deinit(gpa);
+            for (order.items) |raw| try self.frontierRequests(&pre, changed.get(raw).?.b, &requests);
+            try self.materialiseRequests(base, &pre, requests.items, &changed, &order);
         }
 
         self.stats.ns_frontier = timer.lap();
@@ -964,8 +1056,10 @@ pub const World = struct {
         var scratch = Snapshot{ .gpa = gpa, .vid = 0, .epoch = 0, .time_ns = 0, .seed = 0, .root = scratch_root };
         defer if (scratch_root) |r| r.release(gpa);
 
-        // 4. Seams.
+        // 4. Seams, then halos: the halo copies layer 1 of whoever holds
+        // the point, so it runs once the seams have settled the faces.
         try self.reconcile(&scratch, &changed, &order, sys);
+        if (self.policy.halo) try self.reconcileHalos(&scratch, &changed, &order, sys);
         self.stats.ns_seams = timer.lap();
 
         // 5. Finalize every changed brick, build the real tree.
@@ -1009,6 +1103,10 @@ pub const World = struct {
                 .morphogens = s.morphogens,
                 .born_epoch = self.epoch,
                 .brick = Key.ofBrick(0, .{ 0, 0, 0 }),
+                .prev_pos = s.pos,
+                .prev_dir = s.dir,
+                .prev_normal = s.normal,
+                .prev_envelope = s.params.radius,
             };
             f.brick = self.brickUnder(base, f.pos);
             try self.fronts.append(gpa, f);
@@ -1079,13 +1177,56 @@ pub const World = struct {
                     ctx.failed.store(true, .release);
                     return;
                 };
-                for (pl, dp) |*v, d| {
-                    const nv = clamp.apply(v.* + d);
-                    max_delta = @max(max_delta, @abs(nv - v.*));
-                    v.* = nv;
+                // The brick's own samples only: the halo is the neighbours'
+                // and the halo pass rewrites it after the seams.
+                var k: u32 = 0;
+                while (k < brick.N) : (k += 1) {
+                    var j: u32 = 0;
+                    while (j < brick.N) : (j += 1) {
+                        var ii: u32 = 0;
+                        while (ii < brick.N) : (ii += 1) {
+                            const idx = Brick.index(ii, j, k);
+                            const nv = clamp.apply(pl[idx] + dp[idx]);
+                            max_delta = @max(max_delta, @abs(nv - pl[idx]));
+                            pl[idx] = nv;
+                        }
+                    }
                 }
             }
             if (bit == 63) break;
+        }
+        if (ru.surface_ops.items.len > 0) {
+            // The carrier: ops in order (front id, or authoring order),
+            // each a smooth union with its own collar, the result held to
+            // the band. Stable, so equal orders keep insertion order.
+            std.sort.insertion(update.SurfaceOp, ru.surface_ops.items, {}, update.SurfaceOp.lessThan);
+            const sbit = Channel.surface.bit();
+            const pl = nb.ensurePlane(gpa, sbit) catch {
+                nb.release(gpa);
+                ctx.failed.store(true, .release);
+                return;
+            };
+            const bd = nb.band();
+            for (ru.surface_ops.items) |op| {
+                var k: u32 = 0;
+                while (k < brick.N) : (k += 1) {
+                    var j: u32 = 0;
+                    while (j < brick.N) : (j += 1) {
+                        var ii: u32 = 0;
+                        while (ii < brick.N) : (ii += 1) {
+                            const idx = Brick.index(ii, j, k);
+                            const d = op.plane[idx];
+                            if (d == update.SurfaceOp.NONE) continue;
+                            const nv = @max(-bd, @min(bd, switch (op.mode) {
+                                .join => channel.smin(pl[idx], d, op.k, bd),
+                                .cut => @max(pl[idx], -d),
+                            }));
+                            max_delta = @max(max_delta, @abs(nv - pl[idx]));
+                            pl[idx] = nv;
+                        }
+                    }
+                }
+            }
         }
         ctx.results[i] = .{ .b = nb, .old = old, .max_delta = max_delta, .materialised = old == null and ru.mask == 0, .rank = if (ru.mask != 0) 0 else 2 };
     }
@@ -1106,8 +1247,11 @@ pub const World = struct {
         return out.toOwnedSlice(gpa);
     }
 
-    fn materialiseFrontier(self: *World, view: *const Snapshot, b: *const Brick, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: *std.ArrayListUnmanaged(u64)) !void {
+    /// The neighbour cubes, at `b`'s own gauge, across every face of `b`
+    /// that carries a value reaching across it and has nothing there yet.
+    fn frontierRequests(self: *World, view: *const Snapshot, b: *const Brick, out: *std.ArrayListUnmanaged(Key)) !void {
         const eps = thresholds.EPSILON;
+        const bd = b.band();
         const o = b.origin();
         const side: i64 = b.key.side();
         // Six faces: axis, and which end.
@@ -1117,19 +1261,25 @@ pub const World = struct {
             while (end < 2) : (end += 1) {
                 const face: u32 = if (end == 0) 0 else brick.CELLS;
                 var hot = false;
-                for (b.planes) |pl| {
-                    var u: u32 = 0;
-                    while (u < brick.N and !hot) : (u += 1) {
-                        var v: u32 = 0;
-                        while (v < brick.N) : (v += 1) {
-                            const ijk = faceIndex(axis, face, u, v);
-                            if (@abs(pl[Brick.index(ijk[0], ijk[1], ijk[2])]) > eps) {
-                                hot = true;
-                                break;
+                var bit: u6 = 0;
+                while (!hot) : (bit += 1) {
+                    if (b.plane(bit)) |pl| {
+                        var u: u32 = 0;
+                        while (u < brick.N and !hot) : (u += 1) {
+                            var v: u32 = 0;
+                            while (v < brick.N) : (v += 1) {
+                                const ijk = faceIndex(axis, face, u, v);
+                                // Above the floor, or nearer than the band: the
+                                // field reaches across, so the neighbour must exist
+                                // to carry it (and the halo needs it to be C2).
+                                if (channel.reaches(bit, pl[Brick.index(ijk[0], ijk[1], ijk[2])], bd, eps)) {
+                                    hot = true;
+                                    break;
+                                }
                             }
                         }
                     }
-                    if (hot) break;
+                    if (bit == 63) break;
                 }
                 if (!hot) continue;
                 var probe = [3]i64{ o[0], o[1], o[2] };
@@ -1141,17 +1291,67 @@ pub const World = struct {
                 var no: [3]u32 = o;
                 if (end == 0) no[axis] -= @intCast(side) else no[axis] += @intCast(side);
                 const nk = Key.ofBrick(b.gauge(), no);
-                if (changed.contains(nk.raw())) continue;
                 // Anything already there — a leaf at any gauge covering
                 // the cube, or finer leaves inside it — shares the face
                 // through the seam pass; only the void is materialised.
                 if (view.nodeAt(nk) != null) continue;
-                const nb = try Brick.create(self.gpa, nk);
-                nb.version = 1;
-                try changed.put(self.gpa, nk.raw(), .{ .b = nb, .old = null, .materialised = true, .rank = 2 });
-                try order.append(self.gpa, nk.raw());
+                try out.append(self.gpa, nk);
             }
         }
+    }
+
+    /// Create the requested cubes, finest gauge first. A request is
+    /// resolved through `coverCube` against a view that already holds
+    /// what finer requests created, so a coarse cube partly filled by
+    /// them is completed at their gauge.
+    fn materialiseRequests(self: *World, base: *const Snapshot, pre: *const Snapshot, requests: []Key, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: *std.ArrayListUnmanaged(u64)) !void {
+        const gpa = self.gpa;
+        if (requests.len == 0) return;
+        std.mem.sort(Key, requests, {}, struct {
+            fn lt(_: void, a: Key, b: Key) bool {
+                if (a.level != b.level) return a.level < b.level;
+                return a.raw() < b.raw();
+            }
+        }.lt);
+        var created = std.ArrayListUnmanaged(tree.Override){};
+        defer created.deinit(gpa);
+        var view_root: ?*tree.Node = pre.root;
+        var view_owned = false;
+        defer if (view_owned) if (view_root) |r| r.release(gpa);
+        var cover = std.ArrayListUnmanaged(Key){};
+        defer cover.deinit(gpa);
+        var i: usize = 0;
+        while (i < requests.len) {
+            const level = requests[i].level;
+            // A view holding everything created at finer levels.
+            if (created.items.len > 0) {
+                for (created.items) |*c| c.brick = changed.get(c.key.raw()).?.b;
+                std.mem.sort(tree.Override, created.items, {}, tree.Override.lessThan);
+                const root = try tree.build(gpa, pre.root, created.items);
+                if (view_owned) if (view_root) |r| r.release(gpa);
+                view_root = root;
+                view_owned = true;
+            }
+            const view = Snapshot{ .gpa = gpa, .vid = 0, .epoch = 0, .time_ns = 0, .seed = 0, .root = view_root };
+            const first = created.items.len;
+            while (i < requests.len and requests[i].level == level) : (i += 1) {
+                const rk = requests[i];
+                if (i > 0 and requests[i - 1].eql(rk)) continue;
+                cover.clearRetainingCapacity();
+                try view.coverCube(rk, gpa, &cover);
+                for (cover.items) |ck| {
+                    if (view.brickAt(ck) != null) continue; // a leaf already there
+                    if (changed.contains(ck.raw())) continue;
+                    const nb = try Brick.create(gpa, ck);
+                    nb.version = 1;
+                    try changed.put(gpa, ck.raw(), .{ .b = nb, .old = null, .materialised = true, .rank = 2 });
+                    try order.append(gpa, ck.raw());
+                    try created.append(gpa, .{ .key = ck, .brick = nb });
+                }
+            }
+            _ = first;
+        }
+        _ = base;
     }
 
     fn faceIndex(axis: usize, face: u32, u: u32, v: u32) [3]u32 {
@@ -1174,9 +1374,9 @@ pub const World = struct {
     // its first write. The schedule cannot reach the result: the write
     // SET is what the geometry says, and the order is the sort's.
 
-    const Live = struct { b: *const Brick, rank: u8 };
+    pub const Live = struct { b: *const Brick, rank: u8 };
 
-    const ChangedMap = std.AutoHashMapUnmanaged(u64, Changed);
+    pub const ChangedMap = std.AutoHashMapUnmanaged(u64, Changed);
 
     /// The live (this-commit) version of a brick the view found.
     fn liveOf(changed: *const ChangedMap, b: *const Brick) Live {
@@ -1186,14 +1386,14 @@ pub const World = struct {
 
     /// `a` outranks `b` as the source of a shared point: finer, then
     /// lower rank, then lower key.
-    fn outranks(a: Live, b: Live) bool {
+    pub fn outranks(a: Live, b: Live) bool {
         if (a.b.key.level != b.b.key.level) return a.b.key.level < b.b.key.level;
         if (a.rank != b.rank) return a.rank < b.rank;
         return a.b.key.raw() < b.b.key.raw();
     }
 
     /// One seam write: this holder's sample takes this value.
-    const SeamWrite = struct {
+    pub const SeamWrite = struct {
         key: u64,
         bit: u8,
         idx: u16,
@@ -1206,11 +1406,13 @@ pub const World = struct {
         }
     };
 
-    const WriteList = std.ArrayListUnmanaged(SeamWrite);
+    pub const WriteList = std.ArrayListUnmanaged(SeamWrite);
 
     /// Emit a write for `target` at `idx` unless it already holds `v`.
-    fn emit(gpa: std.mem.Allocator, list: *WriteList, target: *const Brick, bit: u6, idx: usize, v: f32) !void {
-        const have: f32 = if (target.plane(bit)) |pl| pl[idx] else 0;
+    fn emit(gpa: std.mem.Allocator, list: *WriteList, target: *const Brick, bit: u6, idx: usize, v_in: f32) !void {
+        const have: f32 = if (target.plane(bit)) |pl| pl[idx] else target.absentValue(bit);
+        // A coarser holder's band is wider: far is far, at this brick's band.
+        const v = if (bit == Channel.surface.bit()) @min(v_in, target.band()) else v_in;
         if (have == v) return;
         try list.append(gpa, .{ .key = target.key.raw(), .bit = bit, .idx = @intCast(idx), .value = v });
     }
@@ -1222,7 +1424,7 @@ pub const World = struct {
         while (mask != 0) {
             const bit: u6 = @intCast(@ctz(mask));
             mask &= mask - 1;
-            const v: f32 = if (src.plane(bit)) |pl| pl[sidx] else 0;
+            const v: f32 = if (src.plane(bit)) |pl| pl[sidx] else src.absentValue(bit);
             try emit(gpa, list, target, bit, idx, v);
         }
     }
@@ -1241,17 +1443,17 @@ pub const World = struct {
     /// leaf (same gauge or coarser) or leaves (finer) each holds. Every
     /// boundary point then finds its holders by key comparison instead of
     /// a tree descent — 26 descents per changed brick instead of 386×2.
-    const Neighbourhood = struct {
+    pub const Neighbourhood = struct {
         cells: [27]struct { start: u32, len: u32 },
         /// Resolved through `liveOf` once, so a point costs no lookups.
         leaves: std.ArrayListUnmanaged(Live) = .{},
         raw: std.ArrayListUnmanaged(*const Brick) = .{},
 
-        fn cellIndex(dx: i64, dy: i64, dz: i64) usize {
+        pub fn cellIndex(dx: i64, dy: i64, dz: i64) usize {
             return @intCast((dx + 1) + 3 * (dy + 1) + 9 * (dz + 1));
         }
 
-        fn build(gpa: std.mem.Allocator, changed: *const ChangedMap, view: *const Snapshot, b: *const Brick) !Neighbourhood {
+        pub fn build(gpa: std.mem.Allocator, changed: *const ChangedMap, view: *const Snapshot, b: *const Brick) !Neighbourhood {
             var nb = Neighbourhood{ .cells = undefined };
             errdefer nb.leaves.deinit(gpa);
             errdefer nb.raw.deinit(gpa);
@@ -1283,7 +1485,7 @@ pub const World = struct {
             return nb;
         }
 
-        fn deinit(self: *Neighbourhood, gpa: std.mem.Allocator) void {
+        pub fn deinit(self: *Neighbourhood, gpa: std.mem.Allocator) void {
             self.leaves.deinit(gpa);
             self.raw.deinit(gpa);
         }
@@ -1483,6 +1685,36 @@ pub const World = struct {
         }
     }
 
+    fn reconcileHalos(self: *World, view: *const Snapshot, changed: *ChangedMap, order: *std.ArrayListUnmanaged(u64), sys: ?*jobs.JobSystem) !void {
+        const gpa = self.gpa;
+        const n0 = order.items.len;
+        if (n0 == 0) return;
+        const chunk: u32 = 4;
+        const nlists = (n0 + chunk - 1) / chunk;
+        const lists = try gpa.alloc(WriteList, nlists);
+        defer gpa.free(lists);
+        for (lists) |*l| l.* = .{};
+        defer for (lists) |*l| l.deinit(gpa);
+        var ctx = HaloCtx{
+            .world = self,
+            .view = view,
+            .changed = changed,
+            .order = order.items[0..n0],
+            .chunk = chunk,
+            .lists = lists,
+            .failed = std.atomic.Value(bool).init(false),
+        };
+        parallelRange(sys, n0, chunk, HaloCtx, &ctx, haloCollectOne);
+        if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
+        var all = std.ArrayListUnmanaged(SeamWrite){};
+        defer all.deinit(gpa);
+        for (lists) |l| try all.appendSlice(gpa, l.items);
+        const before = self.stats.seam_writes;
+        try self.applySeamWrites(view, changed, order, all.items);
+        self.stats.halo_writes += self.stats.seam_writes - before;
+        self.stats.seam_writes = before;
+    }
+
     fn reconcile(self: *World, view: *const Snapshot, changed: *ChangedMap, order: *std.ArrayListUnmanaged(u64), sys: ?*jobs.JobSystem) !void {
         const gpa = self.gpa;
         // Only points on a CHANGED brick's surface can have fallen out of
@@ -1521,6 +1753,320 @@ pub const World = struct {
         }
     }
 };
+
+// ── The halo pass (R7) ───────────────────────────────────────────────────
+//
+// Collect, then apply, like the seams. For every changed brick B: every
+// halo entry of B is recomputed from the holders of its point; and every
+// halo entry of a NEIGHBOUR that lies inside B's closed cube is recomputed
+// too, since it mirrors B's layer 1. A write is emitted only when the
+// value differs, so an untouched neighbour whose halo did not move stays
+// the same pointer (G4 checks identity). The value rule is the anchor's,
+// one layer deeper: the finest holder's sample where the point is on its
+// lattice, else its interpolant; the absent value where nothing holds it.
+
+const HaloCtx = struct {
+    world: *World,
+    view: *const Snapshot,
+    changed: *const World.ChangedMap,
+    order: []const u64,
+    chunk: u32,
+    lists: []World.WriteList,
+    failed: std.atomic.Value(bool),
+};
+
+fn haloCollectOne(ctx: *HaloCtx, i: usize) void {
+    haloCollectBrick(ctx, i) catch {
+        ctx.failed.store(true, .release);
+    };
+}
+
+/// The holders of any point in or around `b`, through the neighbourhood
+/// cache: `b` itself when its closed cube holds the point, and every
+/// cached leaf whose cube does.
+fn holdersAround(nb: *const World.Neighbourhood, b: World.Live, p: [3]i64, out: *[8]World.Live) usize {
+    var n: usize = 0;
+    if (b.b.key.holdsPoint(p)) {
+        out[0] = b;
+        n = 1;
+    }
+    const o = b.b.origin();
+    const side: i64 = b.b.key.side();
+    // Which cells of the 3×3×3 could hold p: strictly outside on a side
+    // is that side's cell; on a boundary plane, both cells it separates.
+    var cand: [3][2]i64 = undefined;
+    var ncand: [3]usize = undefined;
+    inline for (0..3) |a| {
+        const lo: i64 = o[a];
+        const hi: i64 = lo + side;
+        if (p[a] < lo) {
+            cand[a] = .{ -1, 0 };
+            ncand[a] = 1;
+        } else if (p[a] == lo) {
+            cand[a] = .{ -1, 0 };
+            ncand[a] = 2;
+        } else if (p[a] < hi) {
+            cand[a] = .{ 0, 0 };
+            ncand[a] = 1;
+        } else if (p[a] == hi) {
+            cand[a] = .{ 0, 1 };
+            ncand[a] = 2;
+        } else {
+            cand[a] = .{ 1, 0 };
+            ncand[a] = 1;
+        }
+    }
+    var iz: usize = 0;
+    while (iz < ncand[2]) : (iz += 1) {
+        var iy: usize = 0;
+        while (iy < ncand[1]) : (iy += 1) {
+            var ix: usize = 0;
+            while (ix < ncand[0]) : (ix += 1) {
+                const dx = cand[0][ix];
+                const dy = cand[1][iy];
+                const dz = cand[2][iz];
+                if (dx == 0 and dy == 0 and dz == 0) continue;
+                const c = nb.cells[World.Neighbourhood.cellIndex(dx, dy, dz)];
+                for (nb.leaves.items[c.start .. c.start + c.len]) |h| {
+                    if (!h.b.key.holdsPoint(p)) continue;
+                    var dup = false;
+                    for (out[0..n]) |x| if (x.b == h.b) {
+                        dup = true;
+                    };
+                    if (!dup and n < 8) {
+                        out[n] = h;
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    return n;
+}
+
+/// The value a halo entry of `target` at lattice point `p` must hold for
+/// channel `bit`, given the holders of `p`.
+fn haloValue(hs: []const World.Live, p: [3]i64, bit: u6, target: *const Brick) f32 {
+    const bd = target.band();
+    if (hs.len == 0) return channel.absentValue(bit, bd);
+    var finest = hs[0];
+    for (hs[1..]) |h| if (World.outranks(h, finest)) {
+        finest = h;
+    };
+    var v: f32 = undefined;
+    if (finest.b.localOf(p)) |l| {
+        v = finest.b.get(bit, l[0], l[1], l[2]);
+    } else {
+        v = finest.b.trilinear(bit, .{ @floatFromInt(p[0]), @floatFromInt(p[1]), @floatFromInt(p[2]) });
+    }
+    // A coarser holder's band is wider than this brick's: far is far.
+    if (bit == Channel.surface.bit()) v = @min(v, bd);
+    return v;
+}
+
+fn haloEmit(gpa: std.mem.Allocator, list: *World.WriteList, nb: *const World.Neighbourhood, bl: World.Live, target: *const Brick, hb: [3]u32) !void {
+    const p = target.blockPoint(hb);
+    var hs: [8]World.Live = undefined;
+    const n = if (p[0] < 0 or p[1] < 0 or p[2] < 0 or p[0] > lattice.CELLS or p[1] > lattice.CELLS or p[2] > lattice.CELLS) 0 else holdersAround(nb, bl, p, &hs);
+    const idx = Brick.bindex(hb[0], hb[1], hb[2]);
+    var mask = target.mask;
+    while (mask != 0) {
+        const bit: u6 = @intCast(@ctz(mask));
+        mask &= mask - 1;
+        const v = haloValue(hs[0..n], p, bit, target);
+        const have = target.plane(bit).?[idx];
+        if (have != v) try list.append(gpa, .{ .key = target.key.raw(), .bit = bit, .idx = @intCast(idx), .value = v });
+    }
+}
+
+/// Which of B's six face slabs (its own samples within two layers of a
+/// face — what any neighbour's halo, at any gauge, is read from) hold a
+/// sample that changed this commit, per channel present. A brick with
+/// no predecessor is dirty everywhere; a plane the predecessor lacked is
+/// dirty everywhere.
+const DirtyFaces = struct {
+    /// [axis][end]
+    face: [3][2]bool,
+    /// B's own halo needs recomputing wholesale (new brick, or a plane it
+    /// did not have).
+    whole: bool,
+};
+
+fn dirtyFaces(b: *const Brick, old: ?*const Brick) DirtyFaces {
+    var d = DirtyFaces{ .face = .{ .{ false, false }, .{ false, false }, .{ false, false } }, .whole = false };
+    const o = old orelse {
+        d.face = .{ .{ true, true }, .{ true, true }, .{ true, true } };
+        d.whole = true;
+        return d;
+    };
+    var mask = b.mask;
+    while (mask != 0) {
+        const bit: u6 = @intCast(@ctz(mask));
+        mask &= mask - 1;
+        const npl = b.plane(bit).?;
+        const opl = o.plane(bit) orelse {
+            d.face = .{ .{ true, true }, .{ true, true }, .{ true, true } };
+            d.whole = true;
+            return d;
+        };
+        var k: u32 = 0;
+        while (k < brick.N) : (k += 1) {
+            var j: u32 = 0;
+            while (j < brick.N) : (j += 1) {
+                var i: u32 = 0;
+                while (i < brick.N) : (i += 1) {
+                    const idx = Brick.index(i, j, k);
+                    if (npl[idx] == opl[idx]) continue;
+                    if (i <= 2) d.face[0][0] = true;
+                    if (i >= brick.CELLS - 2) d.face[0][1] = true;
+                    if (j <= 2) d.face[1][0] = true;
+                    if (j >= brick.CELLS - 2) d.face[1][1] = true;
+                    if (k <= 2) d.face[2][0] = true;
+                    if (k >= brick.CELLS - 2) d.face[2][1] = true;
+                }
+            }
+        }
+    }
+    return d;
+}
+
+/// Whether a neighbour cell (dx, dy, dz) reads from a dirty slab of B:
+/// any of its nonzero directions crosses a dirty face.
+fn cellDirty(d: *const DirtyFaces, dx: i64, dy: i64, dz: i64) bool {
+    if (dx < 0 and d.face[0][0]) return true;
+    if (dx > 0 and d.face[0][1]) return true;
+    if (dy < 0 and d.face[1][0]) return true;
+    if (dy > 0 and d.face[1][1]) return true;
+    if (dz < 0 and d.face[2][0]) return true;
+    if (dz > 0 and d.face[2][1]) return true;
+    return false;
+}
+
+/// Block coordinate ranges of `b`'s halo entries that face the neighbour
+/// cell (dx, dy, dz): 0 on the low side, HN−1 on the high side, the
+/// interior range in between.
+fn haloRange(d: i64) [2]u32 {
+    return if (d < 0) .{ 0, 1 } else if (d > 0) .{ brick.HN - 1, brick.HN } else .{ 1, brick.N + 1 };
+}
+
+/// Emit `value` for `target`'s halo entry at block `hb` for `bit` unless
+/// it already holds it.
+fn haloPut(gpa: std.mem.Allocator, list: *World.WriteList, target: *const Brick, bit: u6, hb: [3]u32, v: f32) !void {
+    const idx = Brick.bindex(hb[0], hb[1], hb[2]);
+    if (target.plane(bit).?[idx] != v) try list.append(gpa, .{ .key = target.key.raw(), .bit = bit, .idx = @intCast(idx), .value = v });
+}
+
+fn haloCollectBrick(ctx: *HaloCtx, i: usize) !void {
+    const gpa = ctx.world.gpa;
+    const list = &ctx.lists[i / ctx.chunk];
+    const c = ctx.changed.get(ctx.order[i]).?;
+    const b = c.b;
+    const bl = World.Live{ .b = b, .rank = c.rank };
+    var nb = try World.Neighbourhood.build(gpa, ctx.changed, ctx.view, b);
+    defer nb.deinit(gpa);
+    const dirty = dirtyFaces(b, c.old);
+    // B's own halo is recomputed when B is new, gained a plane, or has any
+    // changed neighbour at all — per cell would miss an entry on the
+    // boundary between cells whose holder sits in the next cell over.
+    var any_changed = dirty.whole;
+    for (nb.leaves.items) |h| if (ctx.changed.contains(h.b.key.raw())) {
+        any_changed = true;
+    };
+    var dz: i64 = -1;
+    while (dz <= 1) : (dz += 1) {
+        var dy: i64 = -1;
+        while (dy <= 1) : (dy += 1) {
+            var dx: i64 = -1;
+            while (dx <= 1) : (dx += 1) {
+                if (dx == 0 and dy == 0 and dz == 0) continue;
+                const cell = nb.cells[World.Neighbourhood.cellIndex(dx, dy, dz)];
+                const leaves = nb.leaves.items[cell.start .. cell.start + cell.len];
+                // The neighbour is one brick at B's own gauge: a slab copy,
+                // no lookups — it holds every point of the slab, faces
+                // included, and agrees with any other holder by the seam
+                // contract. Anything else, the VOID included, is the general
+                // path: an entry at the edge of a face slab lies on the
+                // boundary between cells, and a brick in the next cell may
+                // hold it when this cell holds nothing (the diffusion gate's
+                // point mass at a brick corner found exactly that).
+                const single: ?*const Brick = if (cell.len == 1 and leaves[0].b.key.level == b.key.level) leaves[0].b else null;
+                const fast = single != null;
+                const rx = haloRange(dx);
+                const ry = haloRange(dy);
+                const rz = haloRange(dz);
+                // (a) B's halo entries facing this cell.
+                if (any_changed) {
+                    var bk = rz[0];
+                    while (bk < rz[1]) : (bk += 1) {
+                        var bj = ry[0];
+                        while (bj < ry[1]) : (bj += 1) {
+                            var bi = rx[0];
+                            while (bi < rx[1]) : (bi += 1) {
+                                const hb = [3]u32{ bi, bj, bk };
+                                if (!fast) {
+                                    try haloEmit(gpa, list, &nb, bl, b, hb);
+                                    continue;
+                                }
+                                // Same point in the neighbour's block: shifted a brick.
+                                const sb = [3]u32{ @intCast(@as(i64, bi) - 8 * dx), @intCast(@as(i64, bj) - 8 * dy), @intCast(@as(i64, bk) - 8 * dz) };
+                                var mask = b.mask;
+                                while (mask != 0) {
+                                    const bit: u6 = @intCast(@ctz(mask));
+                                    mask &= mask - 1;
+                                    const n = single.?;
+                                    const v: f32 = if (n.plane(bit)) |pl| pl[Brick.bindex(sb[0], sb[1], sb[2])] else n.absentValue(bit);
+                                    try haloPut(gpa, list, b, bit, hb, v);
+                                }
+                            }
+                        }
+                    }
+                }
+                // (b) The neighbours' halo entries that mirror B's slab facing them.
+                if (!cellDirty(&dirty, dx, dy, dz)) continue;
+                if (single) |n| {
+                    // N's halo entries facing B: the mirror ranges; each maps
+                    // to B's block shifted the other way.
+                    const nx = haloRange(-dx);
+                    const ny = haloRange(-dy);
+                    const nz = haloRange(-dz);
+                    var nk = nz[0];
+                    while (nk < nz[1]) : (nk += 1) {
+                        var nj = ny[0];
+                        while (nj < ny[1]) : (nj += 1) {
+                            var ni = nx[0];
+                            while (ni < nx[1]) : (ni += 1) {
+                                const sb = [3]u32{ @intCast(@as(i64, ni) + 8 * dx), @intCast(@as(i64, nj) + 8 * dy), @intCast(@as(i64, nk) + 8 * dz) };
+                                var mask = n.mask;
+                                while (mask != 0) {
+                                    const bit: u6 = @intCast(@ctz(mask));
+                                    mask &= mask - 1;
+                                    const v: f32 = if (b.plane(bit)) |pl| pl[Brick.bindex(sb[0], sb[1], sb[2])] else b.absentValue(bit);
+                                    try haloPut(gpa, list, n, bit, .{ ni, nj, nk }, v);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    for (leaves) |h| {
+                        var hk: u32 = 0;
+                        while (hk < brick.HN) : (hk += 1) {
+                            var hj: u32 = 0;
+                            while (hj < brick.HN) : (hj += 1) {
+                                var hi: u32 = 0;
+                                while (hi < brick.HN) : (hi += 1) {
+                                    if (!Brick.isHalo(.{ hi, hj, hk })) continue;
+                                    const p = h.b.blockPoint(.{ hi, hj, hk });
+                                    if (!b.key.holdsPoint(p)) continue;
+                                    try haloEmit(gpa, list, &nb, bl, h.b, .{ hi, hj, hk });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 // ── small vector helpers ─────────────────────────────────────────────────
 

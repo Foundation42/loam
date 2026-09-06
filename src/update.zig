@@ -11,6 +11,13 @@
 //!
 //! Entries also carry what the commit must do besides add: materialise a
 //! brick that does not exist yet, and spawn fronts an operator asked for.
+//!
+//! The carrier is not added (R10). A `surface` contribution is a
+//! SURFACE OP — a plane of signed distances with the collar radius k and
+//! an order — and the commit smooth-unions the ops into the brick in
+//! that order, front id for a front's, insertion for authoring's. An
+//! entry's ops are a list, never merged in the buffer, so two fronts
+//! meeting in one brick compose in id order at commit and nowhere else.
 
 const std = @import("std");
 const lattice = @import("lattice.zig");
@@ -32,15 +39,44 @@ pub const Spawn = struct {
     morphogens: [4]f32 = .{ 0, 0, 0, 0 },
 };
 
+/// One smooth-union operand for the surface channel: a plane of signed
+/// distances (+inf where the op says nothing), the collar radius, and
+/// the order the commit applies it in.
+pub const SurfaceOp = struct {
+    plane: *Plane,
+    k: f32,
+    order: u64,
+    mode: Mode = .join,
+
+    /// Join is the smooth union (what growth does); cut is the CSG
+    /// difference φ = max(φ, −δ) with δ the cutter's own signed distance
+    /// (what a wound does). Both hold the band.
+    pub const Mode = enum { join, cut };
+
+    /// "No contribution": the union's identity.
+    pub const NONE: f32 = std.math.inf(f32);
+
+    pub fn lessThan(_: void, a: SurfaceOp, b: SurfaceOp) bool {
+        return a.order < b.order;
+    }
+};
+
 pub const RegionUpdate = struct {
     key: Key,
     mask: channel.Mask = 0,
     deltas: [channel.COUNT]?*Plane = [_]?*Plane{null} ** channel.COUNT,
+    /// Surface ops, in the order they were added; sorted by `order` at
+    /// commit (a stable sort, so insertion breaks ties).
+    surface_ops: std.ArrayListUnmanaged(SurfaceOp) = .{},
     /// Requested to exist even if no delta lands.
     materialise: bool = false,
     spawns: std.ArrayListUnmanaged(Spawn) = .{},
 
+    /// The additive delta plane for `bit`. Not for the carrier: a surface
+    /// contribution is an op (`surfaceOp`), and asking for its delta is a
+    /// programming error, loudly.
     pub fn delta(self: *RegionUpdate, a: std.mem.Allocator, bit: u6) !*Plane {
+        std.debug.assert(bit != channel.Channel.surface.bit());
         if (self.deltas[bit]) |p| return p;
         const p = try a.create(Plane);
         @memset(p, 0);
@@ -52,6 +88,20 @@ pub const RegionUpdate = struct {
     pub fn add(self: *RegionUpdate, a: std.mem.Allocator, bit: u6, idx: usize, v: f32) !void {
         const p = try self.delta(a, bit);
         p[idx] += v;
+    }
+
+    /// A new surface op with collar `k` at `order`; its plane starts as
+    /// "no contribution" everywhere.
+    pub fn surfaceOp(self: *RegionUpdate, a: std.mem.Allocator, k: f32, order: u64) !*Plane {
+        return self.surfaceOpMode(a, k, order, .join);
+    }
+
+    pub fn surfaceOpMode(self: *RegionUpdate, a: std.mem.Allocator, k: f32, order: u64, mode: SurfaceOp.Mode) !*Plane {
+        const p = try a.create(Plane);
+        @memset(p, SurfaceOp.NONE);
+        try self.surface_ops.append(a, .{ .plane = p, .k = k, .order = order, .mode = mode });
+        self.mask |= channel.Channel.surface.mask();
+        return p;
     }
 
     pub fn isEmpty(self: *const RegionUpdate) bool {
@@ -69,6 +119,9 @@ pub const Buffer = struct {
     arena: std.heap.ArenaAllocator,
     tsa: std.heap.ThreadSafeAllocator,
     regions: std.AutoHashMapUnmanaged(u64, *RegionUpdate) = .{},
+    /// Order of the next authoring surface op — insertion order, so two
+    /// capsules authored in one apply compose the way they were queued.
+    next_order: u64 = 0,
 
     pub fn init(gpa: std.mem.Allocator) Buffer {
         var b = Buffer{ .gpa = gpa, .arena = std.heap.ArenaAllocator.init(gpa), .tsa = undefined };
@@ -84,6 +137,7 @@ pub const Buffer = struct {
     pub fn reset(self: *Buffer) void {
         self.regions.clearRetainingCapacity();
         _ = self.arena.reset(.retain_capacity);
+        self.next_order = 0;
     }
 
     /// Allocator for planes from the parallel phase.
@@ -121,6 +175,21 @@ pub const Buffer = struct {
         return out;
     }
 };
+
+test "a surface op is a plane of no-contribution with its k and order, and never a delta" {
+    const gpa = std.testing.allocator;
+    var buf = Buffer.init(gpa);
+    defer buf.deinit();
+    const ru = try buf.region(Key.ofBrick(0, .{ 0, 0, 0 }));
+    const a = buf.planeAllocator();
+    const p = try ru.surfaceOp(a, 0.5, 3);
+    try std.testing.expectEqual(SurfaceOp.NONE, p[7]);
+    try std.testing.expect(channel.has(ru.mask, channel.Channel.surface.bit()));
+    try std.testing.expect(ru.deltas[channel.Channel.surface.bit()] == null);
+    try std.testing.expectEqual(@as(usize, 1), ru.surface_ops.items.len);
+    try std.testing.expectEqual(@as(f32, 0.5), ru.surface_ops.items[0].k);
+    try std.testing.expect(!ru.isEmpty());
+}
 
 test "deltas sum, entries sort by key, reset forgets" {
     const gpa = std.testing.allocator;
