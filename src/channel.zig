@@ -22,14 +22,17 @@ pub const Mask = u64;
 /// signed implicit whose zero set is matter, negative inside, stored
 /// truncated to ±SURFACE_BAND_CELLS cells of the brick's gauge and
 /// composed by smooth union, never added. Then PROVENANCE (R12, P2.2):
-/// four channels a front's capsule writes at every sample its field is
+/// two channels a front's capsule writes at every sample its field is
 /// nearer at than what stood — `who` (the front id plus one, so zero is
-/// nobody), `segment` (the ring index of the sweep, counted from one),
-/// `chart_s` and `chart_theta` (the front's (s, θ) at the sample's foot
-/// on the capsule's axis: the chart's coordinates, never a global).
+/// nobody) and `segment` (the ring index of the sweep, counted from
+/// one). The chart's (s, θ) at any point is that capsule's foot there,
+/// rebuilt from the ring records exactly (P2.3: two stored chart planes
+/// were dropped the night they were built — the bark's frame is the
+/// field's own, and a chart interpolated is a chart approximated).
 /// Optional history (R12a): the field stays canonical and reads none of
-/// it; the collar reads `who` and `chart_s` to choose k; a band-1 query
-/// reads all four to find the ring. Then THE TWO SLOTS (P2.2, the fill
+/// it; the collar reads `who` and `segment` against the ring table's
+/// arcs to choose k; a history query reads both to find the ring. Then
+/// THE TWO SLOTS (P2.2, the fill
 /// Christian named): `own`, the nearest contributor's own signed
 /// distance before any collar; `other`, the runner-up's; `collar`, the
 /// join's k between them. Band 0 is their ONE smooth union, recomposed
@@ -58,8 +61,6 @@ pub const Channel = enum(u6) {
     surface = 16,
     who = 17,
     segment = 18,
-    chart_s = 19,
-    chart_theta = 20,
     own = 21,
     other = 22,
     collar = 23,
@@ -110,9 +111,9 @@ pub fn rule(bit: u6) Rule {
     return .add;
 }
 
-/// Written by the winner: the four chart channels and the join's collar.
+/// Written by the winner: who, segment, and the join's collar.
 pub fn isProvenance(bit: u6) bool {
-    return bit == Channel.who.bit() or bit == Channel.segment.bit() or bit == Channel.chart_s.bit() or bit == Channel.chart_theta.bit() or bit == Channel.collar.bit();
+    return bit == Channel.who.bit() or bit == Channel.segment.bit() or bit == Channel.collar.bit();
 }
 
 /// A signed distance held to the band: the carrier and the two slots.
@@ -120,7 +121,7 @@ pub fn isDistance(bit: u6) bool {
     return bit == Channel.surface.bit() or bit == Channel.own.bit() or bit == Channel.other.bit();
 }
 
-pub const PROVENANCE_MASK: Mask = Channel.who.mask() | Channel.segment.mask() | Channel.chart_s.mask() | Channel.chart_theta.mask();
+pub const PROVENANCE_MASK: Mask = Channel.who.mask() | Channel.segment.mask();
 pub const SLOT_MASK: Mask = Channel.own.mask() | Channel.other.mask() | Channel.collar.mask();
 
 /// `who` for a front: its id plus one, so that zero is nobody (front ids
@@ -250,7 +251,7 @@ pub const Registry = struct {
             .albedo, .roughness, .material, .damage, .growth => .{ .lo = 0, .hi = 1 },
             .light, .stimulus, .surface => .{},
             .velocity_x, .velocity_y, .velocity_z => .{},
-            .who, .segment, .chart_s, .chart_theta, .own, .other, .collar => .{},
+            .who, .segment, .own, .other, .collar => .{},
         };
     }
 
@@ -328,7 +329,7 @@ test "smin: exact where apart, at most k/4 below where equal, far is the identit
     try std.testing.expectEqual(Rule.touch, rule(Channel.activity.bit()));
     try std.testing.expectEqual(Rule.add, rule(Channel.growth.bit()));
     try std.testing.expectEqual(Rule.set_by_winner, rule(Channel.who.bit()));
-    try std.testing.expectEqual(Rule.set_by_winner, rule(Channel.chart_theta.bit()));
+    try std.testing.expectEqual(Rule.set_by_winner, rule(Channel.segment.bit()));
     try std.testing.expectEqual(Rule.distance, rule(Channel.own.bit()));
     try std.testing.expectEqual(bd, absentValue(Channel.other.bit(), bd));
     try std.testing.expect(isAbsent(Channel.own.bit(), bd, bd) and !isAbsent(Channel.own.bit(), 0, bd));

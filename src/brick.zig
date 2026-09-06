@@ -44,9 +44,10 @@ pub const Plane = [SAMPLES]f32;
 
 pub const Error = error{ OutOfMemory, GaugeConflict };
 
-/// What a sample remembers of its deposit (R12): the front, the ring
-/// index of the sweep, and the chart's (s, θ) at the sample's foot.
-pub const Provenance = struct { who: u32, segment: u32, s: f32, theta: f32 };
+/// What a sample remembers of its deposit (R12): the front and the ring
+/// index of the sweep. The chart's (s, θ) at any point is that
+/// capsule's foot there, rebuilt from the ring records.
+pub const Provenance = struct { who: u32, segment: u32 };
 
 pub const Brick = struct {
     key: Key,
@@ -209,12 +210,7 @@ pub const Brick = struct {
     /// (authored tissue, the void, a plane never written).
     pub fn provenanceAt(self: *const Brick, i: u32, j: u32, k: u32) ?Provenance {
         const id = channel.idOf(self.get(channel.Channel.who.bit(), i, j, k)) orelse return null;
-        return .{
-            .who = id,
-            .segment = @intFromFloat(self.get(channel.Channel.segment.bit(), i, j, k)),
-            .s = self.get(channel.Channel.chart_s.bit(), i, j, k),
-            .theta = self.get(channel.Channel.chart_theta.bit(), i, j, k),
-        };
+        return .{ .who = id, .segment = @intFromFloat(self.get(channel.Channel.segment.bit(), i, j, k)) };
     }
 
     /// Lattice point of sample (i, j, k).

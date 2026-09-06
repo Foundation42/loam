@@ -1832,7 +1832,7 @@ pub const World = struct {
             const band: f32 = channel.band(key.spacing());
             const alloc = sink.alloc;
             const existing = base.brickAt(key);
-            var op: ?update.RegionUpdate.FrontPlanes = null;
+            var op: ?*Plane = null;
             var k: u32 = 0;
             while (k < brick.N) : (k += 1) {
                 const pz: i64 = @as(i64, o[2]) + @as(i64, k) * sp;
@@ -1862,15 +1862,10 @@ pub const World = struct {
                             }
                         }
                         if (!depositing) continue;
-                        const ft = cap.foot(q);
-                        const phi = cap.signedAt(ft);
+                        const phi = cap.signed(q);
                         if (phi >= band) continue;
                         if (op == null) op = try ru.surfaceOpFront(alloc, k_collar, who, f.segment, f.prev_s, own_reach);
-                        op.?.phi[idx] = @max(phi, -band);
-                        // The chart at the foot: (s, θ) of this front, per
-                        // R12 — never a global.
-                        op.?.s[idx] = cap.chartS(ft);
-                        op.?.theta[idx] = cap.chartTheta(ft);
+                        op.?[idx] = @max(phi, -band);
                         if (phi < 0) {
                             const born: f32 = if (existing) |b| b.get(Channel.age.bit(), i, j, k) else 0;
                             const pending: f32 = if (ru.deltas[Channel.age.bit()]) |dp| dp[idx] else 0;
@@ -1951,12 +1946,14 @@ pub const World = struct {
         out.phi = b.get(Channel.surface.bit(), l[0], l[1], l[2]);
         if (class == .sponge) return out;
         const pv = b.provenanceAt(l[0], l[1], l[2]) orelse return out;
-        out.bytes += 4 * @sizeOf(f32);
+        out.bytes += 2 * @sizeOf(f32);
         out.provenance = pv;
         const cap = self.capsuleAt(pv.who, pv.segment) orelse return out;
         out.bytes += 2 * @sizeOf(front.Ring);
-        const t: f32 = if (cap.s1 > cap.s0) @floatCast((@as(f64, pv.s) - cap.s0) / (cap.s1 - cap.s0)) else 0;
-        const th: f64 = pv.theta;
+        // The chart at the point: the capsule's foot there, exactly.
+        const ft = cap.foot(.{ @floatFromInt(p[0]), @floatFromInt(p[1]), @floatFromInt(p[2]) });
+        const t: f32 = @floatCast(@min(1, @max(0, ft.s_raw)));
+        const th: f64 = cap.chartTheta(ft);
         const r0 = Capsule.residual(cap.r0, th);
         const r1 = Capsule.residual(cap.r1, th);
         out.band1 = std.math.lerp(r0, r1, @min(1, @max(0, t)));
@@ -2222,11 +2219,11 @@ pub const World = struct {
             var sdelta: f32 = 0;
             // The provenance planes, made once a front's op is here: read
             // for the collar's recency, written where the op wins (P2.2).
-            var pv: ?[4]*Plane = null;
+            var pv: ?[2]*Plane = null;
             for (ru.surface_ops.items) |op| {
                 if (pv == null and (op.who != 0 or nb.has(Channel.who.bit()))) {
-                    var planes: [4]*Plane = undefined;
-                    for ([_]Channel{ .who, .segment, .chart_s, .chart_theta }, 0..) |ch, n| {
+                    var planes: [2]*Plane = undefined;
+                    for ([_]Channel{ .who, .segment }, 0..) |ch, n| {
                         planes[n] = nb.ensurePlane(gpa, ch.bit()) catch {
                             nb.release(gpa);
                             ctx.failed.store(true, .release);
@@ -2237,6 +2234,11 @@ pub const World = struct {
                 }
                 const who_f: f32 = @floatFromInt(op.who);
                 const seg_f: f32 = @floatFromInt(op.segment);
+                // The front's ring arcs: a sample's `segment` names its
+                // capsule, and the capsule's end arc against the op's
+                // start is the window (Christian's count of segments,
+                // read off the arcs so it survives a change of dt).
+                const arcs: []const front.Ring = if (op.who != 0 and op.who - 1 < ctx.world.rings.items.len) ctx.world.rings.items[op.who - 1].items else &.{};
                 const s0: f32 = @floatCast(op.s0);
                 var k: u32 = 0;
                 while (k < brick.N) : (k += 1) {
@@ -2264,27 +2266,26 @@ pub const World = struct {
                                     // joins `other` by the hard min, so a
                                     // chain of capsules is one tube there.
                                     var mine = false;
-                                    if (op.who != 0) {
-                                        if (pv.?[0][idx] == who_f and s0 - pv.?[2][idx] <= op.reach) mine = true;
+                                    if (op.who != 0 and pv.?[0][idx] == who_f) {
+                                        const seg: usize = @intFromFloat(@max(0, pv.?[1][idx]));
+                                        if (seg < arcs.len) {
+                                            const s_end: f32 = @floatCast(arcs[seg].s);
+                                            if (s0 - s_end <= op.reach) mine = true;
+                                        }
                                     }
                                     const first = own >= bd and other >= bd;
                                     if (mine) {
                                         if (dd < own) {
                                             own = dd;
-                                            const p4 = pv.?;
-                                            p4[1][idx] = seg_f;
-                                            p4[2][idx] = op.chart_s.?[idx];
-                                            p4[3][idx] = op.chart_theta.?[idx];
+                                            pv.?[1][idx] = seg_f;
                                             prov += 1;
                                         }
                                     } else if (dd < own) {
                                         other = own;
                                         own = dd;
-                                        if (pv) |p4| {
-                                            p4[0][idx] = who_f;
-                                            p4[1][idx] = seg_f;
-                                            p4[2][idx] = if (op.who != 0) op.chart_s.?[idx] else 0;
-                                            p4[3][idx] = if (op.who != 0) op.chart_theta.?[idx] else 0;
+                                        if (pv) |p2| {
+                                            p2[0][idx] = who_f;
+                                            p2[1][idx] = seg_f;
                                         }
                                         if (op.who != 0) prov += 1;
                                     } else {

@@ -2188,7 +2188,7 @@ test "G12 (a) mutation: its own at any age (`.own`) → the coil's self-touch is
     try testing.expectEqual(@as(u64, 0), d.lowered);
 }
 
-const BandCheck = struct { provenanced: u64 = 0, exact: u64 = 0, collared: u64 = 0, mismatched: u64 = 0, chart_mismatch: u64 = 0, raised: u64 = 0, above_own: u64 = 0 };
+const BandCheck = struct { provenanced: u64 = 0, exact: u64 = 0, collared: u64 = 0, mismatched: u64 = 0, raised: u64 = 0, above_own: u64 = 0 };
 
 /// Every provenanced own sample: the capsule rebuilt from the ring
 /// records at (who, segment), its foot at the point, and the slot's own
@@ -2217,7 +2217,6 @@ fn bandCheck(gpa: std.mem.Allocator, w: *const World) !BandCheck {
                     const q = [3]f64{ @floatFromInt(p[0]), @floatFromInt(p[1]), @floatFromInt(p[2]) };
                     const ft = cap.foot(q);
                     const expected = @min(bd, @max(cap.signedAt(ft), -bd));
-                    if (cap.chartS(ft) != pv.s or cap.chartTheta(ft) != pv.theta) out.chart_mismatch += 1;
                     const own = b.get(Channel.own.bit(), i, j, k);
                     const phi = b.get(Channel.surface.bit(), i, j, k);
                     if (phi > own) out.above_own += 1;
@@ -2239,10 +2238,9 @@ test "G12 (b) the bands: band 1 read through the provenance chart reproduces eve
     var w = try junctionRun(gpa, null, .recent, 40);
     defer w.deinit();
     const c = try bandCheck(gpa, &w);
-    std.debug.print("\nG12 (b): {d} provenanced samples; {d} reproduce their deposit exactly, {d} raised, {d} mismatched; chart (s, θ) mismatches {d}; the carrier above its own slot at {d}, collared under it at {d}; tolerance {e}\n", .{ c.provenanced, c.exact, c.raised, c.mismatched, c.chart_mismatch, c.above_own, c.collared, thresholds.G12_BAND_TOL });
+    std.debug.print("\nG12 (b): {d} provenanced samples; {d} reproduce their deposit exactly, {d} raised, {d} mismatched; the carrier above its own slot at {d}, collared under it at {d}; tolerance {e}\n", .{ c.provenanced, c.exact, c.raised, c.mismatched, c.above_own, c.collared, thresholds.G12_BAND_TOL });
     try testing.expect(c.provenanced > 1000);
     try testing.expectEqual(c.provenanced, c.exact);
-    try testing.expectEqual(@as(u64, 0), c.chart_mismatch);
     try testing.expectEqual(@as(u64, 0), c.above_own);
     try testing.expect(c.collared > 0);
     // Band 1 and 2 read at a provenanced sample on the parent's tube.
@@ -2258,10 +2256,9 @@ test "G12 (b) the bands: band 1 read through the provenance chart reproduces eve
     try seedbed.damage(&w, .{ -6, 3, -6 }, .{ 6, 5, 6 });
     try w.apply();
     const after = try bandCheck(gpa, &w);
-    std.debug.print("G12 (b) the scar: {d} provenanced samples before the cut, {d} after; {d} raised above their deposit by the cut, still the parent's, charts intact ({d} mismatches)\n", .{ c.provenanced, after.provenanced, after.raised, after.chart_mismatch });
+    std.debug.print("G12 (b) the scar: {d} provenanced samples before the cut, {d} after; {d} raised above their deposit by the cut, still the parent's\n", .{ c.provenanced, after.provenanced, after.raised });
     try testing.expectEqual(c.provenanced, after.provenanced);
     try testing.expect(after.raised > 0);
-    try testing.expectEqual(@as(u64, 0), after.chart_mismatch);
     try testing.expectEqual(@as(u64, 0), after.mismatched);
 }
 
@@ -2299,10 +2296,10 @@ test "G12 (c) the sponge: a band-0 query gathers the carrier's coefficients and 
             }
         }
     }
-    std.debug.print("\nG12 (c): {d} provenanced samples; a sponge query {d} bytes each, a bark query {d} at least ({d:.1} on average) — the four provenance samples and {d}-byte ring records\n", .{ provenanced, thresholds.G12_SPONGE_BYTES, bark_min, @as(f64, @floatFromInt(bark_bytes)) / @as(f64, @floatFromInt(provenanced)), @sizeOf(loam.front.Ring) });
+    std.debug.print("\nG12 (c): {d} provenanced samples; a sponge query {d} bytes each, a bark query {d} at least ({d:.1} on average) — two provenance samples and {d}-byte ring records\n", .{ provenanced, thresholds.G12_SPONGE_BYTES, bark_min, @as(f64, @floatFromInt(bark_bytes)) / @as(f64, @floatFromInt(provenanced)), @sizeOf(loam.front.Ring) });
     try testing.expect(provenanced > 1000);
     try testing.expectEqual(@as(u64, 0), sponge_extra);
-    try testing.expect(bark_min >= thresholds.G12_SPONGE_BYTES + 4 * 4 + 2 * @sizeOf(loam.front.Ring));
+    try testing.expect(bark_min >= thresholds.G12_SPONGE_BYTES + 2 * 4 + 2 * @sizeOf(loam.front.Ring));
 }
 
 // ── The inner elbow: Christian's number, measured ────────────────────────
@@ -2518,7 +2515,7 @@ fn turn3(a: [3]f32, b: [3]f32) f32 {
     return std.math.acos(@min(1.0, @max(-1.0, d)));
 }
 
-const Generator = struct { probes: u64 = 0, pairs: u64 = 0, max_ds: f32 = 0, max_dtheta: f32 = 0, max_theta_err: f32 = 0, zone_pairs: u64 = 0, zone_ds: f32 = 0, zone_theta_err: f32 = 0, who_flips: u64 = 0, flips_outside: u64 = 0, child_owned: u64 = 0, non_integer_who: u64 = 0 };
+const Generator = struct { probes: u64 = 0, pairs: u64 = 0, max_ds: f32 = 0, max_dtheta: f32 = 0, max_theta_err: f32 = 0, who_flips: u64 = 0, flips_outside: u64 = 0, child_owned: u64 = 0, non_integer_who: u64 = 0, non_integer_seg: u64 = 0 };
 
 /// Probes along a generator of the parent — rays from its axis toward
 /// `side`, every quarter unit of arc — reading the chart at each hit.
@@ -2535,48 +2532,40 @@ fn generator(w: *const World, side: [3]f64, psi: f32, rules: bark.Rules, zone: f
     const child = w.rings.items[1].items;
     var prev: ?bark.Chart = null;
     var prev_y: f64 = 0;
-    var prev_in_zone = false;
     var y: f64 = c[1] + 3;
     while (y <= c[1] + 30) : (y += 0.25) {
         const hit = surfaceHit(snap, .{ c[0], y, c[2] }, side, 12) orelse continue;
         var planes: u8 = 0;
         var bytes: u64 = 0;
-        const ch = bark.chartAt(snap, hit.p, rules, &planes, &bytes) orelse continue;
+        const ch = bark.chartAt(w, snap, hit.p, rules, &planes, &bytes) orelse continue;
         out.probes += 1;
         if (ch.who_raw != @round(ch.who_raw)) out.non_integer_who += 1;
+        if (ch.segment_raw != @round(ch.segment_raw)) out.non_integer_seg += 1;
         const in_zone = distToRings(child, hit.p) <= zone;
         if (ch.who == 1) {
             out.child_owned += 1;
             if (!in_zone) out.flips_outside += 1;
         } else if (ch.who == 0) {
             const s_here: f32 = @floatCast(y - c[1]);
-            const err = @abs(wrapPi(ch.theta - (psi - drift * s_here)));
-            if (in_zone) out.zone_theta_err = @max(out.zone_theta_err, err) else out.max_theta_err = @max(out.max_theta_err, err);
+            out.max_theta_err = @max(out.max_theta_err, @abs(wrapPi(ch.theta - (psi - drift * s_here))));
         }
         if (prev) |pv| {
             if (pv.who != ch.who) {
                 out.who_flips += 1;
             } else if (ch.who == 0) {
+                out.pairs += 1;
                 const dy: f32 = @floatCast(y - prev_y);
-                const ds = @abs((ch.s - pv.s) - dy);
-                if (in_zone or prev_in_zone) {
-                    out.zone_pairs += 1;
-                    out.zone_ds = @max(out.zone_ds, ds);
-                } else {
-                    out.pairs += 1;
-                    out.max_ds = @max(out.max_ds, ds);
-                    out.max_dtheta = @max(out.max_dtheta, @abs(wrapPi(ch.theta - pv.theta) + drift * dy));
-                }
+                out.max_ds = @max(out.max_ds, @abs((ch.s - pv.s) - dy));
+                out.max_dtheta = @max(out.max_dtheta, @abs(wrapPi(ch.theta - pv.theta) + drift * dy));
             }
         }
         prev = ch;
         prev_y = y;
-        prev_in_zone = in_zone;
     }
     return out;
 }
 
-const Fan = struct { hits: u64 = 0, max_bent_excess: f32 = 0, at_flip_bent_vs_unbent: f32 = 0, at_flip_bare: f32 = 0, flips: u64 = 0, min_bare: f32 = 1, max_sep: f32 = 0, flip_sep: f32 = 0 };
+const Fan = struct { hits: u64 = 0, max_bent_excess: f32 = 0, at_flip_bent_vs_unbent: f32 = 0, at_flip_bare: f32 = 0, flips: u64 = 0, min_bare: f32 = 1, max_sep: f32 = 0, flip_sep: f32 = 0, max_planes: u8 = 0 };
 
 /// A fan of rays from a point in the void above the junction, across the
 /// crotch: from the parent's surface on one side, over the fillet, onto
@@ -2601,6 +2590,7 @@ fn fanAcross(w: *const World, from: [3]f64, u: [3]f64, v: [3]f64, half: f64, n: 
         const b = bark.read(w, snap, hit.p, hit.n, footprint, .bark, rules);
         out.hits += 1;
         out.min_bare = @min(out.min_bare, b.bare);
+        out.max_planes = @max(out.max_planes, b.planes);
         if (prev) |pv| {
             const sep: f32 = @floatCast(loam.world.len3(.{ hit.p[0] - prev_p[0], hit.p[1] - prev_p[1], hit.p[2] - prev_p[2] }));
             out.max_sep = @max(out.max_sep, sep);
@@ -2643,49 +2633,49 @@ test "G16 (a) the chart is continuous along a tube: s advances by the arc, θ by
     defer w.deinit();
     const zone: f64 = thresholds.g12Zone(maxRadius(w.rings.items[1].items), channel.band(1));
     // The parent's normal is −z, so θ = 0 on the junction side (at the
-    // wrap) and π on the far side.
-    const far = generator(&w, .{ 0, 0, 1 }, std.math.pi, .{}, zone);
-    const near = generator(&w, .{ 0, 0, -1 }, 0, .{}, zone);
-    std.debug.print("\nG16 (a): far side {d} probes, {d} parent pairs: |Δs − Δarc| ≤ {e:.2}, |Δθ + drift·Δarc| ≤ {e:.2}, |θ − chart| ≤ {e:.2}; junction side {d} probes, {d} pairs outside the zone: {e:.2}, {e:.2}, {e:.2}; {d} pairs inside the zone, the one-sided mask: |Δs − Δarc| ≤ {d:.3}, |θ − chart| ≤ {d:.3} against the ceiling {d:.2}; who flips {d}, child-owned {d}, outside the zone {d}; non-integer who {d}\n", .{ far.probes, far.pairs, far.max_ds, far.max_dtheta, far.max_theta_err, near.probes, near.pairs, near.max_ds, near.max_dtheta, near.max_theta_err, near.zone_pairs, near.zone_ds, near.zone_theta_err, thresholds.G16_MASK_BOUND, near.who_flips, near.child_owned, near.flips_outside, far.non_integer_who + near.non_integer_who });
+    // wrap) and π on the far side. The chart is the capsule's foot, so
+    // it is exact through the collar's zone as well as beyond it.
+    const far = generator(&w, .{ 0, 0, 1 }, std.math.pi, .{ .mode = .chart }, zone);
+    const near = generator(&w, .{ 0, 0, -1 }, 0, .{ .mode = .chart }, zone);
+    std.debug.print("\nG16 (a): far side {d} probes, {d} parent pairs: |Δs − Δarc| ≤ {e:.2}, |Δθ + drift·Δarc| ≤ {e:.2}, |θ − chart| ≤ {e:.2}; junction side {d} probes, {d} pairs: {e:.2}, {e:.2}, {e:.2}; who flips {d}, child-owned {d}, outside the zone {d}; non-integer who {d}, segment {d}\n", .{ far.probes, far.pairs, far.max_ds, far.max_dtheta, far.max_theta_err, near.probes, near.pairs, near.max_ds, near.max_dtheta, near.max_theta_err, near.who_flips, near.child_owned, near.flips_outside, far.non_integer_who + near.non_integer_who, far.non_integer_seg + near.non_integer_seg });
     try testing.expect(far.pairs > 80 and near.pairs > 40);
     try testing.expect(far.max_ds <= thresholds.G16_CHART_TOL and near.max_ds <= thresholds.G16_CHART_TOL);
     try testing.expect(far.max_dtheta <= thresholds.G16_CHART_TOL and near.max_dtheta <= thresholds.G16_CHART_TOL);
     try testing.expect(far.max_theta_err <= thresholds.G16_CHART_TOL and near.max_theta_err <= thresholds.G16_CHART_TOL);
-    try testing.expect(near.zone_pairs > 0 and near.zone_ds <= thresholds.G16_MASK_BOUND and near.zone_theta_err <= thresholds.G16_MASK_BOUND);
     try testing.expectEqual(@as(u64, 0), far.who_flips);
     try testing.expect(near.child_owned > 0);
     try testing.expectEqual(@as(u64, 0), near.flips_outside);
-    try testing.expectEqual(@as(u64, 0), far.non_integer_who + near.non_integer_who);
+    try testing.expectEqual(@as(u64, 0), far.non_integer_who + near.non_integer_who + far.non_integer_seg + near.non_integer_seg);
     // The fan: from the void above the junction, across the crotch —
-    // the parent's surface, the fillet, the child's upper side.
+    // the parent's surface, the fillet, the child's upper side. In the
+    // field's mode the frame turns with the fillet and nothing switches;
+    // in the chart's, the grain goes bare where the fields cross.
     const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
     const child = w.rings.items[1].items;
     const from = [3]f64{ c[0], c[1] + 18, c[2] - 5 };
-    const fan = fanAcross(&w, from, .{ 0, -1, 0 }, .{ 0, 0, 1 }, 50.0 * std.math.pi / 180.0, 201, 0.1, .{});
-    // Bare at the flip: the two slots are within a hit's separation of
-    // equal there (both distance fields, so |Δ(other − own)| ≤ 2·sep),
-    // and the fade's own bound follows.
+    const field = fanAcross(&w, from, .{ 0, -1, 0 }, .{ 0, 0, 1 }, 50.0 * std.math.pi / 180.0, 201, 0.1, .{});
+    const fan = fanAcross(&w, from, .{ 0, -1, 0 }, .{ 0, 0, 1 }, 50.0 * std.math.pi / 180.0, 201, 0.1, .{ .mode = .chart });
     const k: f32 = w.fronts.items[1].params.collar * child[1].envelope;
     const bare_tol: f32 = std.math.tanh(k * fan.flip_sep);
-    std.debug.print("G16 (a) the fan: {d} hits, {d} who flips, neighbours at most {d:.3} apart; the bent normal's turn over the unbent's and the bump's own curvature: {d:.3} rad at most; at the flip the grain is bare to {d:.3} against the fade's {d:.3}, the bent normal {d:.3} rad from the unbent; bare down to {d:.3} across the fan\n", .{ fan.hits, fan.flips, fan.max_sep, fan.max_bent_excess, fan.at_flip_bare, bare_tol, fan.at_flip_bent_vs_unbent, fan.min_bare });
-    try testing.expect(fan.hits > 150);
+    std.debug.print("G16 (a) the fan, the field's frame: {d} hits, the bent normal's turn over the unbent's and the bump's own curvature {d:.3} rad at most, {d} provenance planes read; the chart's: {d} who flips, neighbours at most {d:.3} apart, excess {d:.3}; at the flip the grain is bare to {d:.3} against the fade's {d:.3}, the bent normal {d:.3} rad from the unbent\n", .{ field.hits, field.max_bent_excess, field.max_planes, fan.flips, fan.max_sep, fan.max_bent_excess, fan.at_flip_bare, bare_tol, fan.at_flip_bent_vs_unbent });
+    try testing.expect(field.hits > 150 and fan.hits > 150);
+    try testing.expect(field.max_bent_excess <= 1e-3);
+    try testing.expectEqual(@as(u8, 0), field.max_planes);
     try testing.expect(fan.flips > 0);
     try testing.expect(fan.max_bent_excess <= 1e-3);
     try testing.expect(fan.at_flip_bare <= bare_tol);
 }
 
-test "G16 (a) mutation: θ interpolated as an angle → a jump at the wrap; who interpolated → a third front's id" {
+test "G16 (a) mutations: who interpolated → a third front's id; the segment interpolated → a foot on no capsule" {
     const gpa = testing.allocator;
     var w = try junctionRun(gpa, null, .recent, 40);
     defer w.deinit();
     const zone: f64 = thresholds.g12Zone(maxRadius(w.rings.items[1].items), channel.band(1));
-    // The junction side's θ sits at the wrap (2π − roll): the angle
-    // interpolated across it.
-    const angle = generator(&w, .{ 0, 0, -1 }, 0, .{ .theta_wrapped = false }, zone);
-    const interp = generator(&w, .{ 0, 0, -1 }, 0, .{ .who_nearest = false }, zone);
-    std.debug.print("\nG16 (a) mutations: θ as an angle → |θ − chart| up to {d:.3} rad at the wrap; who interpolated → {d} non-integer ids\n", .{ angle.max_theta_err, interp.non_integer_who });
-    try testing.expect(angle.max_theta_err > 1.0);
+    const interp = generator(&w, .{ 0, 0, -1 }, 0, .{ .mode = .chart, .who_nearest = false }, zone);
+    const seg = generator(&w, .{ 0, 0, 1 }, std.math.pi, .{ .mode = .chart, .segment_nearest = false }, zone);
+    std.debug.print("\nG16 (a) mutations: who interpolated → {d} non-integer ids; the segment interpolated → {d} non-integer segments, |Δs − Δarc| up to {d:.3}\n", .{ interp.non_integer_who, seg.non_integer_seg, seg.max_ds });
     try testing.expect(interp.non_integer_who > 0);
+    try testing.expect(seg.non_integer_seg > 0);
 }
 
 test "G16 (a) mutation: band 3 not faded at the collar → the grain's phase jumps where who changes" {
@@ -2695,7 +2685,7 @@ test "G16 (a) mutation: band 3 not faded at the collar → the grain's phase jum
     const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
     const child = w.rings.items[1].items;
     const from = [3]f64{ c[0], c[1] + 18, c[2] - 5 };
-    const fan = fanAcross(&w, from, .{ 0, -1, 0 }, .{ 0, 0, 1 }, 50.0 * std.math.pi / 180.0, 201, 0.1, .{ .bare_collar = false });
+    const fan = fanAcross(&w, from, .{ 0, -1, 0 }, .{ 0, 0, 1 }, 50.0 * std.math.pi / 180.0, 201, 0.1, .{ .mode = .chart, .bare_collar = false });
     const k: f32 = w.fronts.items[1].params.collar * child[1].envelope;
     const bare_tol: f32 = std.math.tanh(k * fan.flip_sep);
     std.debug.print("\nG16 (a) mutation, no fade at the collar: {d} flips; at the flip the grain is bare to {d:.3} against the fade's {d:.3}, the bent normal {d:.3} rad from the unbent\n", .{ fan.flips, fan.at_flip_bare, bare_tol, fan.at_flip_bent_vs_unbent });
@@ -2714,7 +2704,7 @@ test "G16 (b) the footprint: bands fade over an octave, bytes fall monotonically
     var y: f64 = c[1] + 4;
     while (y < c[1] + 30) : (y += 0.5) {
         const h = surfaceHit(snap, .{ c[0], y, c[2] }, .{ 0, 0, 1 }, 12) orelse continue;
-        const b = bark.read(&w, snap, h.p, h.n, 0.1, .bark, .{});
+        const b = bark.read(&w, snap, h.p, h.n, 0.1, .bark, .{ .mode = .chart });
         if (b.chart != null and @abs(b.band1) > 0.05) {
             hit = .{ .p = h.p, .n = h.n };
             break;
@@ -2729,7 +2719,7 @@ test "G16 (b) the footprint: bands fade over an octave, bytes fall monotonically
     const df: f32 = 0.01;
     const scale1 = thresholds.band1Scale(w.fronts.items[0].params.radius);
     while (f <= 2.0) : (f += df) {
-        const b = bark.read(&w, snap, h.p, h.n, f, .bark, .{});
+        const b = bark.read(&w, snap, h.p, h.n, f, .bark, .{ .mode = .chart });
         const sp = bark.read(&w, snap, h.p, h.n, f, .sponge, .{});
         try testing.expectEqual(thresholds.G12_SPONGE_BYTES, sp.bytes);
         try testing.expect(b.bytes <= prev_bytes);
@@ -2746,14 +2736,15 @@ test "G16 (b) the footprint: bands fade over an octave, bytes fall monotonically
         prev_band1 = b.band1;
         prev_raw1 = b.raw1;
     }
-    // The prediction, frozen before the run.
+    // The prediction, frozen before the run, in both modes.
     var agree = true;
     std.debug.print("\nG16 (b): band 1's scale here {d:.3}; the read against the prediction —", .{scale1});
     for (thresholds.G16_PREDICTED) |row| {
-        const b = bark.read(&w, snap, h.p, h.n, row.footprint, .bark, .{});
-        const ok = b.planes == row.planes and (b.records > 0) == row.table;
+        const b = bark.read(&w, snap, h.p, h.n, row.footprint, .bark, .{ .mode = .chart });
+        const fb = bark.read(&w, snap, h.p, h.n, row.footprint, .bark, .{});
+        const ok = b.planes == row.chart_planes and (b.records > 0) == row.chart_table and fb.planes == row.field_planes and fb.records == 0;
         if (!ok) agree = false;
-        std.debug.print(" f {d:.1}: {d} planes, {s} ({s});", .{ row.footprint, b.planes, if (b.records > 0) "the table" else "no table", if (ok) "as predicted" else "NOT as predicted" });
+        std.debug.print(" f {d:.1}: chart {d} planes, {s}; field {d} planes ({s});", .{ row.footprint, b.planes, if (b.records > 0) "the table" else "no table", fb.planes, if (ok) "as predicted" else "NOT as predicted" });
     }
     std.debug.print("\nG16 (b): bytes monotone; band 1's largest jump over the fade's bound {e:.2}\n", .{max_jump_over_bound});
     try testing.expect(max_jump_over_bound <= 0);
@@ -2770,18 +2761,18 @@ test "G16 (b) mutations: the footprint ignored → every read pays for everythin
     var y: f64 = c[1] + 4;
     while (y < c[1] + 30) : (y += 0.5) {
         const h = surfaceHit(snap, .{ c[0], y, c[2] }, .{ 0, 0, 1 }, 12) orelse continue;
-        const b = bark.read(&w, snap, h.p, h.n, 0.1, .bark, .{});
+        const b = bark.read(&w, snap, h.p, h.n, 0.1, .bark, .{ .mode = .chart });
         if (b.chart != null and @abs(b.band1) > 0.05) {
             hit = .{ .p = h.p, .n = h.n };
             break;
         }
     }
     const h = hit.?;
-    const far = bark.read(&w, snap, h.p, h.n, 1.5, .bark, .{ .footprint = false });
-    const near = bark.read(&w, snap, h.p, h.n, 0.1, .bark, .{});
+    const far = bark.read(&w, snap, h.p, h.n, 1.5, .bark, .{ .mode = .chart, .footprint = false });
+    const near = bark.read(&w, snap, h.p, h.n, 0.1, .bark, .{ .mode = .chart });
     const scale1 = thresholds.band1Scale(w.fronts.items[0].params.radius);
-    const before = bark.read(&w, snap, h.p, h.n, scale1 - 0.005, .bark, .{ .fade = false });
-    const after = bark.read(&w, snap, h.p, h.n, scale1 + 0.005, .bark, .{ .fade = false });
+    const before = bark.read(&w, snap, h.p, h.n, scale1 - 0.005, .bark, .{ .mode = .chart, .fade = false });
+    const after = bark.read(&w, snap, h.p, h.n, scale1 + 0.005, .bark, .{ .mode = .chart, .fade = false });
     std.debug.print("\nG16 (b) mutations: the footprint ignored at 1.5 pays {d} bytes, the honoured read at 0.1 {d}; the hard cut: band 1 {d:.3} then {d:.3} across the scale\n", .{ far.bytes, near.bytes, before.band1, after.band1 });
     try testing.expectEqual(near.bytes, far.bytes);
     try testing.expect(@abs(before.band1 - after.band1) > 0.05);

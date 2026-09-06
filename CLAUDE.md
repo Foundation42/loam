@@ -137,29 +137,31 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   the front's own arithmetic, and G12 (b) reads every deposit back
   bit for bit. `--collar 0` reproduces the previous carrier exactly.
 - **What a hit reads is `src/bark.zig`, term for term with the shader
-  (P2.3, G16).** The CHART at a hit comes from the provenance planes:
-  `who` nearest — and where two fronts laid the neighbourhood, the one
-  whose field, rebuilt from the two slots (`own` where it won the
-  sample, `other` where it did not), is nearer at the hit, so the seam
-  is where the fields cross and never on the sample grid; s and θ by
-  the spline over THAT front's samples only, masked and renormalised
-  (charts are charts, not fields — unmasked, a parent's arc read 12.9
-  where it was 15), θ from the splines of cos θ and sin θ (an angle
-  interpolated across its wrap is nonsense). The chart is written from
-  the UNCLAMPED foot of the capsule, so a sample in a cap reads the arc
-  it lies beside. Bands are read by FOOTPRINT — the ray's width at the
-  hit, WORLD units — and FADE in over an octave (`thresholds.bandWeight`,
-  the mip rule: never a pop); a band under its footprint is never
-  fetched, so bytes fall with distance. Band 1 is the ring residual at
-  the chart from `World.rings`, band 2 its second difference along the
-  arc, bands 3+ value noise on (θ·r, s) at the material's octaves in
-  world units (`BARK_OCTAVES_W`, struck: bark does not get finer
-  because the brick did), bared at a collar by the DIFFERENCE of the
-  two slots' weights (`collarBare`, zero where they meet) so the grain's
-  phase never jumps where the chart switches; the ridge there is band
-  1's alone. A sponge reads band 0 and 256 bytes whatever the
-  footprint. The prediction of what a read touches is frozen beside the
-  threshold (`G16_PREDICTED`) and the gate reads it at every row.
+  (P2.3, G16). THE BARK'S FRAME IS THE FIELD'S** (Christian: "the rings
+  are a scaffold; the point of loam is the gradient field"): the grain
+  is value noise in the level set's own principal frame — the Hessian
+  at the hit, the tube's axis its direction of least curvature —
+  stretched along the axis, even in the frame's signs, keyed by world
+  position; it reads nothing but the carrier, and the GPU carries the
+  carrier alone. THE CHART IS HISTORY'S: `who` and `segment` name the
+  capsule that laid a sample, and the chart's (s, θ) at any point is
+  that capsule's foot there, rebuilt from the ring records exactly —
+  no chart plane is stored, nothing is interpolated (two stored chart
+  planes were built and dropped the same night: the seam sat on the
+  sample grid, a one-sided mask lost linear precision). Where two
+  fronts laid the neighbourhood the hit belongs to the one whose
+  field, rebuilt from the two slots, is nearer: the seam at the
+  crossing. Bands are read by FOOTPRINT — the ray's width at the hit,
+  WORLD units — and FADE in over an octave (`thresholds.bandWeight`,
+  never a pop); a band under its footprint is never fetched. Bands
+  1–2 (the ring morphology through the chart) are what the field
+  already holds and are read for the events only. The chart's grain
+  goes bare at a collar by the DIFFERENCE of the two slots' weights
+  (`collarBare`, zero where they meet). The collar's recency window
+  asks the ring table through `segment`: the reach behind the new
+  capsule's start against the sample's capsule's end arc, dt-safe. The
+  prediction of what a read touches is frozen beside the threshold
+  (`G16_PREDICTED`, both modes) and the gate reads it at every row.
 - **A plane is an 11³ block.** The brick's 9³ samples sit at block
   coordinates 1..9; the halo (0 and 10) is the neighbours' layer beyond
   each face, copied at commit by the halo pass. `Brick.index(i, j, k)`

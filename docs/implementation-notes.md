@@ -1,7 +1,10 @@
 # Implementation notes — the ledger
 
 **Status:** Phase 1 built, 2026-09-06: P1.1–P1.7, G1–G8 green and bitten.
-**P2.3 built Sunday 2026-09-06, night** — what a hit reads: the chart
+**The cost beat, the same night** — the bark reads nothing but the
+carrier; the two chart planes gone, the collar's window through the
+ring table, the chart at a read the capsule's exact foot; 5.21 → 4.49
+ms a step ("The cost beat" below). **P2.3 built Sunday 2026-09-06, night** — what a hit reads: the chart
 from the provenance planes (masked, the seam where two fields cross),
 the bands by footprint fading in over an octave, the grain bare at a
 collar, on the GPU with the ring table; G16 green and bitten, the
@@ -2128,10 +2131,73 @@ for the collar. Five planes where there are seven, and the GPU stride
 back toward 1336 with a ring table beside it. Candidates, none taken
 tonight; the regression line stands at 5.21.
 
+## The cost beat (Sunday 2026-09-06, late night; the conn Christian's, then mine — "your call to get it done as a test")
+
+The bark said what it reads, and the sim followed. What went and what
+held, each with its number, all gates green before any of it was
+kept.
+
+**The two chart planes are gone.** `chart_s` and `chart_theta` had
+one reader left in the sim, the collar's recency window, and one in
+the gates. The window now asks the ring table: a sample's `segment`
+names its capsule, the table holds that capsule's end arc, and the
+window is the reach behind the new capsule's start — Christian's
+"own front, within the last m segments", m read off the arcs, so it
+survives a change of dt. The end arc, so every sample within reach is
+inside the window and a span's tail at most a ring beyond it, where
+smin is min anyway. G12 (a) reads exactly what it read with the chart
+plane: 468 samples lowered, none higher, none outside the zone, the
+largest drop 0.520 — the same collar to the sample. Five provenance
+planes where there were seven: who, segment, own, other, collar.
+
+**The chart at a read is the capsule's foot, exact.** `bark.chartAt`
+takes `who` and `segment` nearest (a sample each), rebuilds the
+capsule from the ring records, and takes its foot at the point — s
+and θ exact, their gradients from the capsule's own geometry, no
+interpolation of anything. G16 (a) along the parent's generators: |Δs
+− Δarc| = 0.00 exactly and |θ − chart| 4.8e-7 on both sides, through
+the collar's zone as well as beyond it. The one-sided mask and its
+ceiling (`G16_MASK_BOUND`) are gone with the planes they masked. The
+seam between two fronts is still the fields' crossing from the two
+slots; the mutations: `who` interpolated → 45 non-integer ids, the
+segment interpolated → 101 non-integer segments (its s stays exact,
+since any capsule's unclamped foot is the arc — the mutation bites on
+the id, as recorded).
+
+**The bark reads nothing but the carrier.** `bark.read` in the field
+mode: the Hessian at the hit from the same 64 coefficients, the
+principal frame (`principalFrame`, unit-tested on a tube), value
+noise in that frame stretched `BARK_STRETCH` along the axis and even
+in the frame's signs, the normal bent in the frame. The prediction
+frozen before the run (`G16_PREDICTED`, both modes) read at every
+row: the chart mode two planes and the table at 0.1 through 0.9 and
+nothing at 1.2; the field mode zero planes at every footprint. The
+fan across the crotch in the field mode: the bent normal's excess
+turn 0.000, zero provenance planes; in the chart mode, bare 0.028 at
+the flip against 0.069 as before.
+
+**The GPU is the carrier alone.** Matryoshka `eff67ff`: the stride
+10652 → 1344 — one plane behind a 12-float header carrying the
+bark's material (octaves and amplitudes in metres, the darkening,
+on/off, the stretch); the ring table, its binding and the chart mode
+are gone with `--loam-bark-mode`; the grooves darken by the grain's
+own relief. The struck stride of 6664 is passed on the way down, not
+on the way up.
+
+| the regression line, sapling seed 7, 100 steps, serial, ReleaseSafe | pinned | now |
+|---|---|---|
+| ms a step | 5.18 (re-measured 5.21) | 4.49 |
+| seams / finalize / hash, ms over the run | 265 / 159 / 96 | 234 / 129 / 78 |
+
+G1 `60b27f31…` → `6b7f4a8f…`, the two planes alone. 95 gates, 240 s
+ReleaseSafe; `verify-dump` and `py-test` pass; the bridge's three
+tests pass; the close-up rendered headless and sent.
+
 ### Open
 
-The stride against the struck number (the bake). The chart planes'
-last readers. The material seedbed, the developed archetype first. The one-sided mask's
+The material seedbed, the developed archetype first. `who` and
+`segment` packed to one plane, and `own` where `other` is far, are
+the next two of the seven-plane cost and were not needed tonight. The one-sided mask's
 error inside a collar, if a chart read there ever matters. The
 amplitudes, PROPOSED. The silhouette ensemble, recorded with its
 trigger (shimmer at a silhouette under the footprint cut). From
@@ -2286,6 +2352,10 @@ After P2.2 (the same night), the same run: Debug 40.3 ms a step
 ReleaseSafe 5.18 (seams 265, finalize 159, the hash 97) — seven new
 planes on every tissue brick; the table in "P2.2 — the collar" has the
 previous commit and the hard union beside it.
+
+After the cost beat (the same night): ReleaseSafe 4.49 ms a step
+(seams 234, finalize 129, the hash 78) — the two chart planes gone,
+five provenance planes where there were seven. The regression line.
 
 The attention walk's overhead (P2.1a, a standing number — it will drift
 as the tree grows): leaves examined per attentive brick, sapling seed 7
