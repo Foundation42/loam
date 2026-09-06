@@ -100,7 +100,7 @@ that must bite.
 | G10 Bound | the summary's L is conservative | for every brick, max over probe pairs of \|φ(x) − φ(y)\|/‖x − y‖ ≤ L | ≤ L, exactly | L from finite differences instead of coefficients → a pair exceeds it |
 | G11 Sphere trace | a march stepped by \|φ\|/L never overshoots the zero set | for N random rays, the first sign change lies within one bisection tolerance of the hit; no hit missed that a dense march finds | 0 misses in ⟨4096⟩ rays | step by 2\|φ\|/L → overshoots |
 | G12 Collar | smooth union is smooth at a branch | \|∇φ\| continuous across the junction; provenance-blended band signal continuous | no jump above ⟨…⟩ | hard min → a crease; nearest-front ownership → the bark rotates |
-| G13 Thin feature | sub-gauge structure survives the B-spline | a straight swept capsule across a radius sweep: the minimum r/h at which the zero set survives, and the radius bias above it | recorded, then ⟨…⟩ struck from the number | trilinear in place of the B-spline → a different survival curve; the gate is the instrument |
+| G13 Thin feature | sub-gauge structure survives the B-spline | a straight capsule across a radius sweep ⟨0.5 … 6⟩ r/h, nine axis offsets in the cell, three orientations: whether the zero set survives, and r_rec/r worst and best | (a) the instrument reads the prediction: survival matches, r_rec/r within ⟨1%⟩ of `tools/g13_predict.py`; (b) survives at r/h ≥ ⟨1.0⟩; (c) \|r_rec − r\|/r ≤ ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and thinner is refinement's problem | gauge doubled without refinement → vanishes at 1.0, thins 30% at 2.0 (bites b, c); control values half a cell off → ±40% at 2.0 (bites a, c); trilinear → survives lower, thins less (bites a only: the instrument's variation, recorded) |
 | G1 again | replay, end to end, with the new carrier | frozen reference, re-baselined as a reviewed event with old and new in the ledger | identical | commit order reversed |
 | The look | the trunk with no facets | the close-up at `--loam-scale 0.06` | Christian's eyes | — |
 
@@ -110,6 +110,44 @@ gauge represents faithfully — before the look is judged, and its number
 decides whether P2.1 declares a minimum structural radius and pushes
 thinner branches into refinement, or needs a prefilter. Measure first;
 no prefilter unless the number forces it.
+
+**G13's threshold was written before the sweep** (Claude Chat, Sunday
+2026-09-06: a measurement without a threshold makes the first result the
+threshold — G3 again). It is struck against theory, not against the
+instrument. With samples as control values the cubic B-spline is a
+smoothing, S ≈ φ + (h²/6)∇²φ; a tube's Laplacian is 1/ρ, so the zero set
+of a capsule of radius r sits at ρ ≈ r − h²/(6r) — thinned by (1/6)(h/r)²
+— and vanishes where the smoothing lifts the axis above zero, near
+r ≈ 0.78h. `tools/g13_predict.py` evaluates the full sum, worst over
+nine axis offsets in the cell and three orientations:
+
+| r/h | zero set | r_rec/r worst … best | thinning | second order |
+|---|---|---|---|---|
+| 0.50 | vanishes | — | — | — |
+| 0.75 | vanishes | — | — | — |
+| 1.00 | survives | 0.702 … 0.811 | −30% … −19% | −17% |
+| 1.50 | survives | 0.909 … 0.919 | −9.1% … −8.1% | −7.4% |
+| 2.00 | survives | 0.954 … 0.956 | −4.6% … −4.4% | −4.2% |
+| 3.00 | survives | 0.981 | −1.9% | −1.9% |
+| 4.00 | survives | 0.989 | −1.1% | −1.0% |
+| 6.00 | survives | 0.995 | −0.5% | −0.5% |
+
+From which the PROPOSED numbers in `src/thresholds.zig`: the instrument
+must read this table to ⟨1%⟩ of r (survival matching exactly) — the Zig
+reconstruction runs on real bricks with halos and seams, so a halo
+copied one layer short shows here first; a capsule at r/h ≥ ⟨1.0⟩ must
+survive (theory 0.78, headroom 0.22h); and the radius must be faithful to
+⟨5%⟩ at r/h ≥ ⟨2.0⟩ (theory 4.6% worst). **Thinner than 2h is
+refinement's problem, not a prefilter's.** What that rules today: the
+sapling's radius ladder is 3.0 → 2.1 → 1.47 → 1.03 lattice units by
+`child_ratio` 0.7, each tapering to 65% at its tip, so at gauge 0 the
+generation-2 and -3 twigs fall below the faithful floor and the
+thinnest tips (0.67) below survival — the number Astra asked for, and
+D2's first paying customer. The mutations' curves were predicted the
+same way (the script's `--gauge 2`, `--shift 0.5`, `--trilinear`) and are
+in the table above; trilinear bites only the instrument-agreement check,
+which is the finding Astra anticipated — interpolation keeps more of a
+thin feature than approximation and is C0 for it.
 
 Denominator check: G11's is the dense march's hit set, so "0 misses" is
 measured against something that can miss for its own reasons at a
@@ -123,7 +161,9 @@ channel with narrow-band frontier (a brick is materialised where the
 band reaches a face, and a brick whose φ minimum is positive holds no
 surface); the `smin` op on the update buffer, front-id ordered; the
 capsule sweep; the leaf as a sphere tracer stepped by the brick's L; the
-seam guard extended to derivatives. Gates: G9, G10, G11, G1 re-baselined.
+seam guard extended to derivatives. Gates: G13 first — the instrument the
+reconstruction is checked with before anything is grown on it — then
+G9, G10, G11, G1 re-baselined.
 The bridge and the shader move from `material` iso to `surface` zero.
 
 **P2.2 — history and bands.** Provenance at deposition; ring history on

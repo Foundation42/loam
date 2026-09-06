@@ -614,6 +614,53 @@ design. The brief is `loam-phase2-brief.md`: rulings R7–R14 asked, gates
 G9–G12 with their mutations, the beats and the fence. Nothing of it is
 built; the brief precedes the spade.
 
+## G13's threshold, before the spade (Sunday 2026-09-06)
+
+Claude Chat, forwarded by Christian: G13 had a measurement — the r/h at
+which a capsule's zero set vanishes, and the radius bias above it — but
+no threshold, and "the threshold is yours to write before the sweep
+runs. Otherwise the first result becomes the threshold, which is the G3
+situation again." Written now, against theory rather than against the
+instrument, and PROPOSED in `src/thresholds.zig` like every other number.
+
+The theory: the cubic B-spline with samples as control values (R7 as
+recommended, no prefilter) is Schoenberg's variation-diminishing spline,
+a smoothing with leading term (h²/6)∇²φ. A tube's ∇²φ is 1/ρ, so a capsule
+of radius r reconstructs with its zero set at ρ ≈ r − h²/(6r), thinned by
+(1/6)(h/r)², and vanishes where the smoothing lifts the axis above zero.
+`tools/g13_predict.py` (numpy, a second program — the closed form the Zig
+instrument is checked against, as the diffusion gate is checked against
+its variance) evaluates the full sum, worst over nine axis offsets and
+three orientations: vanishes below r/h ≈ 0.78; thinned 30% at 1.0, 9% at
+1.5, 4.6% at 2.0, 1.9% at 3.0. The axis value came out 0.7794h − r to four
+places whatever the offset or orientation — the B-spline's near-isotropy,
+which is why one number is enough for survival.
+
+The threshold has three parts, so a bad instrument and a bad gauge fail
+differently: (a) the instrument reads the prediction to ⟨1%⟩ of r with
+survival matching exactly, on real bricks with halos and seams; (b)
+survival at r/h ≥ ⟨1.0⟩; (c) faithful to ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and
+**thinner than 2h is refinement's problem** — the ruling Astra wanted the
+number for. Bites predicted the same way: the gauge doubled without
+refinement vanishes at 1.0 and thins 30% at 2.0 (b, c); control values
+half a cell off — the indexing bug this pipeline can actually have —
+reads −40%/+31% at 2.0 (a, c); trilinear in place of the B-spline
+survives lower (0.71) and thins less (3.4% at 2.0) — bites (a) only, and
+that is the instrument's variation record, not a defect: interpolation
+keeps more of a thin feature than approximation, and is C0 for it.
+
+What the ruling says about the tree on the lawn: the sapling's ladder is
+3.0 → 2.1 → 1.47 → 1.03 by `child_ratio` 0.7, tapering to 65% at a tip, so
+at gauge 0 the generation-2 and -3 twigs are below the faithful floor and
+the thinnest tips (0.67) below survival. P2.1 will grow a tree whose
+twigs are thinner than authored and whose finest tips are missing, and
+that is the pre-registered expectation, not a bug to chase; a finer
+gauge under the twigs is D2's first customer (R9). Rejected: a prefilter
+(interpolating control values) — it keeps the tips but adds ringing, a
+second semantics at commit, and machinery Astra asked us not to add
+unless the number forces it; the number does not, it locates the
+customer.
+
 ## P1.7 — the seedbed (2026-09-06)
 
 - `loam-run`: named scenes, `--damage box@step`, `--slice`, `--project`

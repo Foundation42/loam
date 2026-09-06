@@ -51,6 +51,60 @@ pub const G6_MAX_SAMPLED_FRACTION: f64 = 0.25; // PROPOSED
 /// primary query's.
 pub const G7_MAX_SHADOW_FRACTION: f64 = 0.5; // PROPOSED
 
+/// G13 (Phase 2): thin-feature survival — the smallest structural radius a
+/// gauge carries faithfully. A straight capsule of radius r on a lattice of
+/// spacing h, reconstructed by the cubic B-spline with the SAMPLES AS
+/// CONTROL VALUES (R7, no prefilter), is a smoothed capsule: S ≈ φ +
+/// (h²/6)∇²φ, and a tube's ∇²φ is 1/ρ, so the zero set sits at ρ ≈ r −
+/// h²/(6r) — a THINNING of (1/6)(h/r)² — and vanishes where the smoothing
+/// lifts the axis above zero, at r ≈ 0.78h. `tools/g13_predict.py` is the
+/// full sum (not the expansion), worst over nine axis offsets in the cell
+/// and three orientations; G13_PREDICTED below is its output, frozen.
+///
+/// The thresholds were written from that prediction BEFORE the sweep ran
+/// (Claude Chat, Sunday 2026-09-06: "otherwise the first result becomes
+/// the threshold, which is the G3 situation again"). Three parts:
+///   (a) the INSTRUMENT agrees with the prediction — survival matches at
+///       every swept r/h, and r_rec/r (worst and best over the same
+///       offsets and orientations) is within G13_PREDICTION_TOL of it;
+///       the Zig reconstruction runs on real bricks with seams and halos,
+///       so this is where a halo copied one layer short shows;
+///   (b) SURVIVAL — a capsule at r/h ≥ G13_SURVIVE_R_OVER_H keeps its zero
+///       set at every offset and orientation (theory 0.78; headroom 0.22h);
+///   (c) FAITHFUL — |r_rec − r|/r ≤ G13_MAX_BIAS at every r/h ≥
+///       G13_FAITHFUL_R_OVER_H (theory −4.6% worst at 2.0, −1.9% at 3.0).
+/// THINNER THAN G13_FAITHFUL_R_OVER_H IS REFINEMENT'S PROBLEM (D2), not a
+/// prefilter's. What that rules today: the sapling's radius ladder is
+/// 3.0 → 2.1 → 1.47 → 1.03 lattice units by child_ratio 0.7, each tapering
+/// to 65% at its tip, so at gauge 0 the generation-2 and -3 twigs fall
+/// below the faithful floor (thinned 9–30%) and the thinnest tips (0.67)
+/// fall below survival. That is the number Astra asked for; a finer gauge
+/// under the twigs is D2's first customer.
+///
+/// Predicted bites: the gauge doubled without refinement (r/h halves)
+/// vanishes at 1.0 and 1.5 and thins 30% at 2.0 — bites (b) and (c);
+/// control values half a cell off — the plausible indexing bug — reads
+/// −40%/+31% at 2.0 — bites (a) and (c); trilinear in place of the
+/// B-spline survives lower (0.71) and thins less (−3.4% at 2.0) — bites
+/// (a) only, and is recorded as the instrument's variation, not a defect.
+pub const G13_SWEEP = [_]f32{ 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0 }; // PROPOSED
+pub const G13_SURVIVE_R_OVER_H: f32 = 1.0; // PROPOSED
+pub const G13_FAITHFUL_R_OVER_H: f32 = 2.0; // PROPOSED
+pub const G13_MAX_BIAS: f32 = 0.05; // PROPOSED — of r
+pub const G13_PREDICTION_TOL: f32 = 0.01; // PROPOSED — of r, worst and best separately
+pub const G13Prediction = struct { r_over_h: f32, survives: bool, rec_min: f32, rec_max: f32 };
+/// `python3 tools/g13_predict.py --radii 0.5,0.75,1.0,1.5,2.0,3.0,4.0,6.0 --zig`, 2026-09-06.
+pub const G13_PREDICTED = [_]G13Prediction{
+    .{ .r_over_h = 0.50, .survives = false, .rec_min = 0, .rec_max = 0 },
+    .{ .r_over_h = 0.75, .survives = false, .rec_min = 0, .rec_max = 0 },
+    .{ .r_over_h = 1.00, .survives = true, .rec_min = 0.7022, .rec_max = 0.8112 },
+    .{ .r_over_h = 1.50, .survives = true, .rec_min = 0.9088, .rec_max = 0.9191 },
+    .{ .r_over_h = 2.00, .survives = true, .rec_min = 0.9541, .rec_max = 0.9561 },
+    .{ .r_over_h = 3.00, .survives = true, .rec_min = 0.9808, .rec_max = 0.9811 },
+    .{ .r_over_h = 4.00, .survives = true, .rec_min = 0.9894, .rec_max = 0.9895 },
+    .{ .r_over_h = 6.00, .survives = true, .rec_min = 0.9953, .rec_max = 0.9953 },
+};
+
 /// The change floor: a brick whose largest committed delta is below this
 /// is not active next step, and a boundary sample below it does not
 /// materialise a neighbour.
