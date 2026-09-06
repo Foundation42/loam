@@ -701,7 +701,7 @@ fn budgetFor(w: *const World, fraction: f32) u32 {
 const HeadAndTail = struct { head: []loam.lattice.Key, carried: usize };
 
 fn hostsFront(snap: *const loam.Snapshot, k: loam.lattice.Key) bool {
-    for (snap.fronts) |f| if (f.alive and !f.dormant and f.brick.eql(k)) return true;
+    for (snap.fronts) |f| if (f.alive and f.brick.eql(k)) return true;
     return false;
 }
 
@@ -736,10 +736,16 @@ fn attentionHead(gpa: std.mem.Allocator, snap: *const loam.Snapshot, now_ns: u64
             return x.key.raw() < y.key.raw();
         }
     }.lt);
-    const out = try gpa.alloc(K, b);
-    for (scored[0..b], 0..) |s, i| out[i] = s.key;
+    // The fronts' tier is never cut: the head is at least that long.
+    var n0: usize = 0;
+    for (scored) |s| if (s.tier == 0) {
+        n0 += 1;
+    };
+    const take = @max(b, n0);
+    const out = try gpa.alloc(K, take);
+    for (scored[0..take], 0..) |s, i| out[i] = s.key;
     var carried: usize = 0;
-    for (scored[b..]) |s| {
+    for (scored[take..]) |s| {
         if (s.a > thresholds.EPSILON or hostsFront(snap, s.key)) carried += 1;
     }
     return .{ .head = out, .carried = carried };
@@ -777,10 +783,30 @@ test "G14 (a): what a step evaluates is the attention-ordered head of the active
         // budget the step ran under is on it.
         try testing.expectEqual(ht.carried, g.published().obliged.len);
         try testing.expectEqual(budget, g.published().budget);
+        // No live front's step is ever skipped under a budget (struck):
+        // what the fronts exceed it by is an overrun, reported.
+        try testing.expectEqual(@as(u64, 0), g.world.stats.fronts_skipped);
         if (before.active.len > g.world.evaluated.len) cut_steps += 1;
     }
-    std.debug.print("\nG14 (a): 80 steps, the evaluated set recomputed from the summaries at every one; {d} steps cut by the budget, {d} bricks carried, {d} faded under the floor, {d} front-steps skipped, {d} evals\n", .{ cut_steps, g.world.total.carried, g.world.total.faded, g.world.total.fronts_skipped, g.world.total.region_evals });
+    std.debug.print("\nG14 (a): 80 steps, the evaluated set recomputed from the summaries at every one; {d} steps cut by the budget, {d} bricks carried, {d} faded under the floor, {d} front-steps skipped, {d} overrun, {d} evals\n", .{ cut_steps, g.world.total.carried, g.world.total.faded, g.world.total.fronts_skipped, g.world.total.overrun, g.world.total.region_evals });
     try testing.expect(cut_steps > 0);
+    // Ten steps at a budget of ONE brick: every front still moves, the
+    // overrun says by how much, and the backlog — the standing number —
+    // grows, with the consecutive-overload count as D5's signal.
+    var overrun: u64 = 0;
+    var live: u64 = 0;
+    while (i <= 90) : (i += 1) {
+        g.world.policy.budget = 1;
+        try g.world.step(now(i), null);
+        try testing.expectEqual(@as(u64, 0), g.world.stats.fronts_skipped);
+        overrun += g.world.stats.overrun;
+        for (g.published().fronts) |f| if (f.alive and !f.dormant) {
+            live += 1;
+        };
+    }
+    std.debug.print("G14 (a): ten steps at a budget of one brick: {d} live front-steps, none skipped, overrun {d} bricks; backlog {d} at the end, {d} consecutive steps over budget\n", .{ live, overrun, g.published().obliged.len, g.world.overload_steps });
+    try testing.expect(overrun > 0);
+    try testing.expect(g.world.overload_steps >= 9);
     try guards.check(g.published());
 }
 
@@ -882,14 +908,25 @@ fn deviation(full: u64, under: u64) f64 {
     return @abs(b - a) / a;
 }
 
-test "G14 (c): the sapling grown under a budget of half its active set, attention first, ends within the floor of the unbudgeted run's tissue" {
+test "G14 (c) invariance: the sapling grown under a budget of half its active set, fronts then backlog then attention, ends within the floor of the unbudgeted run's tissue" {
     const gpa = testing.allocator;
     const full = try budgetedRun(gpa, null, .attention);
     const half = try budgetedRun(gpa, thresholds.G14_BUDGET_FRACTION, .attention);
     const dev = deviation(full.inside, half.inside);
-    std.debug.print("\nG14 (c): inside {d} unbudgeted vs {d} at {d:.0}% of the active set by attention (deviation {d:.2}%; {d} carried, {d} faded, {d} front-steps skipped; evals {d} vs {d})\n", .{ full.inside, half.inside, thresholds.G14_BUDGET_FRACTION * 100, dev * 100, half.carried, half.faded, half.skipped, full.evals, half.evals });
+    std.debug.print("\nG14 (c) invariance: inside {d} unbudgeted vs {d} at {d:.0}% of the active set (deviation {d:.2}%; {d} carried, {d} faded, {d} front-steps skipped; evals {d} vs {d})\n", .{ full.inside, half.inside, thresholds.G14_BUDGET_FRACTION * 100, dev * 100, half.carried, half.faded, half.skipped, full.evals, half.evals });
     try testing.expect(half.carried > 0);
+    try testing.expectEqual(@as(u64, 0), half.skipped);
     try testing.expect(dev <= thresholds.G14_MAX_DEVIATION);
+}
+
+test "G14 (c) mutation, the ruling's: one obligation queue, fronts and backlog together in key order → every front moves every other step and the tissue deviates past the floor" {
+    const gpa = testing.allocator;
+    const full = try budgetedRun(gpa, null, .attention);
+    const queued = try budgetedRun(gpa, thresholds.G14_BUDGET_FRACTION, .queue);
+    const dev = deviation(full.inside, queued.inside);
+    std.debug.print("\nG14 (c) mutation, one queue: inside {d} unbudgeted vs {d} (deviation {d:.2}%; {d} front-steps skipped)\n", .{ full.inside, queued.inside, dev * 100, queued.skipped });
+    try testing.expect(queued.skipped > 0);
+    try testing.expect(dev > thresholds.G14_MAX_DEVIATION);
 }
 
 test "G14 (c) mutation: the head taken in key order → the tips lag and the tissue deviates past the floor" {
@@ -899,6 +936,72 @@ test "G14 (c) mutation: the head taken in key order → the tips lag and the tis
     const dev = deviation(full.inside, keyed.inside);
     std.debug.print("\nG14 (c) mutation: inside {d} unbudgeted vs {d} with the head in key order (deviation {d:.2}%; {d} front-steps skipped)\n", .{ full.inside, keyed.inside, dev * 100, keyed.skipped });
     try testing.expect(dev > thresholds.G14_MAX_DEVIATION);
+}
+
+const WoundedUnderBudget = struct { hash: [32]u8, record: []?u32 };
+
+/// The wounded sapling (G1's fixture: seed 7, 40 steps, wound at 20)
+/// under a budget of `fraction` of each step's active set, or under a
+/// recorded `schedule` replayed. Returns the content hash and the budget
+/// every step ran under — the record. Caller frees the record.
+fn woundedUnderBudget(gpa: std.mem.Allocator, fraction: ?f32, schedule: ?[]const ?u32, js: ?*jobs.JobSystem) !WoundedUnderBudget {
+    var g: GrownWorld = undefined;
+    g.world = try World.init(gpa, .{ .seed = 7 });
+    g.world.jobs = js;
+    g.scene = .{};
+    errdefer g.world.deinit();
+    try g.scene.build(&g.world, .sapling);
+    defer g.deinit();
+    const record = try gpa.alloc(?u32, 41);
+    errdefer gpa.free(record);
+    var i: u64 = 0;
+    while (i <= 40) : (i += 1) {
+        if (i == 20) {
+            try seedbed.damage(&g.world, .{ -10, 8, -10 }, .{ 10, 16, 10 });
+            try g.world.apply();
+        }
+        g.world.policy.budget = if (schedule) |s| s[i] else if (fraction) |f| budgetFor(&g.world, f) else null;
+        record[i] = g.world.policy.budget;
+        try g.world.step(now(i), js);
+        // The snapshot carries the budget it ran under.
+        try testing.expectEqual(record[i], g.published().budget);
+    }
+    return .{ .hash = g.published().contentHash(), .record = record };
+}
+
+test "G14 (d) reproducibility: the budget is on the transcript — a run replayed from its recorded budgets publishes the same hash, serial and over the job system; a record with one budget changed does not" {
+    const gpa = testing.allocator;
+    const a = try woundedUnderBudget(gpa, thresholds.G14_BUDGET_FRACTION, null, null);
+    defer gpa.free(a.record);
+    const b = try woundedUnderBudget(gpa, null, a.record, null);
+    defer gpa.free(b.record);
+    try testing.expectEqualSlices(u8, &a.hash, &b.hash);
+    var js = try jobs.JobSystem.init(gpa, 4);
+    defer js.deinit();
+    const c = try woundedUnderBudget(gpa, null, a.record, js);
+    defer gpa.free(c.record);
+    try testing.expectEqualSlices(u8, &a.hash, &c.hash);
+    // The mutation: the record altered where it bites — the three steps
+    // after the wound at a budget of one brick, so the wound's bricks wait
+    // behind the fronts and healing lands later. (A budget one brick
+    // larger at step 25 evaluated one more brick that changed nothing:
+    // the world was invariant to it and the final hash agreed — the
+    // transcript differed, the state did not, which is the distinction
+    // between the two claims.)
+    const altered = try gpa.dupe(?u32, a.record);
+    defer gpa.free(altered);
+    altered[21] = 1;
+    altered[22] = 1;
+    altered[23] = 1;
+    const d = try woundedUnderBudget(gpa, null, altered, null);
+    defer gpa.free(d.record);
+    try testing.expect(!std.mem.eql(u8, &a.hash, &d.hash));
+    // And the unbudgeted run is a third world: the transcript says which.
+    const e = try woundedUnderBudget(gpa, null, null, null);
+    defer gpa.free(e.record);
+    try testing.expect(!std.mem.eql(u8, &a.hash, &e.hash));
+    try testing.expectEqualSlices(u8, thresholds.G1_REFERENCE, &loam.dump.hex(e.hash));
+    std.debug.print("\nG14 (d) reproducibility: the wounded sapling under the half budget {s}… replayed from its record serial and over 4 threads; steps 21–23 at a budget of 1 instead of {d}, {d}, {d}: {s}…; unbudgeted the frozen reference\n", .{ loam.dump.hex(a.hash)[0..8], a.record[21].?, a.record[22].?, a.record[23].?, loam.dump.hex(d.hash)[0..8] });
 }
 
 // ── P1.6: snapshots ──────────────────────────────────────────────────────

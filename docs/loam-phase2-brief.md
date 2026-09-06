@@ -165,7 +165,7 @@ that must bite.
 | G11 Sphere trace | a march stepped by \|φ\|/L never overshoots the zero set | for N random rays, the first sign change lies within one bisection tolerance of the hit; no hit missed that a dense march finds | 0 misses in ⟨4096⟩ rays | step by 2\|φ\|/L → overshoots |
 | G12 Collar | smooth union is smooth at a branch | \|∇φ\| continuous across the junction; provenance-blended band signal continuous | no jump above ⟨…⟩ | hard min → a crease; nearest-front ownership → the bark rotates |
 | G13 Thin feature (STRUCK) | sub-gauge structure survives the B-spline | a straight capsule across a radius sweep ⟨0.5 … 6⟩ r/h, nine axis offsets in the cell, three orientations: whether the zero set survives, and r_rec/r worst and best | (a) the instrument reads the prediction: survival matches, r_rec/r within ⟨1%⟩ of `tools/g13_predict.py`; (b) survives at r/h ≥ ⟨1.0⟩; (c) \|r_rec − r\|/r ≤ ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and thinner is refinement's problem | gauge doubled without refinement → vanishes at 1.0, thins 30% at 2.0 (bites b, c); control values half a cell off → ±40% at 2.0 (bites a, c); trilinear → survives lower, thins less (bites a only: the instrument's variation, recorded) |
-| G14 Attention (built Sunday afternoon; (a) restated at build, the head in two tiers by the ruling, see the ledger) | the step's work follows where things are changing, and a reader can see it without touching a brick | (a) the evaluated set is the head of the active set — obligations in key order, then by attention — recomputable from the published snapshot alone, and evaluations == ops × its size, every step (G5 made graded); (b) a walk rejecting attention-zero subtrees from summaries alone visits exactly the bricks changed within τ·ln(a₀/floor) of now; (c) under a budget of ⟨50%⟩ of the step's active bricks, the ones evaluated are the highest-attention ones, and the sapling grown under budget ends within ⟨5%⟩ of the unbudgeted run's inside count | exact; exact; ⟨5%⟩ | (a) attention ignored → evaluations scale with the brick count; (b) attention not merged → the walk visits every brick; (c) budget taken in key order instead of attention order → the tips lag and the deviation exceeds the floor |
+| G14 Attention (built Sunday afternoon; (a) restated at build, the head in two tiers by the ruling, (c) named invariance and (d) reproducibility added by the ruling, see the ledger) | the step's work follows where things are changing, and a reader can see it without touching a brick | (a) the evaluated set is the head of the active set — the fronts' bricks never cut, then the backlog, both in key order, then by attention — recomputable from the published snapshot alone, evaluations == ops × its size, and no front step skipped under any budget with the overrun reported, every step (G5 made graded); (d) the budget is on the transcript: a run replayed from its recorded per-step budgets publishes the same content hash, serial and over the job system, and a record altered where it bites does not; (b) a walk rejecting attention-zero subtrees from summaries alone visits exactly the bricks changed within τ·ln(a₀/floor) of now; (c) under a budget of ⟨50%⟩ of the step's active bricks, the ones evaluated are the highest-attention ones, and the sapling grown under budget ends within ⟨5%⟩ of the unbudgeted run's inside count | exact; exact; ⟨5%⟩ | (a) attention ignored → evaluations scale with the brick count; (b) attention not merged → the walk visits every brick; (c) budget taken in key order instead of attention order → the tips lag and the deviation exceeds the floor |
 | G15 Budget | a step spread over frames is the same step, and a call never exceeds its budget | (a) the wounded sapling stepped through `work(B)` in calls of ⟨B = 8⟩ units publishes the frozen reference — exactly; (b) no call performs more than B units, any phase; (c) under CUT at ⟨50%⟩ of each step's units the evaluated set is the attention-ordered head, and the run ends within ⟨5%⟩ of SPREAD's inside count | exact; exact; ⟨5%⟩ | (a) a chunk reading a brick another chunk already changed → the hash moves; (b) the seam and halo apply passes left unchunked → a call exceeds B; (c) the cut taken in key order → the deviation exceeds the floor |
 | G1 again | replay, end to end, with the new carrier | frozen reference, re-baselined as a reviewed event with old and new in the ledger | identical | commit order reversed |
 | The look | the trunk with no facets | the close-up at `--loam-scale 0.06` | Christian's eyes | — |
@@ -260,6 +260,35 @@ the bridge feeding a count per frame from a measured cost per unit,
 with its lag against fed time printed. Gate: G15 with its three
 mutations. G1 re-baselined only if the hash moves under SPREAD — it must
 not, and that is (a).
+
+*Christian's word, Sunday afternoon, before the spade.* **A front step
+counts as a unit** — "otherwise the budget isn't one" — and fronts are
+non-deferrable: the fronts are charged first and the discretionary
+budget is what remains; if the fronts alone exceed a call's budget the
+step reports an OVERRUN, never a skip. Gate G15 (d): no front step
+skipped under any budget, the overrun on the trace line. (Already true
+of the bricks-a-step budget: G14 (a).) **Under a sustained cut the
+backlog recycles as obligations** — owed work is owed — with the
+corollary named here so it is recognised, not discovered: the backlog
+grows, obligations fill the head, tier two gets nothing, and the world
+degrades to key-order round-robin without anybody deciding it should.
+Backlog length is a standing number beside the walk ratio
+(`StepStats.backlog`), and "backlog exceeds the budget for N consecutive
+steps" (`World.overload_steps`) is the signal that the honest response
+is slowing the world's clock rather than owing more work — D5's job,
+not P2.1b's. **The budget consumed is on the transcript** from the
+start: units measured, the count each call was given and performed
+recorded on the snapshot and the trace as `Snapshot.budget` is now, and
+replay replays the record (G14 (d)'s shape, in units).
+
+*Open, pre-registration to follow Christian's strike: a residual of
+obligation.* Christian, with Claude Chat: "maintain a residual of
+obligation that grows so that the work order becomes a function
+f(attention, obligation, residual)" — lag = now − last evaluated, the
+brick's clock running behind the world's; score attention × (1 +
+lag/τ); fronts outside the score; cut bricks ride it with lag ≥ 1
+step; last-evaluated in the hash. The ledger's analysis, "The strike,
+and P2.1b's word", and the proposal that follows it.
 
 **P2.2 — history and bands.** Provenance at deposition; ring history on
 the front; bands 1–2 through the charts, blended by collar weights; bands

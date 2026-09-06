@@ -1217,6 +1217,79 @@ will drift when the tree gets big"): leaves examined per attentive
 brick, G14 (b) prints it and `loam-run`'s last line prints it. In
 "Measurements" below.
 
+## The strike, and P2.1b's word (Sunday 2026-09-06, afternoon)
+
+Christian, on the refinement inside tier one: "Strike it as built:
+fronts' bricks before carried bricks inside tier one. The measurement
+says why and it's a semantic reason, not a tuning one. A skipped front
+step is the front's clock silently halved, and clocks in Loam are meant
+to be explicit channels, never a side effect of the budget. The backlog
+is field settling, which can wait; the agents are what the attention is
+responding to in the first place. Record the single-queue version as
+the mutation for this ruling." Done: `BudgetOrder.queue` — fronts and
+backlog together in one key-ordered queue, cut at the budget — is the
+ruling's executable mutation, reading 6,898 against 4,999 (38% off)
+with the fronts skipped 99 times where the struck order skips none.
+
+And his word on P2.1b's two questions, which reaches back into P2.1a:
+
+**A front step counts as a unit.** "Otherwise the budget isn't one. But
+fronts are non-deferrable, so the accounting is: charge the fronts
+first, then the discretionary budget is whatever remains. If the fronts
+alone exceed the budget, that's an overrun the step reports, not a
+skip. Gate: no front step skipped under any budget, with the overrun
+count on the trace line. That keeps the honest number and the honest
+semantics apart." Built into the bricks-a-step budget now: the fronts'
+tier is never cut, the head grows past the budget by what they exceed
+it, `StepStats.overrun` says by how much, and the trace's `# step` line
+carries it. A dormant front's brick is tier zero too — its wake check
+is its step. G14 (a) holds `fronts_skipped` at zero under the fraction,
+then runs ten steps at a budget of ONE brick: 57 live front-steps, none
+skipped, an overrun of 43 bricks, the backlog at 50 and ten consecutive
+steps over budget — the shape of the corollary below, on a number.
+
+**Under a sustained cut the backlog recycles as obligations.** "Yes,
+owed work is owed. But add the corollary to the brief: under a
+sustained cut the backlog grows, obligations eventually fill the whole
+head, and tier two gets nothing, so the system degrades to key-order
+round-robin without anybody deciding it should. Backlog length becomes a
+standing number beside the walk ratio, and 'backlog exceeds the budget
+for N consecutive steps' is the signal that the honest response is
+slowing the world's clock rather than owing more work. That's D5's job,
+not P2.1b's, but the brief should name it so the degradation is
+recognised when it appears rather than discovered." `StepStats.backlog`
+(the obligations carried into a step) and `World.overload_steps` (the
+consecutive count) are on every `loam-run` line and the trace; the
+brief names D5's signal.
+
+**Two claims, named.** Christian, from the table: "(c) at 4999 = 4999
+is an invariance result, the budget didn't change the tree. The wounded
+sapling's three different trees are a reproducibility result, the
+budget changed the tree and the transcript records which. Both are
+correct; they are different claims, and the gates should say which one
+each is making." G14 (c) is now named invariance. Reproducibility got
+its own gate, G14 (d): the wounded sapling under the half budget
+records the budget every step ran under (`Snapshot.budget` on each
+snapshot, checked step by step), and a run fed the record instead of
+the fraction publishes the same content hash, serial and over four
+threads (`3fba44b4…`); `loam-run --budget-schedule` replays a trace's
+`# step` lines the same way. Its mutation had to be found: a record one
+brick larger at step 25 evaluated one more brick that changed nothing,
+the world was invariant to it, and the final hash agreed — the
+transcript differed, the state did not, which is exactly the
+distinction. The record altered where it bites — the three steps after
+the wound at a budget of one, so the wound's bricks wait behind the
+fronts and healing lands later — publishes `475a18f4…`, and the
+unbudgeted run the frozen reference.
+
+**A residual of obligation (Christian and Claude Chat, the same
+afternoon; pre-registration to follow, not built).** Proposed in place
+of the tiers: score the discretionary head by f(attention, lag) with
+lag = now − the time the brick was last evaluated, so deferral costs
+something and staleness is bounded; fronts stay outside the score.
+Analysis and the proposal are in the brief beside P2.1b; the tiers
+stand, struck, until it is.
+
 ## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
 
 The deferred fill D1 named, paid for by P2.1a: the bridge re-packed
@@ -1337,6 +1410,12 @@ at step 80, τ = 3 s, floor 1e-6:
 | 20 s later | 68 | 240 | 3.53 |
 | 35 s later | 20 | 144 | 7.20 |
 | wounded sapling, step 60 | 67 | 224 | 3.34 |
+
+The backlog, the other standing number (Christian, P2.1b's word):
+obligations carried into a step, and consecutive steps it exceeded the
+budget — sapling seed 7, Debug, serial: at half the active set, 0 to a
+few dozen and never over; at a budget of one brick from step 81, 50
+after ten steps and over on every one of them.
 With 16 threads apply, finalize and the seam pass all go parallel;
 ReleaseFast at 200 steps: 0.75 ms per step against 2.12 serial, the
 scene build 30 ms against 237.

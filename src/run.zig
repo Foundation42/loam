@@ -47,7 +47,8 @@ const usage =
     \\  --phases             print wall-clock per phase beside each line
     \\  --budget N           evaluate at most N bricks a step, attention first (R15)
     \\  --budget-fraction F  the same as a fraction of each step's active set (G14 c)
-    \\  --budget-order O     attention (default) | key — key is G14 (c)'s mutation
+    \\  --budget-order O     attention (default) | key | queue — the two mutations
+    \\  --budget-schedule F  replay the budgets recorded on trace F's `# step` lines (G14 d)
     \\  --tropism-sweep D,D,…  the G3 ensemble at each stimulus displacement D (dose-response), then exit
     \\  --seeds N            seeds in the ensemble (default 6)
     \\  --coeff A            stimulus coefficient for the sweep (default the G3 scene's)
@@ -79,7 +80,11 @@ const Opts = struct {
     phases: bool = false,
     budget: ?u32 = null,
     budget_fraction: ?f32 = null,
-    budget_key: bool = false,
+    budget_order: loam.world.BudgetOrder = .attention,
+    /// A recorded budget schedule (`# step N budget B …` lines of a trace)
+    /// replayed: the budget is on the transcript, and replay replays the
+    /// record (G14 d).
+    budget_schedule: ?[]const u8 = null,
     trace: ?[]const u8 = null,
     avoid: ?f32 = null,
     inhibit: ?f32 = null,
@@ -90,6 +95,23 @@ const Opts = struct {
 };
 
 const Slice = struct { bit: u6, axis: u2, coord: f64, res: u32, path: []const u8 };
+
+/// The `# step N budget B …` lines of a trace: a step's budget, recorded.
+fn readSchedule(gpa: std.mem.Allocator, path: []const u8, out: *std.AutoHashMapUnmanaged(u64, u32)) !void {
+    const text = try std.fs.cwd().readFileAlloc(gpa, path, 1 << 30);
+    defer gpa.free(text);
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "# step ")) continue;
+        var it = std.mem.tokenizeScalar(u8, line, ' ');
+        _ = it.next(); // #
+        _ = it.next(); // step
+        const step = try std.fmt.parseInt(u64, it.next() orelse return error.BadSchedule, 10);
+        if (!std.mem.eql(u8, it.next() orelse return error.BadSchedule, "budget")) return error.BadSchedule;
+        const budget = try std.fmt.parseInt(u32, it.next() orelse return error.BadSchedule, 10);
+        try out.put(gpa, step, budget);
+    }
+}
 
 fn parseVec(s: []const u8, comptime n: usize) ![n]f64 {
     var out: [n]f64 = undefined;
@@ -200,9 +222,9 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             o.budget_fraction = try std.fmt.parseFloat(f32, try next(args, &i));
         } else if (std.mem.eql(u8, a, "--budget-order")) {
             const v = try next(args, &i);
-            if (std.mem.eql(u8, v, "key")) {
-                o.budget_key = true;
-            } else if (!std.mem.eql(u8, v, "attention")) return error.BadBudgetOrder;
+            o.budget_order = std.meta.stringToEnum(loam.world.BudgetOrder, v) orelse return error.BadBudgetOrder;
+        } else if (std.mem.eql(u8, a, "--budget-schedule")) {
+            o.budget_schedule = try next(args, &i);
         } else if (std.mem.eql(u8, a, "--tropism-sweep")) {
             var it = std.mem.splitScalar(u8, try next(args, &i), ',');
             while (it.next()) |part| try o.sweep.append(gpa, try std.fmt.parseFloat(f64, part));
@@ -298,6 +320,9 @@ pub fn main() !void {
     var trace_file: ?std.fs.File = null;
     if (opts.trace) |path| trace_file = try std.fs.cwd().createFile(path, .{});
     defer if (trace_file) |f| f.close();
+    var schedule = std.AutoHashMapUnmanaged(u64, u32){};
+    defer schedule.deinit(gpa);
+    if (opts.budget_schedule) |path| try readSchedule(gpa, path, &schedule);
     var timer = try std.time.Timer.start();
     try scene.build(&world, opts.scene);
     const build_ms = @as(f64, @floatFromInt(timer.lap())) / 1e6;
@@ -317,13 +342,16 @@ pub fn main() !void {
             try world.apply();
             try stdout.print("step {d}: damage applied, {d} bricks touched\n", .{ step, world.published().dirty.len });
         };
-        // The budget, per step: a count, or a fraction of the published
-        // active set (G14 c's instrument), at least one brick.
-        if (opts.budget_fraction) |f| {
+        // The budget, per step: a recorded schedule replayed, a count, or a
+        // fraction of the published active set (G14 c's instrument), at
+        // least one brick.
+        if (opts.budget_schedule != null) {
+            world.policy.budget = schedule.get(step);
+        } else if (opts.budget_fraction) |f| {
             const n: f32 = @floatFromInt(world.published().active.len);
             world.policy.budget = @max(1, @as(u32, @intFromFloat(@ceil(n * f))));
         } else world.policy.budget = opts.budget;
-        world.policy.budget_order = if (opts.budget_key) .key else .attention;
+        world.policy.budget_order = opts.budget_order;
         timer.reset();
         try world.step(.{ .frame = step, .time_ns = step * opts.dt_ms * std.time.ns_per_ms }, js);
         const ms = @as(f64, @floatFromInt(timer.read())) / 1e6;
@@ -332,7 +360,7 @@ pub fn main() !void {
             // The step's budget on the transcript (Christian's ruling):
             // an input like the seed, so a replay replays the record.
             // `diff_traces.py` skips the line.
-            if (world.policy.budget) |b| try f.writer().print("# step {d} budget {d} head {d} carried {d} faded {d} skipped {d}\n", .{ step, b, world.evaluated.len, world.stats.carried, world.stats.faded, world.stats.fronts_skipped });
+            if (world.policy.budget) |b| try f.writer().print("# step {d} budget {d} head {d} carried {d} faded {d} skipped {d} overrun {d} backlog {d}\n", .{ step, b, world.evaluated.len, world.stats.carried, world.stats.faded, world.stats.fronts_skipped, world.stats.overrun, world.stats.backlog });
             // The front's state after the step, lattice units about the
             // scene origin: what a representation change must not move.
             const c: f64 = @floatFromInt(loam.lattice.CELLS / 2);
@@ -351,7 +379,7 @@ pub fn main() !void {
             try stdout.print("step {d:>4}  active {d:>5}→{d:<5} evals {d:>6}  fronts {d}/{d} dormant  changed {d:>4} (+{d} new, {d} seam)  writes {d}/{d} seam/halo  spawns {d}  {d:.2} ms\n", .{
                 step, s.active_in, s.active_out, s.region_evals, live, dormant, s.bricks_changed, s.bricks_materialised, s.seam_bricks, s.seam_writes, s.halo_writes, s.spawns, ms,
             });
-            if (world.policy.budget != null) try stdout.print("           budget {d}: {d} carried, {d} faded, {d} front-steps skipped\n", .{ world.policy.budget.?, s.carried, s.faded, s.fronts_skipped });
+            if (world.policy.budget != null) try stdout.print("           budget {d}: {d} carried, {d} faded, {d} front-steps skipped, overrun {d}, backlog {d} ({d} steps over)\n", .{ world.policy.budget.?, s.carried, s.faded, s.fronts_skipped, s.overrun, s.backlog, world.overload_steps });
             if (opts.phases) try stdout.print("           operate {d:.2}  fronts {d:.2}  apply {d:.2}  frontier {d:.2}  seams {d:.2}  finalize {d:.2}  build {d:.2}  publish {d:.2} ms\n", .{
                 @as(f64, @floatFromInt(s.ns_operate)) / 1e6, @as(f64, @floatFromInt(s.ns_fronts)) / 1e6, @as(f64, @floatFromInt(s.ns_apply)) / 1e6, @as(f64, @floatFromInt(s.ns_frontier)) / 1e6, @as(f64, @floatFromInt(s.ns_seams)) / 1e6, @as(f64, @floatFromInt(s.ns_finalize)) / 1e6, @as(f64, @floatFromInt(s.ns_build)) / 1e6, @as(f64, @floatFromInt(s.ns_publish)) / 1e6,
             });
@@ -367,7 +395,7 @@ pub fn main() !void {
         defer found.deinit(gpa);
         var examined: usize = 0;
         try snap.attentive(snap.time_ns, loam.thresholds.EPSILON, loam.thresholds.ATTENTION_TAU_S, true, gpa, &found, &examined);
-        try stdout.print("attentive {d} of {d} bricks at the end (τ {d} s, floor {e:.0}; the walk examined {d} leaves, {d:.2} per attentive brick); {d} carried, {d} faded, {d} front-steps skipped over the run\n", .{ found.items.len, snap.brick_count, loam.thresholds.ATTENTION_TAU_S, loam.thresholds.EPSILON, examined, @as(f64, @floatFromInt(examined)) / @as(f64, @floatFromInt(@max(found.items.len, 1))), world.total.carried, world.total.faded, world.total.fronts_skipped });
+        try stdout.print("attentive {d} of {d} bricks at the end (τ {d} s, floor {e:.0}; the walk examined {d} leaves, {d:.2} per attentive brick); {d} carried, {d} faded, {d} front-steps skipped, overrun {d} over the run; backlog {d} at the end, {d} consecutive steps over budget\n", .{ found.items.len, snap.brick_count, loam.thresholds.ATTENTION_TAU_S, loam.thresholds.EPSILON, examined, @as(f64, @floatFromInt(examined)) / @as(f64, @floatFromInt(@max(found.items.len, 1))), world.total.carried, world.total.faded, world.total.fronts_skipped, world.total.overrun, snap.obliged.len, world.overload_steps });
     }
 
     if (opts.ray) |r| {

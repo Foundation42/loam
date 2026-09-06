@@ -92,9 +92,14 @@ pub const Policy = struct {
     /// attention and obligation are different things; obligation is a
     /// queue, not a score). Tier one, OBLIGATIONS in key order: bricks
     /// hosting a live front, then bricks the last step carried — the
-    /// sim's own agents before its backlog, because at a budget of half
-    /// the active set the backlog is half the active set and a plain
-    /// queue moved every front every other step (G14 c read 38% off).
+    /// sim's own agents before its backlog, STRUCK: "a skipped front
+    /// step is the front's clock silently halved, and clocks in Loam are
+    /// meant to be explicit channels, never a side effect of the budget;
+    /// the backlog is field settling, which can wait" (a plain queue
+    /// moved every front every other step at half the active set, G14 c
+    /// 38% off — `.queue`, the ruling's mutation). So a live front's
+    /// brick is NEVER cut: what the fronts alone exceed the budget by is
+    /// an OVERRUN the step reports (`StepStats.overrun`), not a skip.
     /// Tier two, the rest by ATTENTION at the step's fed time — a₀·exp(−(now −
     /// t₀)/τ) from the summaries, ties by key. The tail carries forward
     /// unevaluated and becomes next step's obligations, except that a
@@ -106,11 +111,13 @@ pub const Policy = struct {
     /// move: the tips lag when the head is chosen badly (G14 c).
     budget: ?u32 = null,
     /// How the head is chosen under a budget. `.key` is G14 (c)'s
-    /// mutation, kept as an instrument (`loam-run --budget-order key`).
+    /// mutation; `.queue` the ruling's — one obligation queue, fronts
+    /// and backlog together in key order, cut at the budget. Both kept
+    /// as instruments (`loam-run --budget-order key|queue`).
     budget_order: BudgetOrder = .attention,
 };
 
-pub const BudgetOrder = enum { attention, key };
+pub const BudgetOrder = enum { attention, key, queue };
 
 pub const StepStats = struct {
     active_in: u64 = 0,
@@ -124,6 +131,14 @@ pub const StepStats = struct {
     carried: u64 = 0,
     faded: u64 = 0,
     fronts_skipped: u64 = 0,
+    /// Bricks the fronts' tier exceeded the budget by: non-deferrable
+    /// work done beyond the budget, reported, never skipped.
+    overrun: u64 = 0,
+    /// The obligations carried into this step (`Snapshot.obliged`): the
+    /// backlog, a standing number. Backlog above the budget for
+    /// consecutive steps (`World.overload_steps`) is the signal that the
+    /// honest response is slowing the world's clock — D5's job, named.
+    backlog: u64 = 0,
     bricks_changed: u64 = 0,
     bricks_materialised: u64 = 0,
     seam_bricks: u64 = 0,
@@ -204,6 +219,11 @@ pub const World = struct {
     /// attention order under a budget, Morton otherwise. Owned. G14 (a)
     /// recomputes this from the snapshot's summaries alone and compares.
     evaluated: []Key = &.{},
+    /// Consecutive steps whose backlog exceeded the budget: under a
+    /// sustained cut the backlog grows, obligations fill the head, tier
+    /// two gets nothing, and the world degrades to key-order round-robin
+    /// without anybody deciding it should. Counted so it is recognised.
+    overload_steps: u64 = 0,
 
     pub fn init(gpa: std.mem.Allocator, opts: InitOptions) !World {
         const head = try tree.emptySnapshot(gpa, opts.seed);
@@ -436,12 +456,13 @@ pub const World = struct {
 
     const Head = struct { head: []Key, carried: []Key, fronts: []Key };
 
-    /// The bricks hosting a live, non-dormant front: obligations. Owned,
-    /// sorted, unique.
+    /// The bricks hosting a live front — dormant included: its wake check
+    /// is its step, and a wake deferred by the budget is a clock touched
+    /// by the budget. Obligations. Owned, sorted, unique.
     fn frontBricks(self: *const World, gpa: std.mem.Allocator) ![]Key {
         var list = std.ArrayListUnmanaged(Key){};
         defer list.deinit(gpa);
-        for (self.fronts.items) |f| if (f.alive and !f.dormant) try list.append(gpa, f.brick);
+        for (self.fronts.items) |f| if (f.alive) try list.append(gpa, f.brick);
         std.mem.sort(Key, list.items, {}, Key.lessThan);
         return dedupKeys(gpa, list.items);
     }
@@ -457,20 +478,31 @@ pub const World = struct {
         const gpa = self.gpa;
         const fronts = try self.frontBricks(gpa);
         errdefer gpa.free(fronts);
+        self.stats.backlog = base.obliged.len;
         const budget: usize = self.policy.budget orelse active.len;
+        if (self.policy.budget) |b| {
+            if (base.obliged.len > b) self.overload_steps += 1 else self.overload_steps = 0;
+        } else self.overload_steps = 0;
         if (active.len <= budget) return .{ .head = try gpa.dupe(Key, active), .carried = &.{}, .fronts = fronts };
         // tier 0: hosts a live front; 1: carried by the last step; 2: the rest.
         const Scored = struct { key: Key, a: f64, tier: u8 };
         const scored = try gpa.alloc(Scored, active.len);
         defer gpa.free(scored);
         const tau: f64 = thresholds.ATTENTION_TAU_S;
-        for (active, 0..) |k, i| scored[i] = .{
-            .key = k,
-            .a = attentionOf(base, k, now.time_ns, tau),
-            .tier = if (keyInSorted(fronts, k)) 0 else if (keyInSorted(base.obliged, k)) 1 else 2,
-        };
+        const single_queue = self.policy.budget_order == .queue;
+        var n0: usize = 0;
+        for (active, 0..) |k, i| {
+            const hosts = keyInSorted(fronts, k);
+            const obliged = keyInSorted(base.obliged, k);
+            scored[i] = .{
+                .key = k,
+                .a = attentionOf(base, k, now.time_ns, tau),
+                .tier = if (hosts) 0 else if (obliged) @as(u8, if (single_queue) 0 else 1) else 2,
+            };
+            if (hosts) n0 += 1;
+        }
         switch (self.policy.budget_order) {
-            .attention => std.mem.sort(Scored, scored, {}, struct {
+            .attention, .queue => std.mem.sort(Scored, scored, {}, struct {
                 fn lt(_: void, x: Scored, y: Scored) bool {
                     if (x.tier != y.tier) return x.tier < y.tier;
                     if (x.tier == 2 and x.a != y.a) return x.a > y.a;
@@ -479,20 +511,25 @@ pub const World = struct {
             }.lt),
             .key => {}, // the active set is Morton-sorted already
         }
-        const head = try gpa.alloc(Key, budget);
+        // The fronts' tier is never cut: the head grows past the budget by
+        // what they exceed it, and the step reports the overrun. (The two
+        // mutations cut at the budget, fronts and all.)
+        const take: usize = if (self.policy.budget_order == .attention) @max(budget, n0) else budget;
+        self.stats.overrun = take - budget;
+        const head = try gpa.alloc(Key, take);
         errdefer gpa.free(head);
-        for (scored[0..budget], 0..) |s, i| head[i] = s.key;
+        for (scored[0..take], 0..) |s, i| head[i] = s.key;
         // The tail: carried while attentive above the floor or hosting a
         // front, faded otherwise.
         const eps: f64 = thresholds.EPSILON;
         var kept: usize = 0;
-        for (scored[budget..]) |s| {
+        for (scored[take..]) |s| {
             if (s.a > eps or keyInSorted(fronts, s.key)) kept += 1;
         }
-        self.stats.faded = active.len - budget - kept;
+        self.stats.faded = active.len - take - kept;
         const carried = try gpa.alloc(Key, kept);
         var j: usize = 0;
-        for (scored[budget..]) |s| {
+        for (scored[take..]) |s| {
             if (s.a > eps or keyInSorted(fronts, s.key)) {
                 carried[j] = s.key;
                 j += 1;
@@ -669,17 +706,19 @@ pub const World = struct {
         const f = &self.fronts.items[i];
         const sink = &ctx.sinks[i];
         if (!f.alive) return;
-        // A brick the budget carried: its front waits with it, untouched.
+        // A dormant front re-checks only when something changed under it;
+        // nothing did, so nothing is owed and nothing is skipped.
+        if (f.dormant and !keyInSorted(base.active, f.brick)) {
+            sink.dormant = true;
+            return;
+        }
+        // A brick the budget carried: its front waits with it, untouched
+        // (only the two mutations cut a front's brick; struck otherwise).
         if (ctx.evaluated) |ev| if (!keyInSorted(ev, f.brick)) {
             sink.skipped = true;
             return;
         };
         if (f.dormant) {
-            // Re-check only when something changed under the front.
-            if (!keyInSorted(base.active, f.brick)) {
-                sink.dormant = true;
-                return;
-            }
             if (!self.canGrow(base, f)) {
                 sink.dormant = true;
                 return;

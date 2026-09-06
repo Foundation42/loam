@@ -117,14 +117,21 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   Attention is a score of what will change next; obligation is a queue
   of what must run regardless. Under `Policy.budget` the head IS the
   step — operators and fronts — in two tiers: obligations in key order
-  (bricks hosting a live front, then bricks the last step carried,
-  `Snapshot.obliged`), then the rest by attention. The tail carries
-  forward and fades only when its attention is under EPSILON AND it
-  hosts no front. The budget a step ran under is on the snapshot and in
-  the content hash: an input like the seed, logged by `loam-run
-  --trace`, never derived from a clock at replay. G14 (a) recomputes
-  the head from the snapshot alone; a change to the order must keep
-  that recomputable.
+  (bricks hosting a live front, dormant included, then bricks the last
+  step carried, `Snapshot.obliged`), then the rest by attention. The
+  fronts' tier is NEVER cut (struck: a skipped front step is the
+  front's clock silently halved, and clocks are explicit channels,
+  never a side effect of the budget): what it exceeds the budget by is
+  `StepStats.overrun`, reported. The tail carries forward and fades only
+  when its attention is under EPSILON AND it hosts no front. The
+  backlog (`StepStats.backlog`, `World.overload_steps`) is a standing
+  number: under a sustained cut it grows until the head is all backlog
+  — D5's signal to slow the clock, not P2.1b's problem. The budget a
+  step ran under is on the snapshot and in the content hash: an input
+  like the seed, logged by `loam-run --trace`, replayed by
+  `--budget-schedule`, never derived from a clock at replay (G14 d).
+  G14 (a) recomputes the head from the snapshot alone; a change to the
+  order must keep that recomputable.
 - **Snapshots are immutable and refcounted.** A published brick is never
   handed out as `*Brick`. The commit clones what it changes; untouched
   subtrees are shared by identity (G4 checks identity, not equality).
