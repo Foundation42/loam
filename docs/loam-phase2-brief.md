@@ -14,6 +14,11 @@ and age is structured history around that carrier.
 
 ## 1. Rulings asked (Christian's to strike before P2.1)
 
+Status at the close of 2026-09-06: Astra's tie-breaker
+(`representation2.md`) recommends striking R7 for the halo + B-spline,
+adopting `surface`, adding G13, keeping the field canonical, and starting
+P2.1 in a fresh session from this brief. Christian's word is the strike.
+
 **R7 — Reconstruction: a scalar halo and a cubic B-spline.** Every
 channel stays one plane; a brick stores an 11³ block — its 9³ samples and
 one halo sample beyond each face, copied from the neighbours at commit by
@@ -71,6 +76,14 @@ procedural, with a per-material amplitude vector. A query names the
 footprint and the class; bands finer than the footprint are not
 evaluated. Sponge, sound and sensors ask for band 0.
 
+**R12a — The field is canonical; provenance is optional history.**
+(Astra, `representation2.md`.) Band 0 is never a re-derivable cache of
+the front genealogy: for terrain, erosion, melting, welding, fracture and
+arbitrary operators there may be no genealogy at all. Grown organisms
+carry provenance that drives the higher bands; geology may carry none.
+The hierarchy is: canonical truth, the continuous field state; optional
+provenance, how some of it came to exist.
+
 **R14 — What stays a node quantity.** Growth, Age, Activity, Light,
 Stimulus, Damage: conserved, diffusing, additive, unchanged. Density and
 Extinction stay for volumes. The tree stops being a volume.
@@ -87,8 +100,16 @@ that must bite.
 | G10 Bound | the summary's L is conservative | for every brick, max over probe pairs of \|φ(x) − φ(y)\|/‖x − y‖ ≤ L | ≤ L, exactly | L from finite differences instead of coefficients → a pair exceeds it |
 | G11 Sphere trace | a march stepped by \|φ\|/L never overshoots the zero set | for N random rays, the first sign change lies within one bisection tolerance of the hit; no hit missed that a dense march finds | 0 misses in ⟨4096⟩ rays | step by 2\|φ\|/L → overshoots |
 | G12 Collar | smooth union is smooth at a branch | \|∇φ\| continuous across the junction; provenance-blended band signal continuous | no jump above ⟨…⟩ | hard min → a crease; nearest-front ownership → the bark rotates |
+| G13 Thin feature | sub-gauge structure survives the B-spline | a straight swept capsule across a radius sweep: the minimum r/h at which the zero set survives, and the radius bias above it | recorded, then ⟨…⟩ struck from the number | trilinear in place of the B-spline → a different survival curve; the gate is the instrument |
 | G1 again | replay, end to end, with the new carrier | frozen reference, re-baselined as a reviewed event with old and new in the ledger | identical | commit order reversed |
 | The look | the trunk with no facets | the close-up at `--loam-scale 0.06` | Christian's eyes | — |
+
+G13 is Claude Chat's addition, Astra's tie-breaker (`representation2.md`):
+it answers an architectural question — the smallest structural feature a
+gauge represents faithfully — before the look is judged, and its number
+decides whether P2.1 declares a minimum structural radius and pushes
+thinner branches into refinement, or needs a prefilter. Measure first;
+no prefilter unless the number forces it.
 
 Denominator check: G11's is the dense march's hit set, so "0 misses" is
 measured against something that can miss for its own reasons at a
