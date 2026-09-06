@@ -67,11 +67,12 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   compares the bytes against a frozen reference.
 - **What runs in parallel** when a world has `jobs` (or `step` is handed
   a system): the operate phase, applying deltas, finalize (summary and
-  hash), and blob authoring — all per brick, order-free. The seam pass
-  and the front pass are serial; the seam pass is the remaining per-step
-  cost and its two-phase parallel form is recorded with a trigger. The
-  G3 ensemble runs its worlds one per core on plain threads, since each
-  world is independent. `loam-run --threads N` sets all of it.
+  hash), blob authoring, and the seam pass's collect phase — all per
+  brick, order-free; the seam writes are then sorted and applied in key
+  order. The front pass is serial (id order is the determinism) and its
+  parallel form is recorded with a trigger. The G3 ensemble runs its
+  worlds one per core on plain threads, since each world is independent.
+  `loam-run --threads N` sets all of it, and the hash must not move.
 - **Randomness is counter-based.** `rng.Stream` hashes (seed, who, epoch,
   counter); nothing draws sequentially, so parallel order cannot leak in.
 - **Snapshots are immutable and refcounted.** A published brick is never
@@ -87,8 +88,9 @@ the finest holder's value (ties: the holder that wrote deltas this
 commit, then the lowest key); a fine sample on a face shared with a
 coarser brick, off the coarse lattice, takes the coarse interpolant. The
 guard (`guards.zig`) reconstructs every shared face from both sides by
-the slow general path; the commit uses a neighbourhood cache. They must
-agree, and the guard is the witness, not the cache.
+the slow general path; the commit collects writes in parallel through a
+neighbourhood cache and applies them sorted. They must agree, and the
+guard is the witness, not the cache.
 
 ## Thresholds are Christian's
 

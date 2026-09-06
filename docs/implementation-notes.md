@@ -419,16 +419,64 @@ left the one that is not.
   threaded and the JobSystem run covering the new phases. The G3
   ensemble: 18 runs in 1.5 s wall at ten cores, where it was two minutes
   serial in Debug.
-- **Not parallel, on purpose**: the seam pass (two changed bricks can
-  clone and write the same unchanged neighbour — a race until it becomes
-  collect-then-apply in key order, recorded below) and the front pass
-  (id order is the determinism). The seam pass is now the per-step
-  cost: 1.8 of 2.1 ms in ReleaseFast, 195 of 218 ms of the scene build.
+- **Not parallel at first**: the seam pass (two changed bricks could
+  clone and write the same unchanged neighbour) and the front pass (id
+  order is the determinism). The seam pass was then the per-step cost —
+  1.8 of 2.1 ms in ReleaseFast, 195 of 218 ms of the scene build — and
+  went parallel the same day; see the next entry.
 - **A scene edit that landed by accident.** The interrupted command that
   cut the stimulus radius to 72 had written the file before the
   interrupt; the ensemble's stimulus runs moved (r̄ 25.86 → 26.18) while
   its null runs did not, which is how it was noticed. Reverted to 96;
   the numbers above are at 96.
+
+## The seam pass, collect then apply (2026-09-06)
+
+Christian asked for the seam pass parallel too, and wondered whether
+radix (substr's ordered map, with its lock-free `Concurrent`) could
+collect the keys and stream them out ordered at the end. It could — an
+ordered concurrent map is exactly "insert from every thread, read back
+sorted, duplicates collapsed". It was not taken, on his word once the
+cheaper form was on the table: per-thread lists and one sort do the same
+with no new dependency, and substr is private where loam is public.
+
+- **Phase A, parallel over changed bricks, read-only.** For every shared
+  point on a changed brick's surface (its own boundary samples plus
+  finer neighbours' hanging points), the holder set and the value each
+  holder must take are computed as before, but instead of writing, a
+  `SeamWrite {key, bit, idx, value}` is EMITTED — and only when the
+  holder's current value differs, so the list holds real changes. Each
+  job chunk owns a list; nothing shared is written. The neighbourhood
+  cache resolves live pointers through the changed map, which nobody
+  mutates during the phase.
+- **Phase B, serial.** Sort by (key, bit, idx); walk runs by key; on a
+  key's first write clone the untouched neighbour (which is what grows
+  `changed` and `order`, in key order now rather than discovery order);
+  apply; skip duplicates. A duplicate is the same point seen from two
+  changed bricks: its holder set is the same from either side (a holder
+  of p is adjacent to both), so its value is the same, and that is
+  asserted rather than resolved. Pass 1 (anchor) completes before pass 2
+  (hang) collects, so the hang reads anchored values.
+- **Why the schedule cannot reach the result.** The write SET is a
+  function of the geometry and the step-start values; the order of
+  application is the sort's; clones are created in key order; versions
+  are old + 1. Only the per-thread lists' concatenation order varies,
+  and the sort erases it.
+- **Measured** (ReleaseFast, sapling, 3652 bricks, 200 steps): content
+  hash identical at 1 and 16 threads (`61533f08…`); scene build 237 →
+  30 ms (seams 183 → 17); 2.12 → 0.75 ms per step. The G1 frozen
+  reference `74cc820b…` holds in Debug with the JobSystem run going
+  through the parallel pass. Both seam hand mutations (anchor off, hang
+  off) still bite the two-gauge gate.
+- **Stats.** `seam_writes` now counts distinct writes applied — a
+  count that does not depend on the schedule — and `seam_bricks` the
+  clones. Rejected: counting attempted writes, which would have varied
+  with the chunking.
+- **What is still serial**: the front pass (id order), phase B, the
+  frontier probe, the tree builds. Phase B is a sort plus a walk over a
+  few hundred writes; the tree builds are path copies. The front pass is
+  next if fronts ever number in the thousands: per-front stamp buffers
+  merged in id order, the same shape as this.
 
 ## P1.7 — the seedbed (2026-09-06)
 
@@ -457,7 +505,7 @@ left the one that is not.
 | Ring inheritance at a branch | `World.budSpawn` starts a fresh ring | a branch base that looks wrong in a capture |
 | Frontier into partly filled cubes | `materialiseFrontier` skips an inner node | a diffusion mass check across a gauge boundary that leaks |
 | A stack-allocated cursor | `ray.Cursor` takes a gpa for its queue | matryoshka's traversal wanting no allocator |
-| Parallel seam pass | `World.reconcile`: collect writes per changed brick, then apply in key order | the per-step number mattering for the tiltyard, or G5's slope on hundreds of active bricks |
+| Parallel front pass | `World.frontPass`: per-front stamp buffers merged in id order, the seam pass's shape | fronts in the thousands |
 
 ## Measurements (regime stated)
 
@@ -470,5 +518,6 @@ Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:
 
 Per phase at step 40 (Debug, serial): operate 0.02, fronts 0.24, apply
 1.3, frontier 1.5, seams 9.0, finalize 6.0, build 1.2, publish 1.5 ms.
-With 16 threads finalize and apply fall away and the seams remain; the
-next cut is their two-phase parallel form (deferred table).
+With 16 threads apply, finalize and the seam pass all go parallel;
+ReleaseFast at 200 steps: 0.75 ms per step against 2.12 serial, the
+scene build 30 ms against 237.

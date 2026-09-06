@@ -875,7 +875,7 @@ pub const World = struct {
         defer if (scratch_root) |r| r.release(gpa);
 
         // 4. Seams.
-        try self.reconcile(&scratch, &changed, &order);
+        try self.reconcile(&scratch, &changed, &order, sys);
         self.stats.ns_seams = timer.lap();
 
         // 5. Finalize every changed brick, build the real tree.
@@ -1073,82 +1073,87 @@ pub const World = struct {
     }
 
     // ── Seams ────────────────────────────────────────────────────────────
+    //
+    // Collect, then apply. Phase A runs over the changed bricks in
+    // parallel and only READS: for every shared point on a changed brick's
+    // surface it works out which holder must take which value and emits a
+    // write when the holder's current value differs. Phase B sorts the
+    // writes by (key, bit, idx), drops duplicates — the same point seen
+    // from two changed bricks yields the same value, which is asserted —
+    // and applies them in key order, cloning an untouched neighbour on
+    // its first write. The schedule cannot reach the result: the write
+    // SET is what the geometry says, and the order is the sort's.
 
-    const SeamCtx = struct {
-        world: *World,
-        view: *const Snapshot,
-        changed: *std.AutoHashMapUnmanaged(u64, Changed),
-        order: *std.ArrayListUnmanaged(u64),
+    const Live = struct { b: *const Brick, rank: u8 };
 
-        /// The live (editable, this-commit) version of a brick the view found.
-        fn live(self: *SeamCtx, b: *const Brick) *const Brick {
-            if (self.changed.get(b.key.raw())) |c| return c.b;
-            return b;
-        }
+    const ChangedMap = std.AutoHashMapUnmanaged(u64, Changed);
 
-        fn rank(self: *SeamCtx, b: *const Brick) u8 {
-            if (self.changed.get(b.key.raw())) |c| return c.rank;
-            return 1;
-        }
+    /// The live (this-commit) version of a brick the view found.
+    fn liveOf(changed: *const ChangedMap, b: *const Brick) Live {
+        if (changed.get(b.key.raw())) |c| return .{ .b = c.b, .rank = c.rank };
+        return .{ .b = b, .rank = 1 };
+    }
 
+    /// `a` outranks `b` as the source of a shared point: finer, then
+    /// lower rank, then lower key.
+    fn outranks(a: Live, b: Live) bool {
+        if (a.b.key.level != b.b.key.level) return a.b.key.level < b.b.key.level;
+        if (a.rank != b.rank) return a.rank < b.rank;
+        return a.b.key.raw() < b.b.key.raw();
+    }
 
+    /// One seam write: this holder's sample takes this value.
+    const SeamWrite = struct {
+        key: u64,
+        bit: u8,
+        idx: u16,
+        value: f32,
 
-        /// Editable version, cloning on first write.
-        fn mutable(self: *SeamCtx, b: *const Brick) !*Brick {
-            if (self.changed.get(b.key.raw())) |c| return c.b;
-            const nb = try Brick.clone(self.world.gpa, b);
-            nb.version = b.version + 1;
-            try self.changed.put(self.world.gpa, b.key.raw(), .{ .b = nb, .old = b });
-            try self.order.append(self.world.gpa, b.key.raw());
-            self.world.stats.seam_bricks += 1;
-            return nb;
-        }
-
-        /// `b` is a live pointer (this commit's clone, or an untouched
-        /// published brick). Nothing is looked up unless the value differs.
-        fn write(self: *SeamCtx, b: *const Brick, bit: u6, idx: usize, v: f32) !void {
-            const have: f32 = if (b.plane(bit)) |pl| pl[idx] else 0;
-            if (have == v) return;
-            const mb = try self.mutable(b);
-            const pl = try mb.ensurePlane(self.world.gpa, bit);
-            pl[idx] = v;
-            const c = self.changed.getPtr(b.key.raw()).?;
-            c.max_delta = @max(c.max_delta, @abs(v - have));
-            self.world.stats.seam_writes += 1;
-        }
-
-        /// Copy `src`'s sample `sidx` into `b`'s sample `idx` for every
-        /// channel either has. `b` is already live.
-        fn copyPoint(self: *SeamCtx, b: *const Brick, idx: usize, src: *const Brick, sidx: usize) !void {
-            var mask = b.mask | src.mask;
-            while (mask != 0) {
-                const bit: u6 = @intCast(@ctz(mask));
-                mask &= mask - 1;
-                const v: f32 = if (src.plane(bit)) |pl| pl[sidx] else 0;
-                try self.write(b, bit, idx, v);
-            }
-        }
-
-        /// Set `b`'s sample `idx` to `src`'s reconstruction at `q`.
-        fn interpPoint(self: *SeamCtx, b: *const Brick, idx: usize, src: *const Brick, q: [3]f64) !void {
-            var mask = b.mask | src.mask;
-            while (mask != 0) {
-                const bit: u6 = @intCast(@ctz(mask));
-                mask &= mask - 1;
-                try self.write(b, bit, idx, src.trilinear(bit, q));
-            }
+        fn lessThan(_: void, a: SeamWrite, b: SeamWrite) bool {
+            if (a.key != b.key) return a.key < b.key;
+            if (a.bit != b.bit) return a.bit < b.bit;
+            return a.idx < b.idx;
         }
     };
+
+    const WriteList = std.ArrayListUnmanaged(SeamWrite);
+
+    /// Emit a write for `target` at `idx` unless it already holds `v`.
+    fn emit(gpa: std.mem.Allocator, list: *WriteList, target: *const Brick, bit: u6, idx: usize, v: f32) !void {
+        const have: f32 = if (target.plane(bit)) |pl| pl[idx] else 0;
+        if (have == v) return;
+        try list.append(gpa, .{ .key = target.key.raw(), .bit = bit, .idx = @intCast(idx), .value = v });
+    }
+
+    /// Copy `src`'s sample `sidx` into `target`'s `idx` for every channel
+    /// either has.
+    fn emitCopy(gpa: std.mem.Allocator, list: *WriteList, target: *const Brick, idx: usize, src: *const Brick, sidx: usize) !void {
+        var mask = target.mask | src.mask;
+        while (mask != 0) {
+            const bit: u6 = @intCast(@ctz(mask));
+            mask &= mask - 1;
+            const v: f32 = if (src.plane(bit)) |pl| pl[sidx] else 0;
+            try emit(gpa, list, target, bit, idx, v);
+        }
+    }
+
+    /// Set `target`'s `idx` to `src`'s reconstruction at `q`.
+    fn emitInterp(gpa: std.mem.Allocator, list: *WriteList, target: *const Brick, idx: usize, src: *const Brick, q: [3]f64) !void {
+        var mask = target.mask | src.mask;
+        while (mask != 0) {
+            const bit: u6 = @intCast(@ctz(mask));
+            mask &= mask - 1;
+            try emit(gpa, list, target, bit, idx, src.trilinear(bit, q));
+        }
+    }
 
     /// The 26 cubes around a brick at its own level, resolved once: what
     /// leaf (same gauge or coarser) or leaves (finer) each holds. Every
     /// boundary point then finds its holders by key comparison instead of
     /// a tree descent — 26 descents per changed brick instead of 386×2.
-    const Live = struct { b: *const Brick, rank: u8 };
-
     const Neighbourhood = struct {
         cells: [27]struct { start: u32, len: u32 },
-        /// Resolved through `live`/`rank` once, so a point costs no lookups.
+        /// Resolved through `liveOf` once, so a point costs no lookups.
         leaves: std.ArrayListUnmanaged(Live) = .{},
         raw: std.ArrayListUnmanaged(*const Brick) = .{},
 
@@ -1156,7 +1161,7 @@ pub const World = struct {
             return @intCast((dx + 1) + 3 * (dy + 1) + 9 * (dz + 1));
         }
 
-        fn build(gpa: std.mem.Allocator, ctx: *SeamCtx, view: *const Snapshot, b: *const Brick) !Neighbourhood {
+        fn build(gpa: std.mem.Allocator, changed: *const ChangedMap, view: *const Snapshot, b: *const Brick) !Neighbourhood {
             var nb = Neighbourhood{ .cells = undefined };
             errdefer nb.leaves.deinit(gpa);
             errdefer nb.raw.deinit(gpa);
@@ -1180,7 +1185,7 @@ pub const World = struct {
                         const nn = view.nodeAt(nk) orelse continue;
                         nb.raw.clearRetainingCapacity();
                         try Snapshot.leavesUnder(nn, gpa, &nb.raw);
-                        for (nb.raw.items) |h| try nb.leaves.append(gpa, .{ .b = ctx.live(h), .rank = ctx.rank(h) });
+                        for (nb.raw.items) |h| try nb.leaves.append(gpa, liveOf(changed, h));
                         nb.cells[ci].len = @intCast(nb.leaves.items.len - start);
                     }
                 }
@@ -1236,8 +1241,7 @@ pub const World = struct {
             return n;
         }
 
-        /// Finer leaves around `b` (any cell holding more than one leaf, or
-        /// one at a finer level): their boundary points on `b`'s surface
+        /// Finer leaves around `b`: their boundary points on `b`'s surface
         /// are the hanging points the coarse face governs.
         fn finerLeaves(self: *const Neighbourhood, b: *const Brick, gpa: std.mem.Allocator, out: *std.ArrayListUnmanaged(*const Brick)) !void {
             for (self.leaves.items) |h| {
@@ -1251,8 +1255,9 @@ pub const World = struct {
         }
     };
 
-    /// One shared point: anchor (pass 1) or hang (pass 2) every holder.
-    fn seamPoint(ctx: *SeamCtx, pass: u8, hs: []const Live, p: [3]i64) !void {
+    /// One shared point: the anchor (pass 1) or hang (pass 2) writes for
+    /// every holder, emitted.
+    fn seamPoint(gpa: std.mem.Allocator, list: *WriteList, pass: u8, hs: []const Live, p: [3]i64) !void {
         var finest: Live = hs[0];
         var coarsest: *const Brick = hs[0].b;
         for (hs[1..]) |h| {
@@ -1265,7 +1270,7 @@ pub const World = struct {
             for (hs) |h| {
                 if (h.b == finest.b) continue;
                 const l = h.b.localOf(p) orelse continue; // not on h's lattice: a hanging point, pass 2's
-                try ctx.copyPoint(h.b, Brick.index(l[0], l[1], l[2]), finest.b, sidx);
+                try emitCopy(gpa, list, h.b, Brick.index(l[0], l[1], l[2]), finest.b, sidx);
             }
         } else {
             if (coarsest.localOf(p) != null) return; // on the coarse lattice: anchored
@@ -1273,77 +1278,156 @@ pub const World = struct {
             for (hs) |h| {
                 if (h.b == coarsest) continue;
                 const l = h.b.localOf(p) orelse continue;
-                try ctx.interpPoint(h.b, Brick.index(l[0], l[1], l[2]), coarsest, q);
+                try emitInterp(gpa, list, h.b, Brick.index(l[0], l[1], l[2]), coarsest, q);
             }
         }
     }
 
-    /// `a` outranks `b` as the source of a shared point: finer, then
-    /// lower rank, then lower key.
-    fn outranks(a: Live, b: Live) bool {
-        if (a.b.key.level != b.b.key.level) return a.b.key.level < b.b.key.level;
-        if (a.rank != b.rank) return a.rank < b.rank;
-        return a.b.key.raw() < b.b.key.raw();
+    const CollectCtx = struct {
+        world: *World,
+        view: *const Snapshot,
+        changed: *const ChangedMap,
+        order: []const u64,
+        pass: u8,
+        chunk: u32,
+        /// One list per job chunk: `order[i]` writes into `lists[i / chunk]`,
+        /// and a chunk runs on one thread.
+        lists: []WriteList,
+        failed: std.atomic.Value(bool),
+    };
+
+    /// Phase A for one changed brick: its own boundary points, and the
+    /// hanging points of finer neighbours on its surface.
+    fn collectOne(ctx: *CollectCtx, i: usize) void {
+        collectBrick(ctx, i) catch {
+            ctx.failed.store(true, .release);
+        };
     }
 
-    fn reconcile(self: *World, view: *const Snapshot, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: *std.ArrayListUnmanaged(u64)) !void {
-        const gpa = self.gpa;
-        var ctx = SeamCtx{ .world = self, .view = view, .changed = changed, .order = order };
-        // Only points on a CHANGED brick's surface can have fallen out of
-        // agreement: its own boundary samples, and the hanging samples of
-        // any finer neighbour that lie on its faces. Neighbours the seam
-        // pass clones join `order` but are not re-walked — their only
-        // new values are copies made here.
-        const n0 = order.items.len;
+    fn collectBrick(ctx: *CollectCtx, i: usize) !void {
+        const gpa = ctx.world.gpa;
+        const list = &ctx.lists[i / ctx.chunk];
+        const c = ctx.changed.get(ctx.order[i]).?;
+        const b = c.b;
+        const bl = Live{ .b = b, .rank = c.rank };
+        var nb = try Neighbourhood.build(gpa, ctx.changed, ctx.view, b);
+        defer nb.deinit(gpa);
         var hs: [8]Live = undefined;
+        var k: u32 = 0;
+        while (k < brick.N) : (k += 1) {
+            var j: u32 = 0;
+            while (j < brick.N) : (j += 1) {
+                var ii: u32 = 0;
+                while (ii < brick.N) : (ii += 1) {
+                    if (!Brick.isBoundary(ii, j, k)) continue;
+                    const p = b.pointAt(ii, j, k);
+                    const pi = [3]i64{ p[0], p[1], p[2] };
+                    const n = nb.holders(bl, pi, &hs);
+                    if (n <= 1) continue;
+                    try seamPoint(gpa, list, ctx.pass, hs[0..n], pi);
+                }
+            }
+        }
         var finer = std.ArrayListUnmanaged(*const Brick){};
         defer finer.deinit(gpa);
-        var pass: u8 = 1;
-        while (pass <= 2) : (pass += 1) {
-            var ci: usize = 0;
-            while (ci < n0) : (ci += 1) {
-                const c = changed.get(order.items[ci]).?;
-                const b = c.b;
-                const bl = Live{ .b = b, .rank = c.rank };
-                var nb = try Neighbourhood.build(gpa, &ctx, view, b);
-                defer nb.deinit(gpa);
-                var k: u32 = 0;
-                while (k < brick.N) : (k += 1) {
-                    var j: u32 = 0;
-                    while (j < brick.N) : (j += 1) {
-                        var ii: u32 = 0;
-                        while (ii < brick.N) : (ii += 1) {
-                            if (!Brick.isBoundary(ii, j, k)) continue;
-                            const p = b.pointAt(ii, j, k);
-                            const pi = [3]i64{ p[0], p[1], p[2] };
-                            const n = nb.holders(bl, pi, &hs);
-                            if (n <= 1) continue;
-                            try seamPoint(&ctx, pass, hs[0..n], pi);
-                        }
-                    }
-                }
-                finer.clearRetainingCapacity();
-                try nb.finerLeaves(b, gpa, &finer);
-                for (finer.items) |h| {
-                    var hk: u32 = 0;
-                    while (hk < brick.N) : (hk += 1) {
-                        var hj: u32 = 0;
-                        while (hj < brick.N) : (hj += 1) {
-                            var hi: u32 = 0;
-                            while (hi < brick.N) : (hi += 1) {
-                                if (!Brick.isBoundary(hi, hj, hk)) continue;
-                                const p = h.pointAt(hi, hj, hk);
-                                const pi = [3]i64{ p[0], p[1], p[2] };
-                                if (!b.key.holdsPoint(pi)) continue;
-                                if (b.localOf(pi) != null) continue; // one of b's own points: done above
-                                const n = nb.holders(bl, pi, &hs);
-                                if (n <= 1) continue;
-                                try seamPoint(&ctx, pass, hs[0..n], pi);
-                            }
-                        }
+        try nb.finerLeaves(b, gpa, &finer);
+        for (finer.items) |h| {
+            var hk: u32 = 0;
+            while (hk < brick.N) : (hk += 1) {
+                var hj: u32 = 0;
+                while (hj < brick.N) : (hj += 1) {
+                    var hi: u32 = 0;
+                    while (hi < brick.N) : (hi += 1) {
+                        if (!Brick.isBoundary(hi, hj, hk)) continue;
+                        const p = h.pointAt(hi, hj, hk);
+                        const pi = [3]i64{ p[0], p[1], p[2] };
+                        if (!b.key.holdsPoint(pi)) continue;
+                        if (b.localOf(pi) != null) continue; // one of b's own points: done above
+                        const n = nb.holders(bl, pi, &hs);
+                        if (n <= 1) continue;
+                        try seamPoint(gpa, list, ctx.pass, hs[0..n], pi);
                     }
                 }
             }
+        }
+    }
+
+    /// Phase B: the writes, in key order, deduplicated, applied through
+    /// clone-on-write. Serial: this is where `changed` and `order` grow.
+    fn applySeamWrites(self: *World, view: *const Snapshot, changed: *ChangedMap, order: *std.ArrayListUnmanaged(u64), all: []SeamWrite) !void {
+        const gpa = self.gpa;
+        std.mem.sort(SeamWrite, all, {}, SeamWrite.lessThan);
+        var i: usize = 0;
+        while (i < all.len) {
+            const key = all[i].key;
+            const b0: *const Brick = if (changed.get(key)) |c| c.b else (view.brickAt(Key.fromRaw(key)) orelse unreachable);
+            const mb: *Brick = blk: {
+                if (changed.get(key)) |c| break :blk c.b;
+                const nb = try Brick.clone(gpa, b0);
+                nb.version = b0.version + 1;
+                try changed.put(gpa, key, .{ .b = nb, .old = b0 });
+                try order.append(gpa, key);
+                self.stats.seam_bricks += 1;
+                break :blk nb;
+            };
+            var max_delta: f32 = 0;
+            var last: ?SeamWrite = null;
+            while (i < all.len and all[i].key == key) : (i += 1) {
+                const w = all[i];
+                if (last) |l| if (l.bit == w.bit and l.idx == w.idx) {
+                    // The same point from two changed bricks' perspectives:
+                    // the same holders, so the same value. Anything else
+                    // is a broken contract, not a tie to resolve.
+                    std.debug.assert(l.value == w.value);
+                    continue;
+                };
+                last = w;
+                const pl = try mb.ensurePlane(gpa, @intCast(w.bit));
+                const have = pl[w.idx];
+                pl[w.idx] = w.value;
+                max_delta = @max(max_delta, @abs(w.value - have));
+                self.stats.seam_writes += 1;
+            }
+            const cptr = changed.getPtr(key).?;
+            cptr.max_delta = @max(cptr.max_delta, max_delta);
+        }
+    }
+
+    fn reconcile(self: *World, view: *const Snapshot, changed: *ChangedMap, order: *std.ArrayListUnmanaged(u64), sys: ?*jobs.JobSystem) !void {
+        const gpa = self.gpa;
+        // Only points on a CHANGED brick's surface can have fallen out of
+        // agreement: its own boundary samples, and the hanging samples of
+        // any finer neighbour that lie on its faces. Neighbours the pass
+        // clones join `order` but are not re-walked — their only new
+        // values are copies made here.
+        const n0 = order.items.len;
+        if (n0 == 0) return;
+        const chunk: u32 = 4;
+        const nlists = (n0 + chunk - 1) / chunk;
+        const lists = try gpa.alloc(WriteList, nlists);
+        defer gpa.free(lists);
+        for (lists) |*l| l.* = .{};
+        defer for (lists) |*l| l.deinit(gpa);
+        var all = std.ArrayListUnmanaged(SeamWrite){};
+        defer all.deinit(gpa);
+        var pass: u8 = 1;
+        while (pass <= 2) : (pass += 1) {
+            for (lists) |*l| l.clearRetainingCapacity();
+            var ctx = CollectCtx{
+                .world = self,
+                .view = view,
+                .changed = changed,
+                .order = order.items[0..n0],
+                .pass = pass,
+                .chunk = chunk,
+                .lists = lists,
+                .failed = std.atomic.Value(bool).init(false),
+            };
+            parallelRange(sys, n0, chunk, CollectCtx, &ctx, collectOne);
+            if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
+            all.clearRetainingCapacity();
+            for (lists) |l| try all.appendSlice(gpa, l.items);
+            try self.applySeamWrites(view, changed, order, all.items);
         }
     }
 };
