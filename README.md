@@ -53,6 +53,8 @@ matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-sc
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-scene coil       # a coiling tendril: the self-touch
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-collar 0         # the hard union, for a side-by-side
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-no-bark          # the carrier alone: the bark off
+matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-bark plates      # the material seedbed's plates, a relief in the field's frame
+matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-bark marble --loam-archetype-unit 8   # the marble: a material field sampled in world space
 ```
 
 The mount grows the sapling unless `--loam-scene` names one of P2.2's
@@ -76,6 +78,21 @@ foot, rebuilt from the ring records when history is asked for.
 knob over the depth; the bark's octaves are in metres (three
 centimetres and half that), because bark does not get finer when the
 brick does.
+
+A material is a loam world of its own — the material seedbed. The
+marble is a cube of base veined by tunnelling fronts, grown once at
+the mount's init and frozen as a MATERIAL FIELD: beside φ every voxel
+carries the columns the archetype models — albedo, roughness,
+metallic, emissive — as the vein's material there, named from the
+ring history (a vein is a cut, and a cut writes no provenance), with a
+species per vein and a material that runs along it: graphite, gold
+running out to graphite by its tip, ember glowing at its root. A hit
+samples the cube at its world position, folded by a mirror tiling, and
+mixes its material entry — the matrix, and the default for every
+column the archetype does not model — toward the columns by the vein's
+soft edge. The tree never knows; a cut through it shows the same
+veins. `loam-run --scene marble --volume 64:slice.ppm` writes the
+field's middle slice as a hit would read it.
 
 Every brick knows how much it last changed and when — attention, derived
 where it is read, never stepped, scored per channel over its range — so
@@ -202,7 +219,7 @@ transcript (`--cut 0.5`).
 | `src/guards.zig` | every invariant, checkable; corrupted one by one in the self-test |
 | `src/dump.zig` | the snapshot as one canonical struple map |
 | `src/seedbed.zig` | the authoring verbs and the named scenes |
-| `src/bark.zig` | what a hit reads beyond the carrier: the grain in the field's own frame, the chart as history, the bands by footprint — the shader's CPU reference, its bytes counted |
+| `src/bark.zig` | what a hit reads beyond the carrier: the grain in the field's own frame, the chart as history, the bands by footprint, the archetypes (a relief; a volume as a material field, its columns named from the ring history) — the shader's CPU reference, its bytes counted |
 | `src/run.zig` | `loam-run` |
 | `src/capi.zig` | the C seam (`libloam.so`) |
 | `src/thresholds.zig` | the gate numbers, PROPOSED until struck; G13's are struck, with the prediction frozen beside them; G14 (e)'s prediction frozen beside τ; the collar's reach derived beside G12 |

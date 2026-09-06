@@ -36,7 +36,7 @@ const usage =
     \\  --damage x0,y0,z0,x1,y1,z1@step   clear material in the box at step
     \\  --slice CH:AXIS:COORD:RES:FILE    write a PGM slice at the end (e.g. surface:z:0:128:out.pgm; the carrier is drawn as inside = 1)
     \\  --relief RES:FILE     bake the plates' face as a relief (the material seedbed) and write it as a PGM, deepest groove white
-    \\  --volume RES:FILE     bake the marble's cube as a volume and write its middle slice as a PGM, veins white
+    \\  --volume RES:FILE     bake the marble's cube as a material field and write its middle slice as a PPM through a white entry
     \\  --project CH:AXIS:RES:FILE        write a PGM max-projection along AXIS at the end
     \\  --dump FILE          write the snapshot as a struple map at the end
     \\  --ray ox,oy,oz,dx,dy,dz           count leaves a ray samples vs crosses at the end
@@ -511,17 +511,24 @@ pub fn main() !void {
         // The volumetric archetype: the marble's cube frozen as a grid,
         // the middle slice as a picture, the veins white.
         const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
-        var vol = try loam.bark.Volume.bake(gpa, &world, c, seedbed.MARBLE_BAKE_HALF, vo.res);
+        var vol = try loam.bark.Volume.bake(gpa, &world, c, seedbed.MARBLE_BAKE_HALF, vo.res, seedbed.marbleExpression(), seedbed.marbleMargin(vo.res));
         defer vol.deinit(gpa);
-        const vals = try gpa.alloc(f32, @as(usize, vo.res) * vo.res);
-        defer gpa.free(vals);
-        const mid: usize = vo.res / 2;
+        // The middle slice as a hit would read it through a white,
+        // polished entry: the columns mixed in by the vein's edge, a
+        // glow added on top.
+        const rgb = try gpa.alloc(f32, @as(usize, vo.res) * vo.res * 3);
+        defer gpa.free(rgb);
+        const entry = loam.bark.Material{ .albedo = .{ 0.92, 0.9, 0.86 }, .roughness = 0.15, .metallic = 0, .emissive = .{ 0, 0, 0 } };
+        const mid: f32 = (@as(f32, @floatFromInt(vo.res / 2)) + 0.5) / @as(f32, @floatFromInt(vo.res)) * vol.extent;
         for (0..vo.res) |j| for (0..vo.res) |i| {
-            const phi = vol.phi[(mid * vo.res + j) * vo.res + i];
-            vals[j * vo.res + i] = @min(1, @max(0, (phi + seedbed.MARBLE_VEIN) / (2 * seedbed.MARBLE_VEIN)));
+            const px = [3]f32{ (@as(f32, @floatFromInt(i)) + 0.5) / @as(f32, @floatFromInt(vo.res)) * vol.extent, (@as(f32, @floatFromInt(j)) + 0.5) / @as(f32, @floatFromInt(vo.res)) * vol.extent, mid };
+            const m = vol.materialAt(px, 1, seedbed.MARBLE_VEIN, entry);
+            inline for (0..3) |a| rgb[(j * vo.res + i) * 3 + a] = m.albedo[a] * (1 - 0.6 * m.metallic + 0.6 * m.metallic * (1 - m.roughness)) + 0.15 * m.emissive[a];
         };
-        try seedbed.writePgm(vo.path, vo.res, vals, 1.0);
-        try stdout.print("volume {d}³ over ±{d:.0}, φ {d:.2}..{d:.2}, archetype {s} → {s}\n", .{ vo.res, seedbed.MARBLE_BAKE_HALF, vol.min, vol.max, std.fmt.fmtSliceHexLower(vol.hash[0..8]), vo.path });
+        try seedbed.writePpm(vo.path, vo.res, rgb);
+        var tally = [_]u32{0} ** 3;
+        for (0..world.fronts.items.len) |id| tally[@intFromEnum(seedbed.marbleSpecies(world.seed, @intCast(id)))] += 1;
+        try stdout.print("volume {d}³ over ±{d:.0}, φ {d:.2}..{d:.2}, {d} floats a voxel (columns {b:0>4}), {d} voxels named by a capsule within {d:.2}, the rest in {d} passes; veins {d} graphite, {d} gold, {d} ember; archetype {s} → {s}\n", .{ vo.res, seedbed.MARBLE_BAKE_HALF, vol.min, vol.max, vol.stride, vol.columns, vol.named, seedbed.marbleMargin(vo.res), vol.passes, tally[0], tally[1], tally[2], std.fmt.fmtSliceHexLower(vol.hash[0..8]), vo.path });
     }
     for (opts.projections.items) |pr| {
         const vals = try seedbed.project(&world, gpa, pr.bit, pr.axis, .{ -64, -16, -64 }, .{ 64, 112, 64 }, pr.res, pr.res);

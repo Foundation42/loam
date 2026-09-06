@@ -2777,3 +2777,115 @@ test "G16 (b) mutations: the footprint ignored → every read pays for everythin
     try testing.expectEqual(near.bytes, far.bytes);
     try testing.expect(@abs(before.band1 - after.band1) > 0.05);
 }
+
+// ── The material field: the marble's columns beside φ (the seedbed, played) ──
+
+/// A slab of base with one straight tunnelling vein carved along +x
+/// through its middle: the marble's front, alone, so what the bake
+/// names is not in doubt.
+fn veinRun(gpa: std.mem.Allocator, seed: u64, steps: u32) !World {
+    var w = try World.init(gpa, .{ .seed = seed });
+    errdefer w.deinit();
+    const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
+    try seedbed.blobLattice(&w, Channel.growth.bit(), c, 32, 1.0, 0);
+    try seedbed.slabLattice(&w, .{ c[0] - 16, c[1] - 8, c[2] - 8 }, .{ c[0] + 16, c[1] + 8, c[2] + 8 }, 0);
+    try w.apply();
+    var params = loam.front.Params{};
+    params.tropism_light = 0;
+    params.tropism_stimulus = 0;
+    params.avoid_self = 0;
+    params.wander = 0;
+    params.drift = 0;
+    params.max_generation = 0;
+    params.radius = seedbed.MARBLE_VEIN;
+    params.carve = true;
+    params.inhibit = -0.6;
+    params.length = 40;
+    try seedbed.plantLattice(&w, .{ c[0] - 12, c[1], c[2] }, .{ 1, 0, 0 }, params);
+    try w.apply();
+    try run(&w, steps, null);
+    return w;
+}
+
+/// The mutation: an expression that reads the vein's name but not the
+/// arc position along it — the root's material everywhere.
+fn flatGold(_: ?*const anyopaque, w: *const World, near: ?bark.Near, _: [3]f64, _: f32) bark.Material {
+    const nr = near orelse return seedbed.MARBLE_GRAPHITE;
+    return seedbed.marbleMaterial(w.seed, nr.id, 0);
+}
+
+test "the material field names a carved vein from the ring history: a cut writes no provenance, the columns inside the vein are the cutter's species running along its arc, an absent column is the entry's, and a hit mixes the entry toward them by the vein's edge" {
+    const gpa = testing.allocator;
+    // A seed whose first vein is gold: metallic at the root, graphite by
+    // the tip — a transition the columns must carry along the vein.
+    var seed: u64 = 0;
+    while (seedbed.marbleSpecies(seed, 0) != .gold) seed += 1;
+    var w = try veinRun(gpa, seed, 24);
+    defer w.deinit();
+    const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
+    const snap = w.published();
+    // The field inside the vein: carved (φ positive) and nobody's — a
+    // cut writes no provenance, so only the ring history can name it.
+    try testing.expect(snap.sample(Channel.surface.bit(), c) > 0);
+    try testing.expectEqual(@as(f32, 0), snap.sample(Channel.who.bit(), c));
+
+    const res: u32 = 32;
+    var vol = try bark.Volume.bake(gpa, &w, c, 16, res, seedbed.marbleExpression(), seedbed.marbleMargin(res));
+    defer vol.deinit(gpa);
+    try testing.expectEqual(@as(u32, 9), vol.stride);
+    try testing.expect(vol.named > 0);
+    // Along the vein's axis, inside it, the metallic column falls from
+    // the gold's toward the graphite's and never rises; the emissive
+    // column is nothing (gold has none); the roughness rises with it.
+    const om = bark.columnOffset(vol.columns, .metallic).?;
+    const orr = bark.columnOffset(vol.columns, .roughness).?;
+    const oe = bark.columnOffset(vol.columns, .emissive).?;
+    var inside: u32 = 0;
+    var first: f32 = -1;
+    var last: f32 = -1;
+    var prev: f32 = 2;
+    var first_rough: f32 = -1;
+    var i: u32 = 0;
+    while (i < res) : (i += 1) {
+        const rec = vol.data[vol.index(i, res / 2, res / 2)..][0..vol.stride];
+        if (rec[0] <= 0) continue;
+        inside += 1;
+        try testing.expect(rec[om] <= prev + 1e-6);
+        prev = rec[om];
+        if (first < 0) {
+            first = rec[om];
+            first_rough = rec[orr];
+        }
+        last = rec[om];
+        try testing.expectEqual(@as(f32, 0), rec[oe]);
+    }
+    std.debug.print("\nthe material field: {d} voxels named of {d} (the rest in {d} passes), {d} inside the vein along its axis, metallic {d:.3} at the root to {d:.3} at the tip, roughness {d:.3} at the root\n", .{ vol.named, res * res * res, vol.passes, inside, first, last, first_rough });
+    try testing.expect(inside >= 8);
+    try testing.expect(first > 0.8);
+    try testing.expect(last < 0.2);
+    try testing.expect(first_rough < 0.3);
+    // A hit through a white, polished entry, in the archetype's own
+    // coordinates (the cube from its corner, as the shader reads it: the
+    // hit's world position over the unit, folded by the mirror): on the
+    // axis near the root the gold shows through the vein's edge; in the
+    // base off the vein the entry alone, every column, exactly.
+    const entry = bark.Material{ .albedo = .{ 0.92, 0.9, 0.86 }, .roughness = 0.15, .metallic = 0, .emissive = .{ 0, 1, 0 } };
+    const root = vol.materialAt(.{ 6, 16, 16 }, 1, seedbed.MARBLE_VEIN, entry);
+    try testing.expect(root.metallic > 0.5);
+    try testing.expect(root.albedo[0] > root.albedo[2] + 0.2);
+    const away = vol.materialAt(.{ 16, 21, 16 }, 1, seedbed.MARBLE_VEIN, entry);
+    try testing.expectEqual(entry.albedo, away.albedo);
+    try testing.expectEqual(entry.roughness, away.roughness);
+    try testing.expectEqual(entry.emissive, away.emissive);
+    // The mutation: the arc position ignored → the root's gold at the
+    // tip too, and the fall along the vein is gone.
+    var flat = try bark.Volume.bake(gpa, &w, c, 16, res, .{ .columns = bark.ALL_COLUMNS, .at = flatGold }, seedbed.marbleMargin(res));
+    defer flat.deinit(gpa);
+    var flat_last: f32 = -1;
+    i = 0;
+    while (i < res) : (i += 1) {
+        const rec = flat.data[flat.index(i, res / 2, res / 2)..][0..flat.stride];
+        if (rec[0] > 0) flat_last = rec[om];
+    }
+    try testing.expect(flat_last > 0.8);
+}

@@ -690,7 +690,7 @@ test "the relief tiles by mirroring: continuous across every edge, and its gradi
     try std.testing.expectApproxEqAbs(c.v, d.v, 1e-6);
 }
 
-// ── The volumetric archetype: a field sampled as a 3-D texture ───────────
+// ── The volumetric archetype: a MATERIAL FIELD sampled as a 3-D texture ──
 //
 // Christian's marble: "a loam gradient field that is reasonably milky
 // white with a black structure inside it, and the tree picks up the
@@ -700,40 +700,260 @@ test "the relief tiles by mirroring: continuous across every edge, and its gradi
 // scaled to the archetype's units and folded by mirroring on every
 // axis so the tiling has no seam. A cut through the matter shows the
 // same veins inside. No chart, no frame: the field is the texture.
+//
+// Then his next sentence, on seeing it: "now we can have transitions
+// on albedo, roughness, metalness, emissives." Beside φ every voxel
+// carries the COLUMNS the archetype models — the STRUCTURE's material
+// there: albedo, roughness, metallic, emissive, any subset — and a hit
+// mixes the renderer's material entry (the matrix, and the default for
+// every column the archetype does not model) toward the column by the
+// vein's soft edge. The columns are correlated because they come from
+// one history: the bake names the capsule nearest every voxel from the
+// RING RECORDS — a carved vein writes no provenance into the field
+// (Christian's ruling: a cut writes none, the scar remembers who grew
+// there), so history is the only thing that can say which vein a voxel
+// lies in, and how far along it — and hands the archetype's EXPRESSION
+// (`Expression.at`) that name, the arc position 0..1 along that front,
+// the point and φ. The marble's expression is the seedbed's palette.
+// `materialAt` is the shader's twin, term for term.
+
+/// A PBR material as the renderer's table carries one; `emissive` is
+/// the radiance colour with its strength folded in.
+pub const Material = struct {
+    albedo: [3]f32 = .{ 1, 1, 1 },
+    roughness: f32 = 0.5,
+    metallic: f32 = 0,
+    emissive: [3]f32 = .{ 0, 0, 0 },
+
+    pub fn lerp(a: Material, b: Material, t: f32) Material {
+        return .{
+            .albedo = .{ a.albedo[0] + (b.albedo[0] - a.albedo[0]) * t, a.albedo[1] + (b.albedo[1] - a.albedo[1]) * t, a.albedo[2] + (b.albedo[2] - a.albedo[2]) * t },
+            .roughness = a.roughness + (b.roughness - a.roughness) * t,
+            .metallic = a.metallic + (b.metallic - a.metallic) * t,
+            .emissive = .{ a.emissive[0] + (b.emissive[0] - a.emissive[0]) * t, a.emissive[1] + (b.emissive[1] - a.emissive[1]) * t, a.emissive[2] + (b.emissive[2] - a.emissive[2]) * t },
+        };
+    }
+};
+
+/// The columns a volume can carry after φ, in this order; a mask of
+/// them is `Columns`. The GPU reads the same mask and the same order
+/// (matryoshka's `loamVolume`).
+pub const Column = enum(u3) {
+    albedo = 0,
+    roughness = 1,
+    metallic = 2,
+    emissive = 3,
+
+    pub fn width(self: Column) u32 {
+        return switch (self) {
+            .albedo, .emissive => 3,
+            .roughness, .metallic => 1,
+        };
+    }
+    pub fn bit(self: Column) u8 {
+        return @as(u8, 1) << @intFromEnum(self);
+    }
+};
+
+pub const Columns = u8;
+pub const ALL_COLUMNS: Columns = Column.albedo.bit() | Column.roughness.bit() | Column.metallic.bit() | Column.emissive.bit();
+
+/// Floats per voxel: φ and the present columns' widths.
+pub fn strideOf(columns: Columns) u32 {
+    var s: u32 = 1;
+    inline for (std.meta.tags(Column)) |c| {
+        if (columns & c.bit() != 0) s += c.width();
+    }
+    return s;
+}
+
+/// Where column `c` starts in a voxel's record, or null where the
+/// archetype does not model it (the entry's default then).
+pub fn columnOffset(columns: Columns, c: Column) ?u32 {
+    if (columns & c.bit() == 0) return null;
+    var off: u32 = 1;
+    inline for (std.meta.tags(Column)) |d| {
+        if (@intFromEnum(d) < @intFromEnum(c) and columns & d.bit() != 0) off += d.width();
+    }
+    return off;
+}
+
+/// The nearest capsule of the ring history at a voxel: the front, how
+/// far along its history the foot lies (its chart s over the front's
+/// whole arc: 0 at the seed, 1 at the tip), and the capsule's signed
+/// distance there (negative inside the sweep).
+pub const Near = struct { id: u32, u: f32, d: f32 };
+
+/// An archetype's material expression: the STRUCTURE's material at a
+/// voxel, given what the ring history says is nearest (null only when
+/// the world holds no rings at all). Which columns it models is the
+/// contract; the bake stores those and nothing else.
+pub const Expression = struct {
+    columns: Columns,
+    ctx: ?*const anyopaque = null,
+    at: *const fn (ctx: ?*const anyopaque, w: *const World, near: ?Near, p: [3]f64, phi: f32) Material,
+};
+
+/// A hit's read of a volume: φ and the columns, trilinear; an absent
+/// column reads zero and `materialAt` never looks at it.
+pub const Sample = struct { phi: f32, material: Material };
 
 pub const Volume = struct {
     res: u32,
     /// The cube's extent in the archetype's own lattice units.
     extent: f32,
-    /// φ over the cube, res³, z rows of y rows of x.
-    phi: []f32,
+    columns: Columns,
+    stride: u32,
+    /// res³ records of `stride` floats — φ, then the present columns in
+    /// `Column` order — z rows of y rows of x.
+    data: []f32,
     hash: [32]u8,
     min: f32,
     max: f32,
+    /// Voxels named by a capsule within the bake's margin, and the
+    /// dilation passes that named the rest from those (the print's).
+    named: u32 = 0,
+    passes: u32 = 0,
 
     pub fn deinit(self: *Volume, gpa: std.mem.Allocator) void {
-        gpa.free(self.phi);
+        gpa.free(self.data);
+    }
+
+    pub fn phi(self: *const Volume, i: u32, j: u32, k: u32) f32 {
+        return self.data[self.index(i, j, k)];
+    }
+
+    pub fn index(self: *const Volume, i: u32, j: u32, k: u32) usize {
+        return ((@as(usize, k) * self.res + j) * self.res + i) * self.stride;
     }
 
     /// Bake the cube `centre ± half` of world `w` at `res` samples an
-    /// edge: the carrier by the spline.
-    pub fn bake(gpa: std.mem.Allocator, w: *const World, centre: [3]f64, half: f64, res: u32) !Volume {
+    /// edge: φ by the spline, the columns by `expr` at every voxel, the
+    /// nearest capsule named from the ring history within `margin`
+    /// units of any sweep (exact there, where the vein's edge blends;
+    /// the rest named by dilation from those, where nothing reads it).
+    pub fn bake(gpa: std.mem.Allocator, w: *const World, centre: [3]f64, half: f64, res: u32, expr: Expression, margin: f32) !Volume {
         const snap = w.published();
         const n: usize = @as(usize, res) * res * res;
-        var out = Volume{ .res = res, .extent = @floatCast(2 * half), .phi = try gpa.alloc(f32, n), .hash = snap.contentHash(), .min = std.math.inf(f32), .max = -std.math.inf(f32) };
+        const stride = strideOf(expr.columns);
+        var out = Volume{ .res = res, .extent = @floatCast(2 * half), .columns = expr.columns, .stride = stride, .data = try gpa.alloc(f32, n * stride), .hash = snap.contentHash(), .min = std.math.inf(f32), .max = -std.math.inf(f32) };
+        errdefer gpa.free(out.data);
+        const cell: f64 = 2 * half / @as(f64, @floatFromInt(res));
+        const lo = [3]f64{ centre[0] - half, centre[1] - half, centre[2] - half };
+
+        // The name of every voxel from the ring history: the nearest
+        // capsule within the margin, by the front's own arithmetic.
+        const NONE = std.math.maxInt(u32);
+        const ids = try gpa.alloc(u32, n);
+        defer gpa.free(ids);
+        const us = try gpa.alloc(f32, n);
+        defer gpa.free(us);
+        const ds = try gpa.alloc(f32, n);
+        defer gpa.free(ds);
+        @memset(ids, NONE);
+        @memset(ds, std.math.inf(f32));
+        var named: u32 = 0;
+        for (w.rings.items, 0..) |list, id| {
+            const rings = list.items;
+            if (rings.len < 2 or id >= w.fronts.items.len) continue;
+            const floor = w.floorFor(w.fronts.items[id].params);
+            const total: f64 = @max(rings[rings.len - 1].s, 1e-9);
+            var seg: usize = 1;
+            while (seg < rings.len) : (seg += 1) {
+                const cap = world.World.Capsule.between(&rings[seg - 1], &rings[seg], floor);
+                const reach: f64 = @as(f64, @max(cap.env0, cap.env1) + margin) + floor;
+                var v0: [3]u32 = undefined;
+                var v1: [3]u32 = undefined;
+                var empty = false;
+                inline for (0..3) |a| {
+                    const a0 = @min(cap.p0[a], cap.p1[a]) - reach;
+                    const a1 = @max(cap.p0[a], cap.p1[a]) + reach;
+                    const lo_i = @floor((a0 - lo[a]) / cell);
+                    const hi_i = @floor((a1 - lo[a]) / cell);
+                    if (hi_i < 0 or lo_i >= @as(f64, @floatFromInt(res))) empty = true;
+                    v0[a] = @intFromFloat(@max(0, lo_i));
+                    v1[a] = @intFromFloat(@min(@as(f64, @floatFromInt(res - 1)), @max(0, hi_i)));
+                }
+                if (empty) continue;
+                var k = v0[2];
+                while (k <= v1[2]) : (k += 1) {
+                    var j = v0[1];
+                    while (j <= v1[1]) : (j += 1) {
+                        var i = v0[0];
+                        while (i <= v1[0]) : (i += 1) {
+                            const q = [3]f64{ lo[0] + (@as(f64, @floatFromInt(i)) + 0.5) * cell, lo[1] + (@as(f64, @floatFromInt(j)) + 0.5) * cell, lo[2] + (@as(f64, @floatFromInt(k)) + 0.5) * cell };
+                            const ft = cap.foot(q);
+                            const d = cap.signedAt(ft);
+                            if (d > margin) continue;
+                            const vi = (@as(usize, k) * res + j) * res + i;
+                            if (d < ds[vi]) {
+                                if (ids[vi] == NONE) named += 1;
+                                ds[vi] = d;
+                                ids[vi] = @intCast(id);
+                                us[vi] = @floatCast((cap.s0 + ft.s * (cap.s1 - cap.s0)) / total);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out.named = named;
+        // The rest by dilation: an unnamed voxel takes a named
+        // 6-neighbour's name, the previous pass's, in a fixed order.
+        var left: usize = n - named;
+        if (named > 0) {
+            const prev_ids = try gpa.alloc(u32, n);
+            defer gpa.free(prev_ids);
+            const prev_us = try gpa.alloc(f32, n);
+            defer gpa.free(prev_us);
+            while (left > 0) : (out.passes += 1) {
+                @memcpy(prev_ids, ids);
+                @memcpy(prev_us, us);
+                const r: usize = res;
+                var vi: usize = 0;
+                while (vi < n) : (vi += 1) {
+                    if (ids[vi] != NONE) continue;
+                    const i = vi % r;
+                    const j = (vi / r) % r;
+                    const k = vi / (r * r);
+                    const nb = [6]?usize{
+                        if (i > 0) vi - 1 else null,
+                        if (i + 1 < r) vi + 1 else null,
+                        if (j > 0) vi - r else null,
+                        if (j + 1 < r) vi + r else null,
+                        if (k > 0) vi - r * r else null,
+                        if (k + 1 < r) vi + r * r else null,
+                    };
+                    for (nb) |o| {
+                        const oi = o orelse continue;
+                        if (prev_ids[oi] != NONE) {
+                            ids[vi] = prev_ids[oi];
+                            us[vi] = prev_us[oi];
+                            left -= 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         var k: u32 = 0;
         while (k < res) : (k += 1) {
             var j: u32 = 0;
             while (j < res) : (j += 1) {
                 var i: u32 = 0;
                 while (i < res) : (i += 1) {
-                    const p = [3]f64{
-                        centre[0] - half + (@as(f64, @floatFromInt(i)) + 0.5) / @as(f64, @floatFromInt(res)) * 2 * half,
-                        centre[1] - half + (@as(f64, @floatFromInt(j)) + 0.5) / @as(f64, @floatFromInt(res)) * 2 * half,
-                        centre[2] - half + (@as(f64, @floatFromInt(k)) + 0.5) / @as(f64, @floatFromInt(res)) * 2 * half,
-                    };
+                    const p = [3]f64{ lo[0] + (@as(f64, @floatFromInt(i)) + 0.5) * cell, lo[1] + (@as(f64, @floatFromInt(j)) + 0.5) * cell, lo[2] + (@as(f64, @floatFromInt(k)) + 0.5) * cell };
                     const v = snap.sample(Channel.surface.bit(), p);
-                    out.phi[(@as(usize, k) * res + j) * res + i] = v;
+                    const vi = (@as(usize, k) * res + j) * res + i;
+                    const near: ?Near = if (ids[vi] == NONE) null else .{ .id = ids[vi], .u = us[vi], .d = ds[vi] };
+                    const m = expr.at(expr.ctx, w, near, p, v);
+                    const rec = out.data[vi * stride ..][0..stride];
+                    rec[0] = v;
+                    if (columnOffset(expr.columns, .albedo)) |o| rec[o..][0..3].* = m.albedo;
+                    if (columnOffset(expr.columns, .roughness)) |o| rec[o] = m.roughness;
+                    if (columnOffset(expr.columns, .metallic)) |o| rec[o] = m.metallic;
+                    if (columnOffset(expr.columns, .emissive)) |o| rec[o..][0..3].* = m.emissive;
                     out.min = @min(out.min, v);
                     out.max = @max(out.max, v);
                 }
@@ -742,65 +962,154 @@ pub const Volume = struct {
         return out;
     }
 
-    /// φ at `p` in the archetype's units, mirrored on every axis, trilinear.
-    pub fn at(self: *const Volume, p: [3]f32) f32 {
+    const Locate = struct { c0: [3]i32, t: [3]f32 };
+
+    /// `p` in the archetype's units, mirrored on every axis, to the
+    /// voxel cell and the trilinear weights.
+    fn locate(self: *const Volume, p: [3]f32) Locate {
         const e = self.extent;
         const r: f32 = @floatFromInt(self.res);
-        var c: [3]f32 = undefined;
+        var out: Locate = undefined;
         inline for (0..3) |a| {
             var f = @mod(p[a], 2 * e);
             if (f >= e) f = 2 * e - f;
-            c[a] = f / e * r - 0.5;
+            const c = f / e * r - 0.5;
+            const c0f = @floor(c);
+            out.c0[a] = @intFromFloat(c0f);
+            out.t[a] = c - c0f;
         }
-        const x0f = @floor(c[0]);
-        const y0f = @floor(c[1]);
-        const z0f = @floor(c[2]);
-        const tx = c[0] - x0f;
-        const ty = c[1] - y0f;
-        const tz = c[2] - z0f;
-        const x0: i32 = @intFromFloat(x0f);
-        const y0: i32 = @intFromFloat(y0f);
-        const z0: i32 = @intFromFloat(z0f);
+        return out;
+    }
+
+    /// One float of the record at `off`, trilinear over the located cell.
+    fn fetch(self: *const Volume, l: Locate, off: u32) f32 {
         var v: f32 = 0;
         inline for (0..2) |dz| {
             inline for (0..2) |dy| {
                 inline for (0..2) |dx| {
-                    const wgt = (if (dx == 0) 1 - tx else tx) * (if (dy == 0) 1 - ty else ty) * (if (dz == 0) 1 - tz else tz);
-                    v += wgt * self.voxel(x0 + @as(i32, @intCast(dx)), y0 + @as(i32, @intCast(dy)), z0 + @as(i32, @intCast(dz)));
+                    const wgt = (if (dx == 0) 1 - l.t[0] else l.t[0]) * (if (dy == 0) 1 - l.t[1] else l.t[1]) * (if (dz == 0) 1 - l.t[2] else l.t[2]);
+                    v += wgt * self.voxel(l.c0[0] + @as(i32, @intCast(dx)), l.c0[1] + @as(i32, @intCast(dy)), l.c0[2] + @as(i32, @intCast(dz)), off);
                 }
             }
         }
         return v;
     }
 
-    fn voxel(self: *const Volume, x: i32, y: i32, z: i32) f32 {
+    /// φ at `p` in the archetype's units, mirrored on every axis, trilinear.
+    pub fn at(self: *const Volume, p: [3]f32) f32 {
+        return self.fetch(self.locate(p), 0);
+    }
+
+    /// φ and every present column at `p`, trilinear.
+    pub fn sample(self: *const Volume, p: [3]f32) Sample {
+        const l = self.locate(p);
+        var s = Sample{ .phi = self.fetch(l, 0), .material = .{ .albedo = .{ 0, 0, 0 }, .roughness = 0, .metallic = 0, .emissive = .{ 0, 0, 0 } } };
+        if (columnOffset(self.columns, .albedo)) |o| s.material.albedo = .{ self.fetch(l, o), self.fetch(l, o + 1), self.fetch(l, o + 2) };
+        if (columnOffset(self.columns, .roughness)) |o| s.material.roughness = self.fetch(l, o);
+        if (columnOffset(self.columns, .metallic)) |o| s.material.metallic = self.fetch(l, o);
+        if (columnOffset(self.columns, .emissive)) |o| s.material.emissive = .{ self.fetch(l, o), self.fetch(l, o + 1), self.fetch(l, o + 2) };
+        return s;
+    }
+
+    fn voxel(self: *const Volume, x: i32, y: i32, z: i32, off: u32) f32 {
         const r: i32 = @intCast(self.res);
-        const cx: usize = @intCast(@min(r - 1, @max(0, x)));
-        const cy: usize = @intCast(@min(r - 1, @max(0, y)));
-        const cz: usize = @intCast(@min(r - 1, @max(0, z)));
-        return self.phi[(cz * self.res + cy) * self.res + cx];
+        const cx: u32 = @intCast(@min(r - 1, @max(0, x)));
+        const cy: u32 = @intCast(@min(r - 1, @max(0, y)));
+        const cz: u32 = @intCast(@min(r - 1, @max(0, z)));
+        return self.data[self.index(cx, cy, cz) + off];
+    }
+
+    /// What a hit reads — the shader's twin: the entry (the matrix, and
+    /// the default for every column the archetype does not model) mixed
+    /// toward the structure's columns by the vein's soft edge, φ
+    /// positive inside the carved vein, the edge softened over the
+    /// vein's own width.
+    pub fn materialAt(self: *const Volume, p_w: [3]f32, unit: f32, vein: f32, entry: Material) Material {
+        const s = self.sample(.{ p_w[0] / unit, p_w[1] / unit, p_w[2] / unit });
+        const t = veinBlend(s.phi, vein);
+        var out = entry;
+        if (self.columns & Column.albedo.bit() != 0) inline for (0..3) |a| {
+            out.albedo[a] = entry.albedo[a] + (s.material.albedo[a] - entry.albedo[a]) * t;
+        };
+        if (self.columns & Column.roughness.bit() != 0) out.roughness = entry.roughness + (s.material.roughness - entry.roughness) * t;
+        if (self.columns & Column.metallic.bit() != 0) out.metallic = entry.metallic + (s.material.metallic - entry.metallic) * t;
+        if (self.columns & Column.emissive.bit() != 0) inline for (0..3) |a| {
+            out.emissive[a] = entry.emissive[a] + (s.material.emissive[a] - entry.emissive[a]) * t;
+        };
+        return out;
     }
 };
 
-/// The marble's blend at a hit: 0 in the base, 1 inside a vein, smooth
-/// across the vein's band — the material's colour is a mix by it.
-pub fn veinBlend(vol: *const Volume, p_w: [3]f32, unit: f32, vein: f32) f32 {
-    const q = [3]f32{ p_w[0] / unit, p_w[1] / unit, p_w[2] / unit };
-    const phi = vol.at(q);
-    // The carved vein is where φ is positive; the edge softened over the
-    // vein's own width.
+/// The marble's blend from φ: 0 in the base, 1 inside a vein, smooth
+/// across the vein's band.
+pub fn veinBlend(phi: f32, vein: f32) f32 {
     const t = @min(1, @max(0, (phi + vein) / (2 * vein)));
     return t * t * (3 - 2 * t);
 }
 
+fn flatExpression(_: ?*const anyopaque, _: *const World, _: ?Near, _: [3]f64, _: f32) Material {
+    return .{};
+}
+
+test "the columns: a stride of φ and the present widths, offsets in column order, an absent column has none" {
+    try std.testing.expectEqual(@as(u32, 1), strideOf(0));
+    try std.testing.expectEqual(@as(u32, 9), strideOf(ALL_COLUMNS));
+    const rm: Columns = Column.roughness.bit() | Column.emissive.bit();
+    try std.testing.expectEqual(@as(u32, 5), strideOf(rm));
+    try std.testing.expect(columnOffset(rm, .albedo) == null);
+    try std.testing.expectEqual(@as(?u32, 1), columnOffset(rm, .roughness));
+    try std.testing.expect(columnOffset(rm, .metallic) == null);
+    try std.testing.expectEqual(@as(?u32, 2), columnOffset(rm, .emissive));
+    try std.testing.expectEqual(@as(?u32, 5), columnOffset(ALL_COLUMNS, .metallic));
+    _ = flatExpression;
+}
+
 test "the volume tiles by mirroring on every axis and reads its own voxels back" {
     const gpa = std.testing.allocator;
-    var v = Volume{ .res = 4, .extent = 4, .phi = try gpa.alloc(f32, 64), .hash = undefined, .min = 0, .max = 3 };
+    var v = Volume{ .res = 4, .extent = 4, .columns = 0, .stride = 1, .data = try gpa.alloc(f32, 64), .hash = undefined, .min = 0, .max = 3 };
     defer v.deinit(gpa);
-    for (0..64) |i| v.phi[i] = @floatFromInt(i % 4);
+    for (0..64) |i| v.data[i] = @floatFromInt(i % 4);
     // Voxel centres read back exactly; a point two tiles over is the same.
     try std.testing.expectApproxEqAbs(@as(f32, 2), v.at(.{ 2.5, 1.5, 0.5 }), 1e-6);
     try std.testing.expectApproxEqAbs(v.at(.{ 1.3, 2.2, 0.7 }), v.at(.{ 1.3 + 8, 2.2 - 8, 0.7 + 16 }), 1e-6);
     // Across a mirror edge the field is continuous.
     try std.testing.expectApproxEqAbs(v.at(.{ 3.99, 1, 1 }), v.at(.{ 4.01, 1, 1 }), 0.05);
+}
+
+test "a hit reads the entry mixed toward the present columns by the vein's edge, and the entry alone for a column the archetype does not model" {
+    const gpa = std.testing.allocator;
+    // Albedo and roughness modelled; metallic and emissive not.
+    const cols: Columns = Column.albedo.bit() | Column.roughness.bit();
+    var v = Volume{ .res = 2, .extent = 2, .columns = cols, .stride = strideOf(cols), .data = try gpa.alloc(f32, 8 * 5), .hash = undefined, .min = -2, .max = 1 };
+    defer v.deinit(gpa);
+    var i: usize = 0;
+    while (i < 8) : (i += 1) {
+        v.data[i * 5 + 0] = 1; // inside the vein everywhere
+        v.data[i * 5 + 1] = 1; // albedo red
+        v.data[i * 5 + 2] = 0;
+        v.data[i * 5 + 3] = 0;
+        v.data[i * 5 + 4] = 0.9; // rough
+    }
+    const entry = Material{ .albedo = .{ 0, 0, 1 }, .roughness = 0.1, .metallic = 0.7, .emissive = .{ 0, 1, 0 } };
+    const vein: f32 = 0.5;
+    const m = v.materialAt(.{ 0.5, 0.5, 0.5 }, 1, vein, entry);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), m.albedo[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), m.albedo[2], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.9), m.roughness, 1e-6);
+    // Not modelled: the entry's, exactly.
+    try std.testing.expectEqual(entry.metallic, m.metallic);
+    try std.testing.expectEqual(entry.emissive, m.emissive);
+    // The base: φ well below the vein's band reads the entry alone.
+    i = 0;
+    while (i < 8) : (i += 1) v.data[i * 5] = -2;
+    const b = v.materialAt(.{ 0.5, 0.5, 0.5 }, 1, vein, entry);
+    try std.testing.expectEqual(entry.albedo, b.albedo);
+    try std.testing.expectEqual(entry.roughness, b.roughness);
+    // The edge: φ = 0 is half way.
+    i = 0;
+    while (i < 8) : (i += 1) v.data[i * 5] = 0;
+    const e = v.materialAt(.{ 0.5, 0.5, 0.5 }, 1, vein, entry);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), e.albedo[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), e.albedo[2], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), e.roughness, 1e-6);
 }

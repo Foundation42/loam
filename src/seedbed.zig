@@ -21,6 +21,7 @@ const ray = @import("ray.zig");
 const update = @import("update.zig");
 const fmath = @import("fmath.zig");
 const rng = @import("rng.zig");
+const bark = @import("bark.zig");
 
 const World = world_mod.World;
 const Key = lattice.Key;
@@ -570,6 +571,24 @@ pub fn writePgm(path: []const u8, res: u32, values: []const f32, scale: f32) !vo
     try bw.flush();
 }
 
+/// Write a slice as an 8-bit PPM, rgb triples per pixel, clamped.
+pub fn writePpm(path: []const u8, res: u32, rgb: []const f32) !void {
+    var f = try std.fs.cwd().createFile(path, .{});
+    defer f.close();
+    var bw = std.io.bufferedWriter(f.writer());
+    const wr = bw.writer();
+    try wr.print("P6\n{d} {d}\n255\n", .{ res, res });
+    var v: u32 = res;
+    while (v > 0) : (v -= 1) {
+        const row = rgb[@as(usize, v - 1) * res * 3 ..][0 .. res * 3];
+        for (row) |x| {
+            const s = @min(255.0, @max(0.0, x * 255.0));
+            try wr.writeByte(@intFromFloat(s));
+        }
+    }
+    try bw.flush();
+}
+
 pub const RayCount = struct { sampled: u64, crossed: u64, nodes_tested: u64 };
 
 /// What a ray visits with summaries against what it crosses without —
@@ -890,6 +909,64 @@ pub const MARBLE_STEPS: u32 = 90;
 /// the cube's own surface, and a tile that reached them wore a line of
 /// half-vein at every mirror.
 pub const MARBLE_BAKE_HALF: f64 = MARBLE_HALF - 4;
+
+/// The marble as a MATERIAL FIELD (Christian, on the first marble:
+/// "now we can have transitions on albedo, roughness, metalness,
+/// emissives"): every vein has a SPECIES, drawn per front from a stream
+/// of its own — an epoch no step reaches, so the veins he saw stay
+/// where they are — and a material that runs along its length, u the
+/// arc position, 0 at the seed and 1 at the tip. Graphite is the vein
+/// he saw: dark and matte. Gold is metallic and polished at its root
+/// and runs out to graphite by its tip. Ember is a dull red that glows
+/// at its root and cools along the vein. Weights 5:3:2. The palette is
+/// PROPOSED: a material's numbers are his to strike by eye.
+pub const MarbleSpecies = enum(u8) { graphite, gold, ember };
+pub const MARBLE_SPECIES_EPOCH: u64 = 1 << 32;
+pub const MARBLE_GRAPHITE = bark.Material{ .albedo = .{ 0.08, 0.07, 0.07 }, .roughness = 0.6, .metallic = 0, .emissive = .{ 0, 0, 0 } };
+pub const MARBLE_GOLD = bark.Material{ .albedo = .{ 1.0, 0.71, 0.29 }, .roughness = 0.25, .metallic = 1, .emissive = .{ 0, 0, 0 } };
+pub const MARBLE_EMBER = bark.Material{ .albedo = .{ 0.55, 0.16, 0.05 }, .roughness = 0.45, .metallic = 0, .emissive = .{ 6.0, 2.5, 0.7 } };
+
+pub fn marbleSpecies(seed: u64, id: u32) MarbleSpecies {
+    var s = rng.Stream.front(seed, id, MARBLE_SPECIES_EPOCH);
+    return switch (s.below(10)) {
+        0...4 => .graphite,
+        5...7 => .gold,
+        else => .ember,
+    };
+}
+
+/// The structure's material `u` of the way along vein `id`.
+pub fn marbleMaterial(seed: u64, id: u32, u: f32) bark.Material {
+    const uu = @min(1, @max(0, u));
+    return switch (marbleSpecies(seed, id)) {
+        .graphite => MARBLE_GRAPHITE,
+        .gold => bark.Material.lerp(MARBLE_GOLD, MARBLE_GRAPHITE, uu * uu * (3 - 2 * uu)),
+        .ember => blk: {
+            var m = MARBLE_EMBER;
+            const glow = (1 - uu) * (1 - uu);
+            m.emissive = .{ m.emissive[0] * glow, m.emissive[1] * glow, m.emissive[2] * glow };
+            break :blk m;
+        },
+    };
+}
+
+fn marbleAt(_: ?*const anyopaque, w: *const World, near: ?bark.Near, _: [3]f64, _: f32) bark.Material {
+    const nr = near orelse return MARBLE_GRAPHITE;
+    return marbleMaterial(w.seed, nr.id, nr.u);
+}
+
+/// The marble's expression: every column, from the palette by the
+/// nearest vein's species and the arc position along it.
+pub fn marbleExpression() bark.Expression {
+    return .{ .columns = bark.ALL_COLUMNS, .at = marbleAt };
+}
+
+/// How far from a sweep the bake names voxels exactly: the vein's soft
+/// edge reaches a vein's width past the wall, and a hit's trilinear
+/// read reaches a voxel past that.
+pub fn marbleMargin(res: u32) f32 {
+    return MARBLE_VEIN + 2 * @as(f32, @floatCast(2 * MARBLE_BAKE_HALF / @as(f64, @floatFromInt(res))));
+}
 
 /// The step the junction scene buds its child at — the parent's twelfth
 /// ring, where its ring CA has had time to make bark.

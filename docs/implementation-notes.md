@@ -2316,12 +2316,123 @@ metallic, emissive — correlated because they come from one history
 material entry supplying the rest. The marble's tint is the first such
 transition, on albedo alone.
 
+## The archetype as a material field (Sunday 2026-09-06, late — "let's do the material field columns on the marble … give our coral growth a bit more character and material expression")
+
+Built: beside φ every voxel of `bark.Volume` carries the COLUMNS the
+archetype models — `bark.Column` {albedo 3, roughness 1, metallic 1,
+emissive 3}, a mask (`Columns`), `strideOf`, `columnOffset` — as the
+STRUCTURE's material there. A hit (`Volume.materialAt`, the shader's
+twin term for term) mixes the renderer's material ENTRY — the matrix,
+and the default for every column the archetype does not model — toward
+the columns by the vein's soft edge (`veinBlend`), and the footprint's
+fade multiplies the mix, so a far hit reads the entry alone. The
+columns are correlated because they come from one history.
+
+The finding that shaped it: THE MARBLE'S VEINS ARE CUTS, AND A CUT
+WRITES NO PROVENANCE (Christian's ruling: the scar remembers who grew
+there). The field inside a vein is carved and nobody's — the gate
+checks `who` = 0 there — so nothing in the field can say which vein a
+voxel lies in; only history can. The bake names every voxel from the
+RING RECORDS: for each front, each capsule between consecutive rings
+(`Capsule.between`, the front's own arithmetic, the one G12 (b) proved
+reproduces every deposit) claims the voxels within its envelope plus
+a margin for the nearest capsule's front and its chart s over the
+front's whole arc (`bark.Near{id, u, d}`: u is 0 at the seed, 1 at the
+tip); the rest — where the blend is zero and nothing reads the
+columns — by dilation from the named (the marble: 67,244 of 262,144
+within 2.15 units, the rest in 45 passes). The margin
+(`seedbed.marbleMargin`) is the vein's width plus two cells: the blend
+reaches a vein past the wall and a trilinear read a voxel past that.
+The archetype's EXPRESSION (`bark.Expression`: the columns it models
+and a function of (world, near, p, φ) → `Material`) is the seedbed's.
+
+The character: a SPECIES per vein, drawn from a stream of the front's
+own at an epoch no step reaches (`MARBLE_SPECIES_EPOCH` = 2³², so the
+veins Christian saw stay where they are — the archetype's hash is the
+same 24fd971e…), weighted 5:3:2 — GRAPHITE, the vein he saw (dark,
+roughness 0.6); GOLD (metallic, roughness 0.25 at its root, running
+out to graphite by its tip: `Material.lerp` by smoothstep(u)); EMBER
+(a dull red, emissive (6, 2.5, 0.7) at its root, cooling along the
+vein as (1 − u)²). Over seed 0's 28 veins: 10 graphite, 14 gold, 4
+ember. The palette is PROPOSED: a material's numbers are his, by eye.
+
+The gate, unnumbered — the seedbed is play, but a contract with a
+shader twin gets a witness: "the material field names a carved vein
+from the ring history". One straight tunnelling vein through a slab,
+the seed chosen so that vein is gold. The field inside is carved and
+`who` is 0. The bake's metallic column along the vein's axis falls
+0.999 → 0.001 and never rises (24 voxels inside), the roughness is
+0.25 at the root, the emissive column nothing; `materialAt` through a
+white entry reads the gold through the edge at the root (metallic >
+0.5, red over blue) and the entry alone off the vein, every column
+exactly. THE MUTATION, executable: an expression that reads the vein's
+name but not the arc position → the tip's metallic stays at 0.999 and
+the fall is gone. Two unit gates beside it: the columns' offsets (a
+stride of 1 + the present widths, an absent column has none), and a
+hit's mix (a present column reads back; metallic and emissive, absent,
+are the entry's exactly; φ = 0 is half way). 1,800 of 32,768 voxels
+named, 27 passes.
+
+The gate's first failure was the test's own: "off the vein" given in
+WORLD coordinates read pure gold. The bake cube's corner is not a
+multiple of the mirror period, and the point it folded to lay outside
+the slab — air, φ = +band, "vein" by sign, named by dilation from the
+root. The archetype's coordinates are the cube's own from its corner,
+as the shader reads them (the hit's world position over the unit,
+folded by the mirror); the test says so now.
+
+GPU (matryoshka after `db382fe`): binding 51's header carries [12] the
+columns and [13] the stride; res³ records (64³ × 9 floats, 9.4 MB;
+`LOAM_VOLUME_STRIDE_MAX`); `loamLocate` finds the cell and its eight
+weights once, `loamColumn` reads one float of a column through them,
+`loamColumnOffset` is loam's from the mask. `loamBark(…, mat)` starts
+every path from the entry's values and hands back
+`loam_mat_albedo/roughness/metallic/emissive`: the marble path mixes
+each present column by the vein's edge; the grain and the plates leave
+the entry's and darken on top; traversal.comp's kind-3 branch shades
+the loam hit (at `loam_hit_t`) with those in place of the entry's.
+`Mount.vein_colour` is gone: the palette is loam's. The bridge's 13
+gates green. Rendered at 8 mm a unit, close: a polished pale stone
+with graphite flecks, gold flecks and the ember's orange glints. At 20
+mm the flecks are blobs.
+
+THE FINDING FOR THE PLAY: a tube vein crossing the tube's skin reads
+as a SPOT. The along-vein transitions are in the bake and measured,
+and the bake's middle slice (`loam-run --scene marble --volume
+64:f.ppm`, a colour slice through a white entry now) shows a gold vein
+running to graphite — but on the tree they are legible only where a
+vein runs along the surface. The veins' morphology stays the next
+play: a sheet (a flat ring profile — the residual per slot is the
+mechanism, `Ring.r[24]`) or a planar crack swept through the cube.
+
+Christian's aside, recorded with its trigger: "is there some way to
+evaluate the field rather than to bake it — maybe 'bake' a cheaper to
+evaluate field". The archetype IS a loam world, and the loam leaf
+already evaluates one on the GPU through its bricks and the B-spline;
+the bake is a resample of that to a regular grid with a mirror tiling.
+The evaluated form is the archetype's bricks as a second loam bank
+sampled with a wrap — no bake, the columns as channels. The cheaper
+form is a fit: a packed set of radial basis functions, fitted by
+gradient descent to the material's deviation from the entry, so the
+matrix is the bias and only the veins cost kernels — his ask, the
+next experiment. Trigger for the evaluated form: an archetype whose
+bake exceeds the buffer (a 128³ material field is 75 MB) or one that
+lives (ruled to take a back seat).
+
+Cost: the sim untouched — G1 `364c3aa7…` unmoved, the regression line
+4.49 ms not re-measured (no sim change); the bake's naming and
+dilation at 64³ inside the noise of the 8 s Debug grow-and-bake.
+Christian, from the renderer: "That looks great! Just what I had in
+mind!"
+
 ### Open
 
-The archetype as a material field (every PBR channel it models baked
-beside φ, the entry's defaults for the rest); the archetype's mip
-chain; a periodic slab or cube; the veins' morphology; the chart path
-for structured surface archetypes if the plates are wanted on a tube. `who` and `segment` packed to one plane,
+The packed RBF fit of the material field (Christian's ask); the
+veins' morphology (sheets, so the along-vein transitions read on a
+tube); the archetype's mip chain; a periodic slab or cube; the palette,
+PROPOSED; the evaluated archetype (a second loam bank) with its
+trigger; the chart path for structured surface archetypes if the
+plates are wanted on a tube. `who` and `segment` packed to one plane,
 and `own` where `other` is far, are the next two of the seven-plane
 cost. The one-sided mask's
 error inside a collar, if a chart read there ever matters. The
