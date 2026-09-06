@@ -1,0 +1,31 @@
+.{
+    .name = .loam,
+    .version = "0.0.0",
+    .fingerprint = 0x5cda5cb95a660f41, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.14.1",
+    .dependencies = .{
+        // The one JobSystem. Never a second copy: identical source in two
+        // modules is two Zig types, and a host must be able to hand its
+        // pool to this library (see common/README.md). The operate phase
+        // runs over it when a host passes one; null runs serial, and G1
+        // says the two agree to the byte.
+        .common = .{ .path = "../common" },
+        // Every byte that leaves memory. The snapshot dump is one canonical
+        // struple map so the struple Python port reads it with no loam
+        // code on that side — a format only Zig can read has one witness.
+        .struple = .{ .path = "../struple" },
+    },
+    .paths = .{
+        "LICENSE",
+        "LICENSE-APACHE",
+        "LICENSE-COMMERCIAL.md",
+        "NOTICE",
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "py",
+        "tools",
+        "docs",
+        "README.md",
+    },
+}

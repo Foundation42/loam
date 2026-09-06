@@ -1,0 +1,171 @@
+//! front — the Lagrangian active front (brief R1; loop-loft's ring).
+//!
+//! The field is the memory; the front is the cell. A front is a tracer
+//! carrying loop-loft's fixed-size state vector: per slot `r, dz, tag,
+//! age`; per front `s, R, roll, morphogens`. It READS the field (light,
+//! stimulus, self-density, growth potential) and DEPOSITS into it
+//! (material, age, activity). The ring CA is the toy's update rule
+//! (docs/loop-loft.jsx), used as a specification: leak toward the
+//! envelope, ring diffusion, counter-based noise, impulses. The §11
+//! gradient terms steer the spine; a parallel-transport frame rides along
+//! so the ring's θ = 0 does not twist at inflections.
+//!
+//! This file is the state and its canonical bytes. The behaviour — one
+//! step of every live front — is `world.zig`'s front pass, because it
+//! needs the snapshot to read and the update buffer to write.
+
+const std = @import("std");
+const lattice = @import("lattice.zig");
+
+pub const SLOTS: usize = 24;
+
+pub const Tag = enum(u32) { none = 0, bud = 1 };
+
+pub const Slot = struct {
+    /// Radial residual, lattice units, on top of the envelope.
+    r: f32 = 0,
+    /// Axial jitter, clamped to ±jitter·spacing (the manifold guarantee,
+    /// kept for parity with the toy though a field has no manifold to lose).
+    dz: f32 = 0,
+    tag: Tag = .none,
+    /// Consecutive rings the residual has been hot — the bud enzyme's clock.
+    age: u32 = 0,
+};
+
+/// Per-front knobs. Defaults are the toy's, in lattice units where the
+/// toy's were world units. Every field is a number a scene may set.
+pub const Params = struct {
+    // Ring CA (loop-loft's names).
+    heal: f32 = 0.06,
+    noise: f32 = 0.14,
+    impulse: f32 = 0.14,
+    diffuse: f32 = 0.35,
+    drift: f32 = 0.03,
+    jitter: f32 = 0.25,
+    taper: f32 = 0.35,
+    bulge: f32 = 0.10,
+    waves: f32 = 3,
+    // Spine.
+    /// Base radius R0, lattice units.
+    radius: f32 = 3.0,
+    /// Lattice units of spine per second; one ring per step at dt = 1 s.
+    speed: f32 = 1.0,
+    /// Arc length over which the taper runs, and where the front stops.
+    length: f32 = 96,
+    // Steering (spec §11): velocity = a·∇light + b·∇stimulus − d·∇self +
+    // e·heading + noise.
+    tropism_light: f32 = 0.0,
+    tropism_stimulus: f32 = 0.0,
+    avoid_self: f32 = 0.5,
+    persist: f32 = 1.0,
+    wander: f32 = 0.15,
+    // Deposit and resources.
+    /// Material laid per second at full weight.
+    deposit: f32 = 1.0,
+    /// Growth potential drawn down per second in a sphere of two radii
+    /// around the front — the resource a front uses up as it passes, so
+    /// dormancy is exhaustion and a wound's restored potential is local.
+    consume: f32 = 1.0,
+    /// Material sampled one radius ahead above this inhibits the front.
+    /// Potential is read at the same point: a front grows into what is
+    /// ahead of it, not what it stands in.
+    inhibit: f32 = 0.6,
+    // Branching: a slot whose |residual| exceeds bud_threshold × envelope
+    // for bud_rings consecutive rings is a bud; a bud fires when the front
+    // is old enough and its cooldown has run.
+    bud_threshold: f32 = 0.15,
+    bud_rings: u32 = 6,
+    branch_angle: f32 = 0.8,
+    child_ratio: f32 = 0.7,
+    max_generation: u8 = 3,
+    min_age: u32 = 12,
+    branch_cooldown: u32 = 10,
+};
+
+pub const Front = struct {
+    id: u32,
+    parent: u32 = std.math.maxInt(u32),
+    generation: u8 = 0,
+    alive: bool = true,
+    /// No growth potential or inhibited: the front neither moves nor
+    /// deposits, and costs nothing, until the field wakes it.
+    dormant: bool = false,
+    pos: [3]f64,
+    dir: [3]f64,
+    normal: [3]f64,
+    s: f64 = 0,
+    roll: f64 = 0,
+    age: u32 = 0,
+    cooldown: u32 = 0,
+    born_epoch: u64 = 0,
+    morphogens: [4]f32 = .{ 0, 0, 0, 0 },
+    ring: [SLOTS]Slot = [_]Slot{.{}} ** SLOTS,
+    params: Params = .{},
+    /// The brick under the front's position, as of the last step.
+    brick: lattice.Key,
+
+    /// Canonical bytes: every field, fixed layout, no padding — what the
+    /// hash and the dump agree on.
+    pub fn writeCanonical(self: *const Front, w: anytype) !void {
+        try w.writeInt(u32, self.id, .little);
+        try w.writeInt(u32, self.parent, .little);
+        try w.writeByte(self.generation);
+        try w.writeByte(@intFromBool(self.alive));
+        try w.writeByte(@intFromBool(self.dormant));
+        inline for (.{ self.pos, self.dir, self.normal }) |v| {
+            for (v) |c| try w.writeInt(u64, @bitCast(c), .little);
+        }
+        try w.writeInt(u64, @bitCast(self.s), .little);
+        try w.writeInt(u64, @bitCast(self.roll), .little);
+        try w.writeInt(u32, self.age, .little);
+        try w.writeInt(u32, self.cooldown, .little);
+        try w.writeInt(u64, self.born_epoch, .little);
+        for (self.morphogens) |m| try w.writeInt(u32, @bitCast(m), .little);
+        for (self.ring) |sl| {
+            try w.writeInt(u32, @bitCast(sl.r), .little);
+            try w.writeInt(u32, @bitCast(sl.dz), .little);
+            try w.writeInt(u32, @intFromEnum(sl.tag), .little);
+            try w.writeInt(u32, sl.age, .little);
+        }
+        inline for (std.meta.fields(Params)) |f| {
+            const v = @field(self.params, f.name);
+            switch (@typeInfo(f.type)) {
+                .float => try w.writeInt(u32, @bitCast(@as(f32, v)), .little),
+                .int => try w.writeInt(u32, @intCast(v), .little),
+                else => @compileError("params field " ++ f.name),
+            }
+        }
+        try w.writeInt(u64, self.brick.raw(), .little);
+    }
+
+    pub fn hashInto(self: *const Front, h: *std.crypto.hash.Blake3) void {
+        var buf: [1024]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&buf);
+        self.writeCanonical(fbs.writer()) catch unreachable; // 1024 covers the layout; a comptime bound would be nicer
+        h.update(fbs.getWritten());
+    }
+
+    pub fn canonicalLen() usize {
+        var buf: [1024]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&buf);
+        const f = Front{ .id = 0, .pos = .{ 0, 0, 0 }, .dir = .{ 0, 1, 0 }, .normal = .{ 0, 0, 1 }, .brick = lattice.Key.ofBrick(0, .{ 0, 0, 0 }) };
+        f.writeCanonical(fbs.writer()) catch unreachable;
+        return fbs.getWritten().len;
+    }
+};
+
+test "canonical bytes fit the buffer and change with the state" {
+    const len = Front.canonicalLen();
+    try std.testing.expect(len < 1024);
+    var a = Front{ .id = 1, .pos = .{ 1, 2, 3 }, .dir = .{ 0, 1, 0 }, .normal = .{ 0, 0, 1 }, .brick = lattice.Key.ofBrick(0, .{ 0, 0, 0 }) };
+    var ha = std.crypto.hash.Blake3.init(.{});
+    a.hashInto(&ha);
+    var oa: [32]u8 = undefined;
+    ha.final(&oa);
+    a.ring[3].r = 0.25;
+    var hb = std.crypto.hash.Blake3.init(.{});
+    a.hashInto(&hb);
+    var ob: [32]u8 = undefined;
+    hb.final(&ob);
+    try std.testing.expect(!std.mem.eql(u8, &oa, &ob));
+}
