@@ -2659,9 +2659,43 @@ reference and the set is the far LOD; a set that carries an edge
 would need a kernel with one (a sigmoid across the sheet's normal),
 which is the next shape if the far LOD is wanted sharp.
 
+## The veins as light: the emissive record and the aura (Sunday 2026-09-06, late — Christian: "not sure the emissives are acting as radiant. Didn't see them in the NEE" → "the analytic lights are proper lamps, where I'm looking for simple glowing auras. It's more an effect than real lighting." → "what you really want is an emissive buffer that records information about emissive pixels during rendering and then take that buffer into account during the bloom")
+
+The finding, in the renderer: matryoshka's emissive NEE reads a
+static link cache baked at load from the scene's emissive materials
+and light entities; its analytic lights are lamps; and a `light`
+spray's rows are the composite's splats — deferred point lights each.
+A loam vein's emissive column reached the pixel through the surface
+shader and the bloom and stopped there: self-luminous, not radiant.
+The first proposals (rows into the splat list from the bank's surface
+samples) were lamps of another shape, and he did not want lamps.
+
+His design, built in matryoshka (after `8a95f6a`; the loam side is
+untouched): THE EMISSIVE RECORD — every producer of a primary hit
+writes the luma of what the surface emits into `g_env_diff.a`, which
+nothing read (a material's emissive as the shade adds it, a prim's
+extra, a loam column; the lane cache carries it) — and the bloom
+carries it DOWN ITS OWN PYRAMID'S ALPHA (the first downsample reads
+the G-buffer at a third binding on the shared bloom layout, every
+level blurs the alpha beside the rgb), so at the end `bloom.a` is the
+emissive luma of the surfaces around a pixel at the bloom's radius,
+and post adds THE AURA: `AURA_GAIN × (1 − exp(−EMISSIVE_DRIVE ×
+bloom.a)) × bloom.rgb` — the pyramid's rgb near an emitter is the
+emitter's own blurred radiance, so what is added is its colour, fading
+with the record. Additive by design: the first build opened the
+energy-conserving scatter's gate by the record instead and moved the
+frame by 0.0003 RMSE — at the veil's fraction a gate cannot make a
+halo. Where the record is zero nothing is added: a frame with no
+emitter is byte for byte what it was. The marble's ember bands now
+warm the stone around them (RMSE 0.013 against the shot before; the
+crop shows the halo). Both numbers PROPOSED (4 and 0.5). Not yet: the
+raster sprites write no record, so a `light` spray has its splat and
+no aura — the follow-up is a writable env_diff in that pass.
+Recorded in matryoshka's architecture.md §7.8a.
+
 ### Open
 
-The palette on sheets (the ember's radiance first); pruning and an aspect bound for the RBF set; the
+The sprites' emissive record (their aura); the palette on sheets (the ember's radiance first); pruning and an aspect bound for the RBF set; the
 archetype's mip chain; a periodic slab or cube; the palette,
 PROPOSED; the evaluated archetype (a second loam bank) with its
 trigger; the chart path for structured surface archetypes if the
