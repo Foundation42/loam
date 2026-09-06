@@ -1805,7 +1805,11 @@ from 12.6% fewer evaluations again; key order loses 34.7%.
   steering; its child budded by hand at step 12 through `seedbed.bud`)
   and `--scene coil` (a tendril at 0.25 rad per unit, radius 2, rising
   3.75 a turn so its turns touch); `collar acted on N samples;
-  provenance written at M` on every reported step.
+  provenance written at M` on every reported step. Matryoshka's mount
+  takes the same (`--loam-scene junction|coil`, `--loam-collar 0`,
+  matryoshka `bb1e66f`); Christian's side-by-side of the sapling read
+  the difference in the crotch of each fork and nowhere else — "quite
+  subtle, but it is supposed to be".
 
 ### G12, as it stands (ReleaseSafe, serial)
 
