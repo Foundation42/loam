@@ -454,4 +454,17 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// THE CRACK FRONT `364c3aa7…` (the material seedbed's play: `Params.planar`
 /// and `Params.carve` joined the front's canonical bytes — a crack keeps
 /// to its face and carves rather than deposits; nothing else moved).
+// ── The packed RBF set (Christian's experiment, after the marble's columns) ──
+//
+// The fit (`rbf.fit`, Adam on centres, log-widths and weights, seeded
+// on the veins) must LOWER the held-out RMS of the two-ball fixture by
+// this factor from its seeded start. PROPOSED, written before the run
+// from this much theory: a Gaussian of the vein's width seeded at a
+// ball's centre with the target as its weight already carries the
+// ball's bulk, and the fit has the width, the weight and the overlap
+// of six kernels on two balls to spend — a halving of the residual is
+// the least the descent should buy. The first result never becomes
+// the threshold.
+pub const RBF_FIT_GAIN: f32 = 2;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

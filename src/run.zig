@@ -37,6 +37,7 @@ const usage =
     \\  --slice CH:AXIS:COORD:RES:FILE    write a PGM slice at the end (e.g. surface:z:0:128:out.pgm; the carrier is drawn as inside = 1)
     \\  --relief RES:FILE     bake the plates' face as a relief (the material seedbed) and write it as a PGM, deepest groove white
     \\  --volume RES:FILE     bake the marble's cube as a material field and write its middle slice as a PPM through a white entry
+    \\  --rbf N:FILE          fit N Gaussians to the marble's material field (baked at 64³) and write the set to FILE, its slice to FILE.ppm
     \\  --project CH:AXIS:RES:FILE        write a PGM max-projection along AXIS at the end
     \\  --dump FILE          write the snapshot as a struple map at the end
     \\  --ray ox,oy,oz,dx,dy,dz           count leaves a ray samples vs crosses at the end
@@ -80,6 +81,7 @@ const Opts = struct {
     slices: std.ArrayListUnmanaged(Slice) = .{},
     relief: ?struct { res: u32, path: []const u8 } = null,
     volume: ?struct { res: u32, path: []const u8 } = null,
+    rbf: ?struct { kernels: u32, path: []const u8 } = null,
     projections: std.ArrayListUnmanaged(Slice) = .{},
     dump: ?[]const u8 = null,
     ray: ?[6]f64 = null,
@@ -191,6 +193,10 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             const v = try next(args, &i);
             const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadRelief;
             o.relief = .{ .res = try std.fmt.parseInt(u32, v[0..colon], 10), .path = v[colon + 1 ..] };
+        } else if (std.mem.eql(u8, a, "--rbf")) {
+            const v = try next(args, &i);
+            const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadRbf;
+            o.rbf = .{ .kernels = try std.fmt.parseInt(u32, v[0..colon], 10), .path = v[colon + 1 ..] };
         } else if (std.mem.eql(u8, a, "--volume")) {
             const v = try next(args, &i);
             const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadVolume;
@@ -529,6 +535,34 @@ pub fn main() !void {
         var tally = [_]u32{0} ** 3;
         for (0..world.fronts.items.len) |id| tally[@intFromEnum(seedbed.marbleSpecies(world.seed, @intCast(id)))] += 1;
         try stdout.print("volume {d}³ over ±{d:.0}, φ {d:.2}..{d:.2}, {d} floats a voxel (columns {b:0>4}), {d} voxels named by a capsule within {d:.2}, the rest in {d} passes; veins {d} graphite, {d} gold, {d} ember; archetype {s} → {s}\n", .{ vo.res, seedbed.MARBLE_BAKE_HALF, vol.min, vol.max, vol.stride, vol.columns, vol.named, seedbed.marbleMargin(vo.res), vol.passes, tally[0], tally[1], tally[2], std.fmt.fmtSliceHexLower(vol.hash[0..8]), vo.path });
+    }
+    if (opts.rbf) |rb| {
+        // The packed RBF set (Christian's experiment): the material
+        // field fitted by gradient descent, written as an asset; the
+        // same slice through the set, for the eye beside the volume's.
+        const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
+        const res: u32 = 64;
+        var vol = try loam.bark.Volume.bake(gpa, &world, c, seedbed.MARBLE_BAKE_HALF, res, seedbed.marbleExpression(), seedbed.marbleMargin(res));
+        defer vol.deinit(gpa);
+        var fit_timer = try std.time.Timer.start();
+        var fitted = try loam.rbf.fit(gpa, &vol, seedbed.MARBLE_VEIN, .{ .kernels = rb.kernels, .seed = opts.seed });
+        defer fitted.set.deinit(gpa);
+        const fit_ms = @as(f64, @floatFromInt(fit_timer.read())) / 1e6;
+        try fitted.set.write(rb.path);
+        const rp = fitted.report;
+        try stdout.print("rbf {d} kernels fitted to the {d}³ field in {d} iterations, {d:.1} s ({s}): held-out RMS {d:.4} → {d:.4} (gain {d:.2}); per channel A {d:.3}, albedo {d:.3}/{d:.3}/{d:.3}, roughness {d:.3}, metallic {d:.3}, emissive {d:.3}/{d:.3}/{d:.3}; {d} bytes against the volume's {d}; {d} vein voxels in the pool → {s}\n", .{ rb.kernels, res, rp.iterations, fit_ms / 1000, @tagName(builtin.mode), rp.rms_init, rp.rms_final, rp.rms_init / rp.rms_final, rp.rms_channel[0], rp.rms_channel[1], rp.rms_channel[2], rp.rms_channel[3], rp.rms_channel[4], rp.rms_channel[5], rp.rms_channel[6], rp.rms_channel[7], rp.rms_channel[8], fitted.set.bytes(), vol.data.len * 4, rp.pool_vein, rb.path });
+        const ppm_path = try std.fmt.allocPrint(gpa, "{s}.ppm", .{rb.path});
+        defer gpa.free(ppm_path);
+        const rgb = try gpa.alloc(f32, @as(usize, res) * res * 3);
+        defer gpa.free(rgb);
+        const entry = loam.bark.Material{ .albedo = .{ 0.92, 0.9, 0.86 }, .roughness = 0.15, .metallic = 0, .emissive = .{ 0, 0, 0 } };
+        const mid: f32 = (@as(f32, @floatFromInt(res / 2)) + 0.5) / @as(f32, @floatFromInt(res)) * vol.extent;
+        for (0..res) |j| for (0..res) |i| {
+            const px = [3]f32{ (@as(f32, @floatFromInt(i)) + 0.5) / @as(f32, @floatFromInt(res)) * vol.extent, (@as(f32, @floatFromInt(j)) + 0.5) / @as(f32, @floatFromInt(res)) * vol.extent, mid };
+            const m = fitted.set.materialAt(px, 1, entry);
+            inline for (0..3) |a| rgb[(j * res + i) * 3 + a] = m.albedo[a] * (1 - 0.6 * m.metallic + 0.6 * m.metallic * (1 - m.roughness)) + 0.15 * m.emissive[a];
+        };
+        try seedbed.writePpm(ppm_path, res, rgb);
     }
     for (opts.projections.items) |pr| {
         const vals = try seedbed.project(&world, gpa, pr.bit, pr.axis, .{ -64, -16, -64 }, .{ 64, 112, 64 }, pr.res, pr.res);

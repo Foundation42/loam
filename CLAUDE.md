@@ -7,7 +7,7 @@ feel reassured. Chris has asked for this in every sibling repo; a suite
 run per edit makes the harness the activity rather than the work.
 
     zig build test -Dtest-filter=straddling   # one gate: 17 s to compile ReleaseSafe, then seconds
-    zig build test                            # 100 gates, ~3 min ReleaseSafe — before a commit
+    zig build test                            # 103 gates, ~3 min ReleaseSafe — before a commit
     zig build test -Dtest-optimize=Debug -Dtest-filter=…   # the other regime: 2 s to compile, slower to run
     zig build test -Dtest-optimize=ReleaseFast              # the delta, when Christian asks for it
     zig build verify-dump                     # loam-run writes a dump, the struple PYTHON port reads it
@@ -18,6 +18,7 @@ run per edit makes the harness the activity rather than the work.
     zig build run -- --scene coil --steps 80       # a coiling tendril: self-touch, the inner elbow
     zig build test -Dtest-filter="G16"             # the picture's gates: what a hit reads (src/bark.zig)
     zig build run -- --scene marble --steps 90 --volume 64:slice.ppm   # the material seedbed: the marble as a material field, a colour slice
+    zig build run -Doptimize=ReleaseSafe -- --scene marble --steps 90 --rbf 256:marble.lrbf   # the field packed into Gaussians (a tool run; the fit is not a sim measurement)
     zig build run -- --help                   # loam-run, the seedbed
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:

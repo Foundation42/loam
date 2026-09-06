@@ -45,6 +45,7 @@ pub const guards = @import("guards.zig");
 pub const dump = @import("dump.zig");
 pub const seedbed = @import("seedbed.zig");
 pub const bark = @import("bark.zig");
+pub const rbf = @import("rbf.zig");
 
 // The working surface, re-exported flat.
 pub const Domain = lattice.Domain;
@@ -79,5 +80,6 @@ test {
     _ = dump;
     _ = seedbed;
     _ = bark;
+    _ = rbf;
     _ = @import("tests.zig");
 }

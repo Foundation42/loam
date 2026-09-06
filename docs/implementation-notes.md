@@ -2425,9 +2425,94 @@ dilation at 64³ inside the noise of the 8 s Debug grow-and-bake.
 Christian, from the renderer: "That looks great! Just what I had in
 mind!"
 
+## The packed RBF set (Sunday 2026-09-06, late — Christian, from the renderer: "That looks great! Just what I had in mind! So then I'm asking can we instead (as an experiment) try baking via gradient descent to create a packed RBF set for the albedo, roughness, metalness, emissives instead of the giant 7 MB volume texture?")
+
+The cheaper field from his aside, built as an experiment on the
+committed base. What a hit reads of a material field is, per present
+column, entry·(1 − A) + B — A the vein's blend at the point, B = A
+times the structure's material — LINEAR in the field, so a sum of
+kernels carries it and the ENTRY IS THE BIAS: the matrix costs
+nothing, only the structure costs kernels. `src/rbf.zig`: a `Set` of N
+isotropic Gaussians, each a centre, a width and nine weights (A, then
+B for albedo, roughness, metallic, emissive: `KERNEL_FLOATS` = 13);
+`materialAt` folds the point by the mirror as the volume does, sums
+every kernel within `CUTOFF` = 32 widths squared (exp(−16); beyond it
+a read is the entry EXACTLY — a denormal exp once left 1e-42 of gold
+on the matrix, and the gate caught it) and composes through the
+entry; `write`/`read` make it a FILE ("LRBF", 13 KB at 256 kernels):
+the archetype as an asset the renderer loads without growing
+anything. `fit`: Adam on centres, log-widths and weights, targets the
+baked volume's own read (`target` = (A, A·columns)) at a pool of
+points HALF DRAWN FROM THE VEIN'S VOXELS (uniform sampling of a cube
+that is 7% vein would fit the matrix), each channel normalised by its
+range in the pool (an ember's radiance of 6 must not outweigh a matte
+grey's 0.6), the kernels SEEDED ON THE VEINS most of a width apart
+with the target at the centre as their weight, widths clamped between
+half a cell and the cube. Held out: 4,096 points apart from the pool.
+
+Gates (unnumbered, an experiment): a set of one kernel reads its
+weights back at its centre through the entry, the entry alone far
+away, folds by the mirror, and hands back the entry for columns it
+does not model; THE FIT'S GRADIENT IS THE FINITE DIFFERENCE'S (a
+centre, a log-width, a weight, to 1e-3 — a wrong derivative is the
+fit's own bug and this is its witness); and the fit on two balls of
+different material lowers the held-out RMS by `RBF_FIT_GAIN` = 2
+PROPOSED, written before the run — measured 5.08 (0.240 → 0.047, 6
+kernels, 300 iterations, 312 bytes), the gold ball reads metallic
+through a white entry, the matrix reads the entry; the MUTATION,
+executable: the step's sign flipped → the error climbs; and the set
+survives its file bit for bit.
+
+The marble, `loam-run --scene marble --steps 90 --rbf N:file.lrbf`
+(ReleaseSafe, a tool run, not a measurement of the sim; the mode is
+printed), against the 64³ field of 9,437,184 bytes, 17,913 vein voxels
+in the pool, 2,000 iterations of 1,024 points:
+
+| kernels | seconds | held-out RMS, normalised | A | albedo r | metallic | emissive r | bytes |
+|---|---|---|---|---|---|---|---|
+| 256 | 5.3 | 0.154 → 0.050 | 0.066 | 0.035 | 0.033 | 0.055 | 13,312 |
+| 1024 | 20.0 | 0.126 → 0.022 | 0.027 | 0.016 | 0.014 | 0.042 | 53,248 |
+| 4096 | 79.3 | 0.644 → 0.019 | 0.022 | 0.013 | 0.012 | 0.057 | 212,992 |
+
+The 256-kernel slice beside the volume's: every vein where it was, the
+gold running to graphite, the ember, the dots; a faint grey ghost
+where two graphite veins were close, and a speckle of weak kernels in
+the matrix. On the GPU (matryoshka after `d66de73`): `--loam-rbf FILE`
+loads the set in place of growing the marble (kind 3 in binding 51's
+header: [0] the count, [13] the floats a kernel, the kernels from the
+header; `LOAM_RBF_MAX_KERNELS` 8192); `loamBark` folds the hit's point,
+sums the kernels within the cutoff, composes entry·(1 − A) + B with
+the footprint's fade scaling both toward the entry — `Set.materialAt`
+term for term. The close shot through the 256-kernel set against the
+volume's, same camera, same 480 frames: the flecks and the glints
+where they were; the RMSE between the two frames is 0.0062 of full
+scale, against 0.018 between the volume's own shots at 8 and 20 mm a
+unit — a change of set is a third of a change of unit. The tree never
+knew, twice. Christian, walking around it in the renderer: "it does to
+me too" (indistinguishable) — "Great job".
+
+The finding: at the scale the tree reads it, 256 Gaussians (13 KB, a
+loop of 256 exps per loam hit) carry what 64³ × 9 floats carried, and
+the fit is a five-second tool run. Past 1,024 the returns vanish:
+4,096 kernels buy 0.019 against 0.022 and start from a worse seed
+(4,096 overlapping widths overshoot before Adam pulls them in — 0.644
+at the start), and the emissive's residual does not move at all
+(0.042 → 0.057): the ember's glow is a steep ramp along a thin vein,
+and the target is itself a 64³ trilinear — the set is fitting the
+bake's own blur, and a finer bake, not more kernels, is what a lower
+number would need. What the set cannot carry: a vein's
+sharp WALL — a Gaussian's edge is a Gaussian's, and the blend A is a
+smoothstep over the vein's width; a set is a low-pass of the field by
+construction, and where the vein's edge matters (a cut face seen
+close) the volume, or more and narrower kernels, are the answer. What
+it invites: anisotropic kernels (a vein is a tube: one ellipsoid
+where a chain of spheres stands now), pruning by weight (the packed
+set packs itself), and the living archetype re-fitted from a warm
+start. The palette stays PROPOSED; `RBF_FIT_GAIN` PROPOSED.
+
 ### Open
 
-The packed RBF fit of the material field (Christian's ask); the
+Anisotropic kernels and pruning for the RBF set; the
 veins' morphology (sheets, so the along-vein transitions read on a
 tube); the archetype's mip chain; a periodic slab or cube; the palette,
 PROPOSED; the evaluated archetype (a second loam bank) with its
