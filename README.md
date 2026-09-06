@@ -41,9 +41,9 @@ print(w.root_hash().hex(), w.stats()["fronts"])
 
 | gate | claim | as measured (Debug, serial, seed 7) |
 |---|---|---|
-| G1 replay | (seed, fields, operators) → byte-identical snapshot | same hash serial and over the JobSystem; across two processes; from Python and from the CLI |
-| G2 growth | a seeded front builds persistent branching structure, no mesh | 9 branches, 3 components in a slice, material never resets |
-| G3 tropism | moving a stimulus redirects live fronts | 9.5 lattice units of drift between ±60 |
+| G1 replay | (seed, fields, operators) → byte-identical snapshot | same hash serial and over the JobSystem; across two processes; from Python and from the CLI; equal to a frozen reference in Debug and ReleaseFast |
+| G2 growth | a seeded front builds persistent branching structure, no mesh | 9 branches; 5 components of young material at peak (1 with branching off); material never resets |
+| G3 tropism | moving a stimulus redirects live fronts | 30.9 units of material-centroid drift between ±40, against a null floor of 23.9 (3× the spread over six seeds) |
 | G4 repair | removing material re-activates locally only | 54 bricks touched, 0 beyond two bricks of the wound; untouched bricks are the same pointers |
 | G5 dormancy | dormant tissue costs nothing | 12,480 evaluations where iterating every brick would be 584,320 |
 | G6 skip | a ray rejects subtrees from summaries alone | 12 of 64 crossed leaves sampled |
@@ -53,6 +53,7 @@ print(w.root_hash().hex(), w.stats()["fronts"])
 Every threshold is a PROPOSED value in `src/thresholds.zig`, for Christian
 to strike. Every gate has a mutation; `docs/implementation-notes.md`
 records which bit and which survived, and what each survivor changed.
+Bit-identity is claimed per binary on one machine.
 
 ## Try it
 

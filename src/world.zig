@@ -624,9 +624,13 @@ pub const World = struct {
     }
 
     /// Stamp the ring into Material, Activity and Age; draw down Growth
-    /// in a sphere of two radii.
+    /// in a sphere of two radii. Age holds the FED TIME at which a sample
+    /// was first laid, so the age of tissue is `now − Age` — derivable
+    /// without an ageing operator touching dormant bricks, which is the
+    /// only encoding of history G5 allows.
     fn stamp(self: *World, base: *const Snapshot, f: *const Front, dt: f64, envelope: f32, avail: f32) !void {
         const p = f.params;
+        const now_s: f32 = @floatCast(@as(f64, @floatFromInt(self.time_ns)) / 1e9);
         var rmax: f32 = 0;
         for (f.ring) |sl| rmax = @max(rmax, @abs(sl.r));
         const soft: f64 = 0.75;
@@ -708,7 +712,9 @@ pub const World = struct {
                             const d = @min(room, deposit * w);
                             if (d > 0) {
                                 try ru.add(alloc, Channel.material.bit(), idx, d);
-                                try ru.add(alloc, Channel.age.bit(), idx, @as(f32, @floatCast(dt)) * w);
+                                const born: f32 = if (existing) |b| b.get(Channel.age.bit(), i, j, k) else 0;
+                                const pending: f32 = if (ru.deltas[Channel.age.bit()]) |dp| dp[idx] else 0;
+                                if (born == 0 and pending == 0) try ru.add(alloc, Channel.age.bit(), idx, now_s);
                             }
                         }
                         try ru.add(alloc, Channel.activity.bit(), idx, w);

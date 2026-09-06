@@ -56,9 +56,11 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
 - **Addresses are integers; values are f32; movers are f64.** Lattice
   points and Morton keys are integers on the 20-bit lattice (R2). Channel
   values are f32 with a fixed evaluation order. Front positions are f64
-  lattice units. Bit-identity (G1) is claimed per BINARY: two processes of
-  the same build agree; a GPU twin is D3's problem and the integer lattice
-  is the path there.
+  lattice units. Bit-identity (G1) is claimed per BINARY on ONE MACHINE:
+  two processes of the same build agree, and Debug and ReleaseFast of one
+  source agree here; f64 front positions pass through exp/sin/cos, and a
+  different libm is unmeasured. A GPU twin is D3's problem and the
+  integer lattice is the path there.
 - **Operators write deltas, never bricks.** Region-local update entries,
   applied at commit in key order. The parallel phase cannot reach the
   result in a different order; G1 runs serial and over common's JobSystem

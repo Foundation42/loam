@@ -1,8 +1,11 @@
 # Implementation notes — the ledger
 
 **Status:** Phase 1 built, 2026-09-06: P1.1–P1.7, G1–G8 green and bitten.
-Every threshold PROPOSED (brief §2, `src/thresholds.zig`); every ruling
-below proposed against the code and standing until Christian strikes it.
+Reviewed the same day (Claude Chat against `3ecbb37`, forwarded by
+Christian); the review's three recommendations adopted, see "Review
+2026-09-06" below. Every threshold PROPOSED (brief §2,
+`src/thresholds.zig`); every ruling below proposed against the code and
+standing until Christian strikes it.
 
 Everything here is a decision made while building
 [loam-phase1-brief.md](loam-phase1-brief.md) against
@@ -44,24 +47,38 @@ code had to make.
   (path deps on `../common` and `../struple`; matryoshka will depend on
   loam, never the reverse). Ratified by Christian in the opening brief.
 - **§8.2 Thresholds:** all in `src/thresholds.zig`, PROPOSED, with the
-  measured value beside each in the gate table below. G3's proposed
-  floor (4 units, doubled for the ±stimulus pair) sits close to the
-  measured 9.5 on the sapling scene; the others have headroom.
+  measured value beside each in the gate table below. G3's floor is no
+  longer a number: it is k × the null spread, k = 3 PROPOSED (review).
 - **§8.3 Front ownership:** a global id-ordered list on the world, each
   front carrying the key of the brick under it. G4's "regions touched"
   is measured on bricks, by pointer identity against the pre-wound
-  snapshot, which needs no front ownership at all.
+  snapshot, which needs no front ownership at all. *Review 2026-09-06
+  recommended stamping; adopted, pending Christian's word.*
 - **§8.4 Growth potential:** a field channel fronts consume (R1's lean
   taken, so generator rigs fall out). A front reads it one radius AHEAD,
   where it is going, and draws it down in a sphere of two radii around
   itself as it passes. Rejected: consuming at the deposit samples (a
   front standing in its own tube read zero and went dormant at once);
-  reading under the front (same failure, one step later).
+  reading under the front (same failure, one step later). *Review
+  2026-09-06 recommended stamping; adopted, pending Christian's word.*
+  Note for D2, not a ruling: the draw-down sphere (2R) is larger than
+  the read-ahead distance (R + 1), so the exhaustion rate is coupled to
+  step size (speed·dt) and to gauge (samples per sphere). Harmless at
+  fixed gauge; the first thing refinement changes underfoot.
+- **Age is a birth time.** The Age channel holds the fed time (seconds)
+  at which a sample was first laid; the age of tissue is `now − Age`.
+  Rejected: accumulated deposit exposure (the first cut — it answered
+  "how long was a front here", not "how old is this"); an ageing
+  operator incrementing Age everywhere material exists (every brick with
+  material would be active forever, and G5 would be false). Birth time
+  is the only encoding of history a dormant brick can carry.
 - **Numbers.** Lattice addresses are integers (u32 points, 60-bit Morton
   keys over cells); channel values are f32; front positions are f64
-  lattice units. Bit-identity is claimed per BINARY — two processes of
-  one build — and, as measured below, across Debug and ReleaseFast of
-  one source. Rejected: Q16.16 everywhere (spindrift's rule). A field
+  lattice units. Bit-identity is claimed per BINARY on ONE MACHINE — two
+  processes of one build — and, as measured below, across Debug and
+  ReleaseFast of one source on this machine. Front positions pass
+  through exp/sin/cos/atan2 in f64; agreement across a different libm
+  is unmeasured and the regime line says so until it is. Rejected: Q16.16 everywhere (spindrift's rule). A field
   library's reconstruction, gradients and exponential decay want dynamic
   range; the integer-first contract applies to *where* a thing is, not
   to *how much* of it there is, and that is the split matryoshka
@@ -143,9 +160,9 @@ code had to make.
 | gate | measure | value | threshold | mutation | bit? |
 |---|---|---|---|---|---|
 | G1 | content hash, serial vs JobSystem(4); two dumps; two processes (py-test); Python door vs CLI door | identical, and equal to the frozen reference | identical | seed ^ 1 | yes |
-| G1 | frozen reference | `371e0e2d…` | fixed | commit order reversed | yes — see P1.6 |
-| G2 | branches; components in a slice; material N/2 → N | 9; 3; 2596 → 2628 | ≥3; ≥2; no reset | deposit = 0 | yes |
-| G3 | front-centroid x, stimulus at +60 vs −60 | 9.46 units | ≥ 8 | tropism_stimulus = 0 → bit-identical | yes |
+| G1 | frozen reference | `74cc820b…` | fixed | commit order reversed | yes — see P1.6 |
+| G2 | branches; young-material 3-D components at peak; material N/2 → N | 9; 5; 2596 → 2628 | ≥3; ≥3; no reset | branching off → 1 component, material grows; deposit = 0 → nothing | yes; yes |
+| G3 | material-centroid x, stimulus at +40 vs −40, against 3× the null spread over six seeds | drift 30.9; null 8.0; floor 23.9 | drift ≥ floor | tropism_stimulus = 0 → bit-identical | yes |
 | G4 | bricks touched vs dilate(box, 2), by identity; material regrown | 54 touched, 0 outside, 1601 regrown | 0 outside | no healing operator → 0 regrown | yes |
 | G5 | region evaluations over 80 steps | 12,480 (all-regions: 584,320) | evals == Σ active × ops | `active_only = false` | yes |
 | G6 | leaves sampled / leaves crossed | 12 / 64 | ≤ 0.25 | `use_summaries = false` → 64/64 | yes |
@@ -161,11 +178,11 @@ Denominators. G6's is "leaves the segment geometrically crosses" — a ray
 cannot visit what it does not cross whatever the summaries say, so
 "of all leaves" would flatter the ratio. G5's is Σ(active × operators),
 exact, not a timing; the timing is printed beside it (2.0 s for 80 steps
-in Debug) and carries no assertion. G2's "components" is the maximum
-over horizontal slices of the material's 4-connected components above
-0.3 — the brief's "connected material components > 1" read as *visible
-branching in the field*; a whole tree is one 3-D component, so the 3-D
-count would be a poor measure. Christian to confirm the reading.
+in Debug) and carries no assertion. G2's "components" are 3-D
+6-connected components of YOUNG material (Material > 0.3, laid within
+the last 8 s), at their peak over checkpoints every 10 steps — see the
+review entry for why the first cut (a slice) failed the denominator
+check.
 
 ## P1.1 — lattice and tree (2026-09-06, G6)
 
@@ -290,6 +307,41 @@ Built against common `9a75dfb`, struple `d937815` (their heads at the time).
   prints `546dcc61…` in both. Zig's default float mode is strict (no
   contraction), which is what this rides on; a GPU twin gets no such
   promise and that is D3's problem.
+
+## Review 2026-09-06 — three recommendations, adopted
+
+Claude Chat read `3ecbb37` (thresholds, the G2 test, the rulings) and
+Christian forwarded the review. Against the code:
+
+- **G2's measure failed the denominator check.** "Max over horizontal
+  slices of 4-connected material" scores a single coiling front twice —
+  one item satisfies the numerator alone, so it measured "crosses a
+  plane more than once", not branching. Replaced by 3-D components of
+  young material (`seedbed.youngComponents`: Material > 0.3 ∧ now − Age
+  < 8 s), at the peak over checkpoints — live tips each own one, a
+  coiled front gives one. This needed Age to mean birth time (above).
+  Measured: 5 at peak on the sapling. **The missing mutation** —
+  branching off (`max_generation = 0`) — gives exactly 1 while material
+  still grows (1731 laid); the old mutation (deposit = 0) only bit
+  through "no material at all" and never tested the branching claim.
+  G2_MIN_BRANCHES stays as the mechanism check.
+- **G3's floor is set from the null.** Six stimulus-free runs (seeds 1–6)
+  give the material centroid's RMS spread about the seed axis: 7.97
+  units. Floor = 3 × that = 23.9. The measured drift was then 1.17 — the
+  stimulus blob (centre ±60, radius 64) did not contain the seed, so the
+  trunk felt no gradient; and at coefficient 1.5 the term was several
+  times weaker per step than the wander (the kernel's gradient over a
+  radius of 64 is ~0.02/unit). Both are scene facts: the blob now covers
+  the growth region (radius 96, centre ±40) and the G3 scene uses a
+  coefficient of 30. Drift 30.9 against floor 23.9. The measure moved
+  from the live-front centroid (noisy once tips go dormant) to the
+  material centroid — the field, as G2 now does.
+- **Front ownership and read-ahead stamped** (rulings above), with the
+  D2 coupling note beside §8.4.
+- **Re-baseline, reviewed:** `371e0e2d…` → `74cc820b…`, because Age
+  changed meaning (birth time). Same fixture, same seed, same steps.
+- **Regime:** per binary, one machine (above). The seam cut stays
+  deferred as recorded.
 
 ## P1.7 — the seedbed (2026-09-06)
 

@@ -256,6 +256,64 @@ pub fn components(gpa: std.mem.Allocator, values: []const f32, res: u32, thresho
     return count;
 }
 
+/// 3-D connected components (6-connectivity on lattice points) of young
+/// material: Material > `threshold` laid within the last `window_s`
+/// seconds of fed time. Live tips each own one; the G2 instrument.
+pub fn youngComponents(w: *const World, gpa: std.mem.Allocator, threshold: f32, window_s: f32) !usize {
+    const snap = w.published();
+    const now_s: f32 = @floatCast(@as(f64, @floatFromInt(snap.time_ns)) / 1e9);
+    var points = std.AutoHashMapUnmanaged(u64, void){};
+    defer points.deinit(gpa);
+    const bs = try snap.bricks(gpa);
+    defer gpa.free(bs);
+    for (bs) |b| {
+        const m = b.plane(Channel.material.bit()) orelse continue;
+        const age = b.plane(Channel.age.bit()) orelse continue;
+        var k: u32 = 0;
+        while (k < brick.N) : (k += 1) {
+            var j: u32 = 0;
+            while (j < brick.N) : (j += 1) {
+                var i: u32 = 0;
+                while (i < brick.N) : (i += 1) {
+                    const idx = Brick.index(i, j, k);
+                    if (m[idx] <= threshold) continue;
+                    if (age[idx] == 0 or now_s - age[idx] >= window_s) continue;
+                    const p = b.pointAt(i, j, k);
+                    try points.put(gpa, lattice.morton(p[0], p[1], p[2]), {});
+                }
+            }
+        }
+    }
+    var seen = std.AutoHashMapUnmanaged(u64, void){};
+    defer seen.deinit(gpa);
+    var stack = std.ArrayListUnmanaged(u64){};
+    defer stack.deinit(gpa);
+    var count: usize = 0;
+    var it = points.keyIterator();
+    while (it.next()) |start| {
+        if (seen.contains(start.*)) continue;
+        count += 1;
+        try seen.put(gpa, start.*, {});
+        try stack.append(gpa, start.*);
+        while (stack.pop()) |code| {
+            const p = lattice.demorton(code);
+            const nbrs = [6][3]i64{
+                .{ @as(i64, p[0]) - 1, p[1], p[2] }, .{ @as(i64, p[0]) + 1, p[1], p[2] },
+                .{ p[0], @as(i64, p[1]) - 1, p[2] }, .{ p[0], @as(i64, p[1]) + 1, p[2] },
+                .{ p[0], p[1], @as(i64, p[2]) - 1 }, .{ p[0], p[1], @as(i64, p[2]) + 1 },
+            };
+            for (nbrs) |q| {
+                if (q[0] < 0 or q[1] < 0 or q[2] < 0 or q[0] > lattice.CELLS or q[1] > lattice.CELLS or q[2] > lattice.CELLS) continue;
+                const qc = lattice.morton(@intCast(q[0]), @intCast(q[1]), @intCast(q[2]));
+                if (!points.contains(qc) or seen.contains(qc)) continue;
+                try seen.put(gpa, qc, {});
+                try stack.append(gpa, qc);
+            }
+        }
+    }
+    return count;
+}
+
 /// Write a slice as an 8-bit PGM, values scaled by `scale` and clamped.
 pub fn writePgm(path: []const u8, res: u32, values: []const f32, scale: f32) !void {
     var f = try std.fs.cwd().createFile(path, .{});
@@ -356,6 +414,8 @@ pub const Scene = struct {
     tropism_light: f32 = 0.6,
     tropism_stimulus: f32 = 0.0,
     deposit: f32 = 1.0,
+    /// 0 turns branching off: G2's mutation.
+    max_generation: u8 = 3,
     heal: bool = true,
 
     pub fn build(self: *Scene, w: *World, preset: Preset) !void {
@@ -387,11 +447,15 @@ pub const Scene = struct {
             .sapling, .wound => {
                 try blob(w, Channel.growth.bit(), .{ 0, 24, 0 }, 56, 1.0, 0);
                 try blob(w, Channel.light.bit(), self.light, 64, 1.0, 0);
-                if (self.stimulus) |s| try blob(w, Channel.stimulus.bit(), s, 64, 1.0, 0);
+                // The stimulus covers the whole growth region: a blob that
+                // excludes the seed steers nothing (G3 once sat at 1 unit
+                // of drift for exactly that reason).
+                if (self.stimulus) |s| try blob(w, Channel.stimulus.bit(), s, 96, 1.0, 0);
                 var params = front.Params{};
                 params.tropism_light = self.tropism_light;
                 params.tropism_stimulus = self.tropism_stimulus;
                 params.deposit = self.deposit;
+                params.max_generation = self.max_generation;
                 params.length = 72;
                 try plant(w, .{ 0, 0, 0 }, .{ 0, 1, 0 }, params);
                 try w.apply();

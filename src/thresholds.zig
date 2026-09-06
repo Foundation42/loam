@@ -6,16 +6,27 @@
 //! reads its number from here and nowhere else, so striking one is one
 //! edit and one test run.
 
-/// G2: connected components of Material in a slice above the first branch.
-pub const G2_MIN_SLICE_COMPONENTS: usize = 2; // PROPOSED
-/// G2: fronts spawned by branching (not by seeding) over the run.
+/// G2: 3-D connected components of YOUNG material — Material > 0.3 and
+/// laid within the last G2_YOUNG_WINDOW_S seconds of fed time — at its
+/// highest over the run's checkpoints. Live tips each own one component
+/// of young tissue; a coiled single front gives one; a branched one gives
+/// one per tip. (Review 2026-09-06: the earlier slice measure scored a
+/// coiling front twice — one item satisfied the numerator alone.)
+pub const G2_MIN_YOUNG_COMPONENTS: usize = 3; // PROPOSED
+pub const G2_YOUNG_WINDOW_S: f32 = 8; // PROPOSED
+/// G2: fronts spawned by branching (not by seeding) — the mechanism firing.
 pub const G2_MIN_BRANCHES: usize = 3; // PROPOSED
-/// G2: steps for the growth run.
+/// G2: steps for the growth run; checkpoints every G2_CHECK_EVERY.
 pub const G2_STEPS: u32 = 160; // PROPOSED
+pub const G2_CHECK_EVERY: u32 = 10; // PROPOSED
 
-/// G3: front-centroid displacement toward the stimulus, lattice units,
-/// after G3_STEPS with the stimulus on one side versus the other.
-pub const G3_MIN_DRIFT: f64 = 4.0; // PROPOSED
+/// G3: the floor is set from the NULL, not from the measurement. Runs
+/// with no stimulus across G3_NULL_SEEDS seeds give the centroid's
+/// spread under wander alone (RMS about the seed axis); the drift between
+/// the stimulus at +x and at −x must exceed G3_NULL_K × that spread.
+/// (Review 2026-09-06: a fixed floor under a measured value is post hoc.)
+pub const G3_NULL_K: f64 = 3.0; // PROPOSED
+pub const G3_NULL_SEEDS: u64 = 6; // PROPOSED
 pub const G3_STEPS: u32 = 60; // PROPOSED
 
 /// G4: bricks the update may touch, in bricks beyond the damage box.
@@ -39,9 +50,10 @@ pub const G7_MAX_SHADOW_FRACTION: f64 = 0.5; // PROPOSED
 pub const EPSILON: f32 = 1e-6; // PROPOSED
 
 /// G1's FROZEN REFERENCE: the content hash of the wounded sapling (seed
-/// 7, 40 steps, wound at 20) as of the ledger's P1.6 entry. Two runs of
-/// one binary agreeing is necessary, not sufficient — a hand mutation
-/// that reversed the commit order changed this hash and G1 still passed,
-/// because both runs reversed. Re-baseline only as a reviewed event,
-/// with the old and new values in the ledger and the reason beside them.
-pub const G1_REFERENCE: []const u8 = "371e0e2dcf173ed6c5cd4fd010795d06054b0ccdbb0061b05c072827c8eb3afe";
+/// 7, 40 steps, wound at 20). Two runs of one binary agreeing is
+/// necessary, not sufficient — a hand mutation that reversed the commit
+/// order changed this hash and G1 still passed, because both runs
+/// reversed. Re-baseline only as a reviewed event, with the old and new
+/// values in the ledger and the reason beside them. Baselines: P1.6
+/// `371e0e2d…`; review 2026-09-06 `74cc820b…` (Age became birth time).
+pub const G1_REFERENCE: []const u8 = "74cc820b93395e24d24e4def8e52b2a7030d006ff1100fe991c2cd0d5cbd9554";

@@ -438,47 +438,54 @@ const OnceAcc = struct {
 
 // ── P1.4: fronts ─────────────────────────────────────────────────────────
 
-/// Material components in the XZ plane at height y (lattice units above
-/// the seed), on a 1-unit grid over ±48. Branching is visible in the
-/// FIELD when some height shows more than one.
-fn maxSliceComponents(gpa: std.mem.Allocator, w: *const World) !usize {
-    var best: usize = 0;
-    var y: f64 = 6;
-    while (y <= 80) : (y += 4) {
-        const vals = try seedbed.slice(w, gpa, Channel.material.bit(), 1, y, .{ -48, -48 }, .{ 48, 48 }, 96);
-        defer gpa.free(vals);
-        best = @max(best, try seedbed.components(gpa, vals, 96, 0.3));
+/// The G2 run: the sapling for G2_STEPS, sampling the young-material
+/// component count at every checkpoint, since tips are live in the middle
+/// of the run and dormant by its end.
+const G2Run = struct { max_young: usize = 0, material_half: f64 = 0, material_full: f64 = 0, branches: usize = 0 };
+
+fn g2Run(gpa: std.mem.Allocator, scene_in: seedbed.Scene) !G2Run {
+    var w = try World.init(gpa, .{ .seed = 7 });
+    defer w.deinit();
+    var scene = scene_in;
+    try scene.build(&w, .sapling);
+    var r = G2Run{};
+    var i: u64 = 0;
+    while (i <= thresholds.G2_STEPS) : (i += 1) {
+        try w.step(now(i), null);
+        if (i % thresholds.G2_CHECK_EVERY == 0) {
+            r.max_young = @max(r.max_young, try seedbed.youngComponents(&w, gpa, 0.3, thresholds.G2_YOUNG_WINDOW_S));
+        }
+        if (i == thresholds.G2_STEPS / 2) r.material_half = seedbed.total(&w, Channel.material.bit());
     }
-    return best;
+    r.material_full = seedbed.total(&w, Channel.material.bit());
+    r.branches = w.published().fronts.len - 1;
+    try guards.check(w.published());
+    return r;
 }
 
 test "G2: a seeded front produces persistent, branching, deposited structure with no mesh" {
     const gpa = testing.allocator;
-    var g: GrownWorld = undefined;
-    try g.grow(gpa, 7, thresholds.G2_STEPS / 2, null);
-    defer g.deinit();
-    const half = seedbed.total(&g.world, Channel.material.bit());
-    var i: u64 = thresholds.G2_STEPS / 2 + 1;
-    while (i <= thresholds.G2_STEPS) : (i += 1) try g.world.step(now(i), null);
-    const full = seedbed.total(&g.world, Channel.material.bit());
-    const branches = g.published().fronts.len - 1;
-    const comps = try maxSliceComponents(gpa, &g.world);
-    std.debug.print("\nG2: material {d:.1} at N/2 → {d:.1} at N, {d} branches, {d} slice components\n", .{ half, full, branches, comps });
-    try testing.expect(full > 0 and full >= half); // persistent: no reset
-    try testing.expect(branches >= thresholds.G2_MIN_BRANCHES);
-    try testing.expect(comps >= thresholds.G2_MIN_SLICE_COMPONENTS);
-    try guards.check(g.published());
+    const r = try g2Run(gpa, .{});
+    std.debug.print("\nG2: material {d:.1} at N/2 → {d:.1} at N, {d} branches, {d} young-material components at peak\n", .{ r.material_half, r.material_full, r.branches, r.max_young });
+    try testing.expect(r.material_full > 0 and r.material_full >= r.material_half); // persistent: no reset
+    try testing.expect(r.branches >= thresholds.G2_MIN_BRANCHES); // the mechanism fired
+    try testing.expect(r.max_young >= thresholds.G2_MIN_YOUNG_COMPONENTS); // and the FIELD shows it
+}
+
+test "G2 mutation: branching off → one component of young material while material still grows" {
+    const gpa = testing.allocator;
+    const r = try g2Run(gpa, .{ .max_generation = 0 });
+    std.debug.print("\nG2 mutation: material {d:.1}, {d} branches, {d} young-material components at peak\n", .{ r.material_full, r.branches, r.max_young });
+    try testing.expect(r.material_full > 0);
+    try testing.expectEqual(@as(usize, 0), r.branches);
+    try testing.expectEqual(@as(usize, 1), r.max_young);
 }
 
 test "G2 mutation: zero deposit rate → no material" {
     const gpa = testing.allocator;
-    var w = try World.init(gpa, .{ .seed = 7 });
-    defer w.deinit();
-    var scene = seedbed.Scene{ .deposit = 0 };
-    try scene.build(&w, .sapling);
-    try run(&w, thresholds.G2_STEPS / 2, null);
-    try testing.expectEqual(@as(f64, 0), seedbed.total(&w, Channel.material.bit()));
-    try testing.expectEqual(@as(usize, 0), try maxSliceComponents(gpa, &w));
+    const r = try g2Run(gpa, .{ .deposit = 0 });
+    try testing.expectEqual(@as(f64, 0), r.material_full);
+    try testing.expectEqual(@as(usize, 0), r.max_young);
 }
 
 /// Centroid of live front positions, lattice units.
@@ -495,28 +502,54 @@ fn frontCentroid(snap: *const loam.Snapshot) [3]f64 {
     return c;
 }
 
-fn tropismRun(gpa: std.mem.Allocator, stimulus_x: f64, coeff: f32) ![3]f64 {
-    var w = try World.init(gpa, .{ .seed = 7 });
+/// The stimulus coefficient the G3 scene uses. Spec §11's term is
+/// a·∇stimulus and the blob's gradient over a radius of 64 is of order
+/// 0.02 per lattice unit, so at a = 1.5 the term was several times
+/// weaker per step than the wander noise — under the null floor, as the
+/// review predicted. At 30 it is of order the persistence term.
+const G3_COEFF: f32 = 30;
+
+/// Centroid of the MATERIAL laid over the run — the field, not the
+/// live tips, whose centroid is a noisy statistic once tips go dormant.
+fn tropismRun(gpa: std.mem.Allocator, seed: u64, stimulus_x: ?f64, coeff: f32) ![3]f64 {
+    var w = try World.init(gpa, .{ .seed = seed });
     defer w.deinit();
-    var scene = seedbed.Scene{ .stimulus = .{ stimulus_x, 30, 0 }, .tropism_light = 0, .tropism_stimulus = coeff };
+    var scene = seedbed.Scene{ .stimulus = if (stimulus_x) |x| .{ x, 40, 0 } else null, .tropism_light = 0, .tropism_stimulus = coeff };
     try scene.build(&w, .sapling);
     try run(&w, thresholds.G3_STEPS, null);
-    return frontCentroid(w.published());
+    return seedbed.centroid(&w, Channel.material.bit()).c;
 }
 
-test "G3: moving a stimulus field redirects live fronts" {
+/// The null: no stimulus, wander alone, across seeds — the RMS of the
+/// material centroid's x about the seed axis. What noise does on its own.
+fn nullSpread(gpa: std.mem.Allocator) !f64 {
+    const axis_x: f64 = @as(f64, lattice.CELLS / 2);
+    var sum2: f64 = 0;
+    var seed: u64 = 1;
+    while (seed <= thresholds.G3_NULL_SEEDS) : (seed += 1) {
+        const c = try tropismRun(gpa, seed, null, 0);
+        const dx = c[0] - axis_x;
+        sum2 += dx * dx;
+    }
+    return @sqrt(sum2 / @as(f64, @floatFromInt(thresholds.G3_NULL_SEEDS)));
+}
+
+test "G3: moving a stimulus field redirects live fronts, beyond k× the null spread" {
     const gpa = testing.allocator;
-    const plus = try tropismRun(gpa, 60, 1.5);
-    const minus = try tropismRun(gpa, -60, 1.5);
+    const spread = try nullSpread(gpa);
+    const floor = thresholds.G3_NULL_K * spread;
+    const plus = try tropismRun(gpa, 7, 40, G3_COEFF);
+    const minus = try tropismRun(gpa, 7, -40, G3_COEFF);
     const drift = plus[0] - minus[0];
-    std.debug.print("\nG3: front centroid x {d:.2} with stimulus at +60, {d:.2} at −60: drift {d:.2} lattice units\n", .{ plus[0], minus[0], drift });
-    try testing.expect(drift >= 2 * thresholds.G3_MIN_DRIFT);
+    std.debug.print("\nG3: null spread {d:.2} over {d} seeds, floor {d:.2} (k = {d}); drift {d:.2} between stimulus at +40 and −40\n", .{ spread, thresholds.G3_NULL_SEEDS, floor, thresholds.G3_NULL_K, drift });
+    try testing.expect(spread > 0); // the null varied: wander is on
+    try testing.expect(drift >= floor);
 }
 
 test "G3 mutation: stimulus gradient term zeroed → no drift" {
     const gpa = testing.allocator;
-    const plus = try tropismRun(gpa, 60, 0);
-    const minus = try tropismRun(gpa, -60, 0);
+    const plus = try tropismRun(gpa, 7, 40, 0);
+    const minus = try tropismRun(gpa, 7, -40, 0);
     try testing.expectEqual(plus[0], minus[0]); // nobody read the field: bit-identical
 }
 
