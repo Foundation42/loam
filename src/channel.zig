@@ -21,7 +21,23 @@ pub const Mask = u64;
 /// Phase 1, kept for volumes) — and Phase 2's carrier, Surface (R8): a
 /// signed implicit whose zero set is matter, negative inside, stored
 /// truncated to ±SURFACE_BAND_CELLS cells of the brick's gauge and
-/// composed by smooth union, never added.
+/// composed by smooth union, never added. Then PROVENANCE (R12, P2.2):
+/// four channels a front's capsule writes at every sample its field is
+/// nearer at than what stood — `who` (the front id plus one, so zero is
+/// nobody), `segment` (the ring index of the sweep, counted from one),
+/// `chart_s` and `chart_theta` (the front's (s, θ) at the sample's foot
+/// on the capsule's axis: the chart's coordinates, never a global).
+/// Optional history (R12a): the field stays canonical and reads none of
+/// it; the collar reads `who` and `chart_s` to choose k; a band-1 query
+/// reads all four to find the ring. Then THE TWO SLOTS (P2.2, the fill
+/// Christian named): `own`, the nearest contributor's own signed
+/// distance before any collar; `other`, the runner-up's; `collar`, the
+/// join's k between them. Band 0 is their ONE smooth union, recomposed
+/// by the commit whenever a slot changes — with one slot a child
+/// arriving as a chain of capsules collared the same parent sample once
+/// per capsule, 1.46 units deep against the smin's own bound of 0.75,
+/// and deeper the shorter the capsules (G12 a found it). A reader never
+/// needs the slots; the carrier stays what it reads.
 pub const Channel = enum(u6) {
     density = 0,
     extinction = 1,
@@ -40,6 +56,13 @@ pub const Channel = enum(u6) {
     stimulus = 14,
     damage = 15,
     surface = 16,
+    who = 17,
+    segment = 18,
+    chart_s = 19,
+    chart_theta = 20,
+    own = 21,
+    other = 22,
+    collar = 23,
 
     pub fn bit(self: Channel) u6 {
         return @intFromEnum(self);
@@ -69,24 +92,57 @@ pub fn band(spacing: u32) f32 {
 /// time: the fed second a front last passed, so "warm" is `now − Activity`
 /// and nothing decays — a decaying level kept fifty bricks changing for
 /// forty steps after the last front stopped); Surface is a smooth union
-/// with the collar radius carried on the op (R10).
-pub const Rule = enum { add, set_once, touch, smin };
+/// with the collar radius carried on the op (R10); provenance is SET BY
+/// THE WINNER — written by the surface op whose own distance is nearer
+/// than what stood at the sample, ties to what stood, and by nothing
+/// else: a cut writes none, so a wound keeps the id of whoever grew
+/// there and the scar remembers (Christian). It is never a delta. The
+/// two slots' distances are `.distance`: signed distances like the
+/// carrier, far absent, band-clamped, interpolated; written by ops only.
+pub const Rule = enum { add, set_once, touch, smin, set_by_winner, distance };
 
 pub fn rule(bit: u6) Rule {
     if (bit == Channel.age.bit()) return .set_once;
     if (bit == Channel.activity.bit()) return .touch;
     if (bit == Channel.surface.bit()) return .smin;
+    if (bit == Channel.own.bit() or bit == Channel.other.bit()) return .distance;
+    if (isProvenance(bit)) return .set_by_winner;
     return .add;
 }
 
-/// What an absent channel reads as: zero, or "far" for the carrier.
+/// Written by the winner: the four chart channels and the join's collar.
+pub fn isProvenance(bit: u6) bool {
+    return bit == Channel.who.bit() or bit == Channel.segment.bit() or bit == Channel.chart_s.bit() or bit == Channel.chart_theta.bit() or bit == Channel.collar.bit();
+}
+
+/// A signed distance held to the band: the carrier and the two slots.
+pub fn isDistance(bit: u6) bool {
+    return bit == Channel.surface.bit() or bit == Channel.own.bit() or bit == Channel.other.bit();
+}
+
+pub const PROVENANCE_MASK: Mask = Channel.who.mask() | Channel.segment.mask() | Channel.chart_s.mask() | Channel.chart_theta.mask();
+pub const SLOT_MASK: Mask = Channel.own.mask() | Channel.other.mask() | Channel.collar.mask();
+
+/// `who` for a front: its id plus one, so that zero is nobody (front ids
+/// start at zero, and a plane of nobody is an absent plane).
+pub fn whoOf(id: u32) f32 {
+    return @floatFromInt(id + 1);
+}
+
+/// The front id a `who` sample names, or null for nobody.
+pub fn idOf(who: f32) ?u32 {
+    if (who < 1) return null;
+    return @as(u32, @intFromFloat(who)) - 1;
+}
+
+/// What an absent channel reads as: zero, or "far" for a distance.
 pub fn absentValue(bit: u6, band_lu: f32) f32 {
-    return if (bit == Channel.surface.bit()) band_lu else 0;
+    return if (isDistance(bit)) band_lu else 0;
 }
 
 /// A sample that says nothing: zero, or at (or beyond) the band.
 pub fn isAbsent(bit: u6, v: f32, band_lu: f32) bool {
-    return if (bit == Channel.surface.bit()) v >= band_lu else v == 0;
+    return if (isDistance(bit)) v >= band_lu else v == 0;
 }
 
 /// A face sample that reaches across: above the change floor, or nearer
@@ -105,13 +161,17 @@ pub fn isAbsent(bit: u6, v: f32, band_lu: f32) bool {
 pub fn attentionScale(bit: u6, clamp: Clamp, band_lu: f32) f32 {
     if (bit == Channel.surface.bit()) return 2 * band_lu;
     return switch (rule(bit)) {
-        .touch, .set_once => std.math.inf(f32),
+        .touch, .set_once, .set_by_winner, .distance => std.math.inf(f32),
         .add, .smin => clamp.range() orelse 1,
     };
 }
 
 pub fn reaches(bit: u6, v: f32, band_lu: f32, eps: f32) bool {
-    return if (bit == Channel.surface.bit()) v < band_lu else @abs(v) > eps;
+    if (bit == Channel.surface.bit()) return v < band_lu;
+    // Provenance and the slots are a record of the carrier's deposit,
+    // which reached first: they materialise nothing on their own.
+    if (rule(bit) == .set_by_winner or rule(bit) == .distance) return false;
+    return @abs(v) > eps;
 }
 
 /// Polynomial smooth minimum (Quilez): exactly min(a, b) where they
@@ -190,6 +250,7 @@ pub const Registry = struct {
             .albedo, .roughness, .material, .damage, .growth => .{ .lo = 0, .hi = 1 },
             .light, .stimulus, .surface => .{},
             .velocity_x, .velocity_y, .velocity_z => .{},
+            .who, .segment, .chart_s, .chart_theta, .own, .other, .collar => .{},
         };
     }
 
@@ -266,6 +327,16 @@ test "smin: exact where apart, at most k/4 below where equal, far is the identit
     try std.testing.expectEqual(Rule.set_once, rule(Channel.age.bit()));
     try std.testing.expectEqual(Rule.touch, rule(Channel.activity.bit()));
     try std.testing.expectEqual(Rule.add, rule(Channel.growth.bit()));
+    try std.testing.expectEqual(Rule.set_by_winner, rule(Channel.who.bit()));
+    try std.testing.expectEqual(Rule.set_by_winner, rule(Channel.chart_theta.bit()));
+    try std.testing.expectEqual(Rule.distance, rule(Channel.own.bit()));
+    try std.testing.expectEqual(bd, absentValue(Channel.other.bit(), bd));
+    try std.testing.expect(isAbsent(Channel.own.bit(), bd, bd) and !isAbsent(Channel.own.bit(), 0, bd));
+    try std.testing.expectEqual(@as(?u32, null), idOf(0));
+    try std.testing.expectEqual(@as(?u32, 0), idOf(whoOf(0)));
+    try std.testing.expectEqual(@as(?u32, 41), idOf(whoOf(41)));
+    try std.testing.expect(std.math.isInf(attentionScale(Channel.who.bit(), .{}, bd)));
+    try std.testing.expect(!reaches(Channel.who.bit(), 3, bd, 1e-6));
     try std.testing.expect(isAbsent(Channel.surface.bit(), bd, bd) and !isAbsent(Channel.surface.bit(), 2.9, bd));
     try std.testing.expect(reaches(Channel.surface.bit(), 2.9, bd, 1e-6) and !reaches(Channel.surface.bit(), bd, bd, 1e-6));
 }

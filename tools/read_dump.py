@@ -60,7 +60,7 @@ def main(path):
         for name, pl in b["planes"].items():
             if len(pl) != samples:
                 fail(f"brick {b['key']} plane {name}: {len(pl)} samples, not {samples}")
-            if name == "surface":
+            if name in ("surface", "own", "other"):
                 present = any(v < band for v in interior(pl))
             else:
                 present = any(v != 0 for v in interior(pl))

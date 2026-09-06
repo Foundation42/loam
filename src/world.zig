@@ -123,9 +123,19 @@ pub const Policy = struct {
     /// term, under which a cold region starves. All kept as instruments
     /// (`loam-run --budget-order key|queue|no_lag`).
     budget_order: BudgetOrder = .attention,
+    /// What a capsule unions HARD into (P2.2, G12 a). `.recent`, struck:
+    /// its own front's deposit within the collar's reach behind its start
+    /// ring (`thresholds.collarReach`, through `chart_s`); smooth with
+    /// `Params.collar` × the envelope into everything else, its own
+    /// older tube included. The two mutations, kept as instruments
+    /// (`loam-run --collar-gate`): `.none` — nothing is its own, the
+    /// front beads into its own chain at k/4 a joint; `.own` — its own at
+    /// any age, the coil's self-touch a hard crease.
+    collar_gate: CollarGate = .recent,
 };
 
 pub const BudgetOrder = enum { attention, key, queue, no_lag };
+pub const CollarGate = enum { recent, none, own };
 
 pub const StepStats = struct {
     active_in: u64 = 0,
@@ -159,6 +169,12 @@ pub const StepStats = struct {
     /// (G13: r/h < 2) — the demand for refinement, counted, not met.
     below_faithful: u64 = 0,
     diffusion_clamped: u64 = 0,
+    /// Samples the collar acted on this step — a smooth union with k > 0
+    /// that landed under the hard one — and samples whose provenance a
+    /// front's op won (P2.2). Standing numbers: along a chain the first
+    /// is zero by construction.
+    collar_samples: u64 = 0,
+    provenance_writes: u64 = 0,
     active_out: u64 = 0,
     /// R16: the step's work in units, the units of the last `work` call,
     /// the calls it took, and the units `finish` had to perform beyond
@@ -249,6 +265,13 @@ pub const World = struct {
     evaluated: []Key = &.{},
     /// The step in progress between `begin` and `finish` (R16).
     step_state: ?StepState = null,
+    /// The ring history — the loft table (R12, P2.2): per front id, every
+    /// ring it has swept, ring zero the seed, appended by the commit in id
+    /// order. Optional history (R12a): nothing on the sim path reads it;
+    /// a band-1 query does, through a sample's provenance, and G12 (b)
+    /// rebuilds capsules from it. Not in the content hash — it is the
+    /// fronts' past, which the hashes of the steps that made it hold.
+    rings: std.ArrayListUnmanaged(std.ArrayListUnmanaged(front.Ring)) = .{},
     /// Consecutive steps whose backlog exceeded the budget: under a
     /// sustained cut the backlog grows, obligations fill the head, tier
     /// two gets nothing, and the world degrades to key-order round-robin
@@ -277,6 +300,8 @@ pub const World = struct {
         self.head.release();
         self.operators.deinit(self.gpa);
         self.fronts.deinit(self.gpa);
+        for (self.rings.items) |*r| r.deinit(self.gpa);
+        self.rings.deinit(self.gpa);
         self.pending_spawns.deinit(self.gpa);
         self.gpa.free(self.evaluated);
         self.abortStep();
@@ -588,7 +613,7 @@ pub const World = struct {
         st.sinks = try gpa.alloc(Sink, self.fronts.items.len);
         st.front_end = st.sinks.len;
         const alloc = self.buffer.planeAllocator();
-        for (st.sinks) |*sk| sk.* = .{ .alloc = alloc };
+        for (st.sinks, 0..) |*sk, i| sk.* = .{ .alloc = alloc, .id = @intCast(i) };
         self.step_state = st;
     }
 
@@ -867,6 +892,8 @@ pub const World = struct {
         for (st.entries, st.results) |ru, r| {
             for (ru.spawns.items) |sp| try st.spawn_requests.append(gpa, sp);
             const c = r orelse continue;
+            self.stats.collar_samples += c.collared;
+            self.stats.provenance_writes += c.provenance;
             try st.changed.put(gpa, ru.key.raw(), c);
             try st.order.append(gpa, ru.key.raw());
         }
@@ -1064,6 +1091,9 @@ pub const World = struct {
             };
             f.brick = self.brickUnder(base, f.pos);
             try self.fronts.append(gpa, f);
+            // Ring zero: the seed, where the first sweep starts.
+            try self.rings.append(gpa, .{});
+            try self.rings.items[id].append(gpa, f.prevRing());
         }
         var active = &st.active_out;
         for (self.fronts.items) |*f| {
@@ -1354,6 +1384,8 @@ pub const World = struct {
     /// One front's output for the step.
     const Sink = struct {
         alloc: std.mem.Allocator,
+        /// The front's id: sinks are one per front, in id order.
+        id: u32 = 0,
         entries: std.ArrayListUnmanaged(*update.RegionUpdate) = .{},
         by_key: std.AutoHashMapUnmanaged(u64, *update.RegionUpdate) = .{},
         spawns: std.ArrayListUnmanaged(update.Spawn) = .{},
@@ -1363,6 +1395,8 @@ pub const World = struct {
         died: bool = false,
         spawned: u64 = 0,
         below_faithful: bool = false,
+        /// The ring this step swept, for the history.
+        ring: ?front.Ring = null,
 
         fn region(self: *Sink, key: Key) !*update.RegionUpdate {
             const gop = try self.by_key.getOrPut(self.alloc, key.raw());
@@ -1436,6 +1470,7 @@ pub const World = struct {
         if (sk.died) self.stats.deaths += 1;
         if (sk.below_faithful) self.stats.below_faithful += 1;
         self.stats.spawns += sk.spawned;
+        if (sk.ring) |r| try self.rings.items[sk.id].append(gpa, r);
         std.mem.sort(*update.RegionUpdate, sk.entries.items, {}, struct {
             fn lt(_: void, a: *update.RegionUpdate, b: *update.RegionUpdate) bool {
                 return a.key.raw() < b.key.raw();
@@ -1446,8 +1481,9 @@ pub const World = struct {
             // The carrier's ops ride across whole: composed at commit,
             // in id order, never summed (R10).
             for (local.surface_ops.items) |op| try ru.surface_ops.append(self.buffer.arena.allocator(), op);
-            if (local.surface_ops.items.len > 0) ru.mask |= Channel.surface.mask();
-            var mask = local.mask & ~Channel.surface.mask();
+            const op_mask = Channel.surface.mask() | channel.PROVENANCE_MASK | channel.SLOT_MASK;
+            if (local.surface_ops.items.len > 0) ru.mask |= local.mask & op_mask;
+            var mask = local.mask & ~op_mask;
             while (mask != 0) {
                 const bit: u6 = @intCast(@ctz(mask));
                 mask &= mask - 1;
@@ -1469,7 +1505,7 @@ pub const World = struct {
                     .add => for (dst, src) |*d, v| {
                         if (v != 0) d.* += v;
                     },
-                    .smin => unreachable, // ops, above
+                    .smin, .set_by_winner, .distance => unreachable, // ops, above
                 }
             }
         }
@@ -1553,10 +1589,19 @@ pub const World = struct {
         const vl = len3(v);
         const old_dir = f.dir;
         if (vl > 1e-9) f.dir = .{ v[0] / vl, v[1] / vl, v[2] / vl };
-        f.normal = transport(f.normal, old_dir, f.dir);
-
         // Move by arc length.
         const ds: f64 = @as(f64, p.speed) * dt;
+        // The coil: a fixed turn about the world's vertical per unit of
+        // arc, the elbow measurement's knob (the sim's own sin and cos).
+        if (p.coil != 0) {
+            const ang = @as(f64, p.coil) * ds;
+            const c = fmath.cos(ang);
+            const sn = fmath.sin(ang);
+            const x = f.dir[0];
+            const z = f.dir[2];
+            f.dir = .{ c * x + sn * z, f.dir[1], c * z - sn * x };
+        }
+        f.normal = transport(f.normal, old_dir, f.dir);
         inline for (0..3) |a| f.pos[a] += f.dir[a] * ds;
         f.s += ds;
         f.age += 1;
@@ -1581,6 +1626,8 @@ pub const World = struct {
         if (envelope < thresholds.G13_FAITHFUL_R_OVER_H * @as(f32, @floatFromInt(@as(u32, 1) << self.policy.default_gauge))) sink.below_faithful = true;
 
         // Deposit the ring into the field; draw down the potential around it.
+        f.segment += 1;
+        sink.ring = f.ringRecord(envelope);
         const avail = base.sample(Channel.growth.bit(), aheadOf(f));
         try self.stamp(base, f, dt, envelope, avail, sink);
 
@@ -1596,6 +1643,7 @@ pub const World = struct {
             }
             if (best) |si| {
                 try sink.spawns.append(sink.alloc, self.budSpawn(f, si, envelope));
+                sink.ring.?.bud = @intCast(si);
                 f.ring[si] = .{};
                 f.cooldown = p.branch_cooldown;
                 sink.spawned += 1;
@@ -1608,6 +1656,7 @@ pub const World = struct {
         f.prev_dir = f.dir;
         f.prev_normal = f.normal;
         f.prev_roll = f.roll;
+        f.prev_s = f.s;
         f.prev_envelope = envelope;
         for (f.ring, 0..) |sl, i| f.prev_r[i] = sl.r;
     }
@@ -1659,7 +1708,7 @@ pub const World = struct {
         }
     }
 
-    fn budSpawn(self: *World, f: *const Front, si: usize, envelope: f32) update.Spawn {
+    pub fn budSpawn(self: *World, f: *const Front, si: usize, envelope: f32) update.Spawn {
         _ = self;
         const p = f.params;
         const theta: f64 = 2 * std.math.pi * @as(f64, @floatFromInt(si)) / @as(f64, front.SLOTS) + f.roll;
@@ -1726,6 +1775,18 @@ pub const World = struct {
         const soft: f64 = SOFT;
         const band0: f64 = channel.band(@as(u32, 1) << self.policy.default_gauge);
         const reach: f64 = @as(f64, @max(envelope, f.prev_envelope) + rmax) + band0;
+        // The collar (P2.2): k where this capsule meets another's deposit —
+        // the ring's radius, "the child's radius at the join" — and how far
+        // behind its start ring the smooth union could still act on the
+        // front's own tube, out to the band's edge (`collarReach`). Within
+        // that, own is hard; beyond, own is another front.
+        const k_collar: f32 = p.collar * envelope;
+        const own_reach: f32 = switch (self.policy.collar_gate) {
+            .recent => thresholds.collarReach(k_collar, @as(f32, @floatCast(reach))),
+            .none => -1, // nothing is recent enough
+            .own => std.math.inf(f32), // everything of its own, at any age
+        };
+        const who: u32 = f.id + 1; // `channel.whoOf` as an integer: zero is nobody
         const draw_r: f64 = 2.0 * @as(f64, p.radius);
         const draw: f32 = p.consume * @as(f32, @floatCast(dt));
         const depositing = p.deposit > 0 and avail > 0;
@@ -1736,7 +1797,7 @@ pub const World = struct {
             lo[a] = @max(@as(i64, 0), tree.floorI(@min(f.pos[a], f.prev_pos[a]) - ext));
             hi[a] = @min(@as(i64, lattice.CELLS), tree.floorI(@max(f.pos[a], f.prev_pos[a]) + ext) + 1);
         }
-        const floor: f32 = if (p.min_radius > 0) p.min_radius else thresholds.G13_SURVIVE_R_OVER_H * @as(f32, @floatFromInt(@as(u32, 1) << self.policy.default_gauge));
+        const floor = self.floorFor(p);
         const cap = Capsule.of(f, envelope, floor);
         const gpa = self.gpa;
 
@@ -1767,7 +1828,7 @@ pub const World = struct {
             const band: f32 = channel.band(key.spacing());
             const alloc = sink.alloc;
             const existing = base.brickAt(key);
-            var op: ?*Plane = null;
+            var op: ?update.RegionUpdate.FrontPlanes = null;
             var k: u32 = 0;
             while (k < brick.N) : (k += 1) {
                 const pz: i64 = @as(i64, o[2]) + @as(i64, k) * sp;
@@ -1797,10 +1858,15 @@ pub const World = struct {
                             }
                         }
                         if (!depositing) continue;
-                        const phi = cap.signed(q);
+                        const ft = cap.foot(q);
+                        const phi = cap.signedAt(ft);
                         if (phi >= band) continue;
-                        if (op == null) op = try ru.surfaceOp(alloc, p.collar, f.id);
-                        op.?[idx] = @max(phi, -band);
+                        if (op == null) op = try ru.surfaceOpFront(alloc, k_collar, who, f.segment, f.prev_s, own_reach);
+                        op.?.phi[idx] = @max(phi, -band);
+                        // The chart at the foot: (s, θ) of this front, per
+                        // R12 — never a global.
+                        op.?.s[idx] = cap.chartS(ft);
+                        op.?.theta[idx] = cap.chartTheta(ft);
                         if (phi < 0) {
                             const born: f32 = if (existing) |b| b.get(Channel.age.bit(), i, j, k) else 0;
                             const pending: f32 = if (ru.deltas[Channel.age.bit()]) |dp| dp[idx] else 0;
@@ -1817,54 +1883,183 @@ pub const World = struct {
         }
     }
 
+    /// The thinnest tube a front lays under this world's gauge: its own
+    /// `min_radius`, or the survival floor (G13).
+    pub fn floorFor(self: *const World, p: front.Params) f32 {
+        return if (p.min_radius > 0) p.min_radius else thresholds.G13_SURVIVE_R_OVER_H * @as(f32, @floatFromInt(@as(u32, 1) << self.policy.default_gauge));
+    }
+
+    // ── Bands (R12, P2.2): the ring history read through provenance ────
+    //
+    // Band 0 is the carrier. Band 1 is the ring morphology — the residual
+    // the capsule laid above its envelope, at the sample's chart (s, θ);
+    // band 2 the same relief's second difference from ring to ring, the
+    // furrow one ring wide that the lattice smooths over. Bands 3+ are
+    // procedural, P2.3's. A query names its class: a SPONGE reads band 0
+    // and gathers nothing else; BARK reads the provenance and the rings.
+
+    /// The ring record of front `who` at ring `segment`, if the history
+    /// holds it (ring zero is the seed).
+    pub fn ringAt(self: *const World, who: u32, segment: u32) ?*const front.Ring {
+        if (who >= self.rings.items.len) return null;
+        const list = self.rings.items[who].items;
+        if (segment >= list.len) return null;
+        return &list[segment];
+    }
+
+    /// The capsule that swept ring `segment` of front `who` — between
+    /// that ring and the one before it, at the front's floor — rebuilt
+    /// from the history exactly as the front built it.
+    pub fn capsuleAt(self: *const World, who: u32, segment: u32) ?Capsule {
+        if (segment == 0) return null;
+        const a = self.ringAt(who, segment - 1) orelse return null;
+        const b = self.ringAt(who, segment) orelse return null;
+        if (who >= self.fronts.items.len) return null;
+        return Capsule.between(a, b, self.floorFor(self.fronts.items[who].params));
+    }
+
+    pub const BandClass = enum { sponge, bark };
+
+    pub const BandSample = struct {
+        /// Band 0: the carrier's sample at the point.
+        phi: f32,
+        /// Band 1: the ring residual at the sample's chart, lattice units
+        /// above the envelope — the bark's relief as the capsule laid it.
+        /// Null where nobody laid the sample, or the class did not ask.
+        band1: ?f32 = null,
+        /// Band 2: the relief's second difference along s at the chart's
+        /// θ, over the ring and its two neighbours; null at the ends.
+        band2: ?f32 = null,
+        /// The ring's slot at the chart's θ budded here: a scar.
+        scar: bool = false,
+        provenance: ?brick.Provenance = null,
+        /// Bytes gathered, as G7 counts them: the surface plane's 64
+        /// coefficients, then the four provenance samples and the ring
+        /// records a bark query reads.
+        bytes: u64,
+    };
+
+    /// A band query at lattice point `p` for a class (G12 c).
+    pub fn bandQuery(self: *const World, snap: *const Snapshot, p: [3]i64, class: BandClass) BandSample {
+        var out = BandSample{ .phi = channel.band(1), .bytes = thresholds.G12_SPONGE_BYTES };
+        const b = snap.findLeaf(p) orelse return out;
+        const l = b.localOf(p) orelse return out;
+        out.phi = b.get(Channel.surface.bit(), l[0], l[1], l[2]);
+        if (class == .sponge) return out;
+        const pv = b.provenanceAt(l[0], l[1], l[2]) orelse return out;
+        out.bytes += 4 * @sizeOf(f32);
+        out.provenance = pv;
+        const cap = self.capsuleAt(pv.who, pv.segment) orelse return out;
+        out.bytes += 2 * @sizeOf(front.Ring);
+        const t: f32 = if (cap.s1 > cap.s0) @floatCast((@as(f64, pv.s) - cap.s0) / (cap.s1 - cap.s0)) else 0;
+        const th: f64 = pv.theta;
+        const r0 = Capsule.residual(cap.r0, th);
+        const r1 = Capsule.residual(cap.r1, th);
+        out.band1 = std.math.lerp(r0, r1, @min(1, @max(0, t)));
+        const ring = self.ringAt(pv.who, pv.segment).?;
+        const slot: usize = @intFromFloat(@mod(th / (2 * std.math.pi) * @as(f64, front.SLOTS) + 0.5, @as(f64, front.SLOTS)));
+        if (ring.bud) |bs| out.scar = bs == slot;
+        if (self.ringAt(pv.who, pv.segment + 1)) |next| {
+            out.bytes += @sizeOf(front.Ring);
+            out.band2 = Capsule.residual(next.r, th) - 2 * r1 + r0;
+        }
+        return out;
+    }
+
     /// The lofted capsule between a front's previous ring and its current
     /// one: the signed implicit ρ − r(s, θ), with r interpolated along the
     /// segment between the two rings' profiles and read around each ring
     /// in its own transported frame. Beyond the ends it is the end ring's
     /// cap. The profile's residual fades to zero on the axis so the
     /// implicit stays Lipschitz there (θ is not defined on the axis).
-    const Capsule = struct {
+    /// Built from the front as it sweeps (`of`), or from two ring records
+    /// of the history (`between`) — the same fields, the same arithmetic,
+    /// so G12 (b) reads a deposit back from its provenance bit for bit.
+    pub const Capsule = struct {
         p0: [3]f64,
         p1: [3]f64,
         axis: [3]f64,
         len2: f64,
+        s0: f64,
+        s1: f64,
         n0: [3]f64,
         b0: [3]f64,
         roll0: f64,
         env0: f32,
-        r0: *const [front.SLOTS]f32,
+        r0: [front.SLOTS]f32,
         n1: [3]f64,
         b1: [3]f64,
         roll1: f64,
         env1: f32,
-        ring1: *const [front.SLOTS]front.Slot,
+        r1: [front.SLOTS]f32,
         /// Nothing thinner than this is laid: the gauge's survival floor.
         floor: f32,
 
-        fn of(f: *const Front, envelope: f32, floor: f32) Capsule {
-            const axis = [3]f64{ f.pos[0] - f.prev_pos[0], f.pos[1] - f.prev_pos[1], f.pos[2] - f.prev_pos[2] };
+        pub fn of(f: *const Front, envelope: f32, floor: f32) Capsule {
+            const r0 = f.prevRing();
+            const r1 = f.ringRecord(envelope);
+            return between(&r0, &r1, floor);
+        }
+
+        pub fn between(a: *const front.Ring, b: *const front.Ring, floor: f32) Capsule {
+            const axis = [3]f64{ b.pos[0] - a.pos[0], b.pos[1] - a.pos[1], b.pos[2] - a.pos[2] };
             return .{
-                .p0 = f.prev_pos,
-                .p1 = f.pos,
+                .p0 = a.pos,
+                .p1 = b.pos,
                 .axis = axis,
                 .len2 = dot(axis, axis),
-                .n0 = f.prev_normal,
-                .b0 = cross(f.prev_dir, f.prev_normal),
-                .roll0 = f.prev_roll,
-                .env0 = f.prev_envelope,
-                .r0 = &f.prev_r,
-                .n1 = f.normal,
-                .b1 = cross(f.dir, f.normal),
-                .roll1 = f.roll,
-                .env1 = envelope,
-                .ring1 = &f.ring,
+                .s0 = a.s,
+                .s1 = b.s,
+                .n0 = a.normal,
+                .b0 = cross(a.dir, a.normal),
+                .roll0 = a.roll,
+                .env0 = a.envelope,
+                .r0 = a.r,
+                .n1 = b.normal,
+                .b1 = cross(b.dir, b.normal),
+                .roll1 = b.roll,
+                .env1 = b.envelope,
+                .r1 = b.r,
                 .floor = floor,
             };
         }
 
+        /// A point's foot on the capsule: the axis parameter s ∈ [0, 1],
+        /// the radial distance, and the angle in each ring's frame.
+        pub const Foot = struct { s: f64, rho: f64, th0: f64, th1: f64 };
+
+        pub fn foot(self: *const Capsule, q: [3]f64) Foot {
+            const d = [3]f64{ q[0] - self.p0[0], q[1] - self.p0[1], q[2] - self.p0[2] };
+            var s: f64 = 0;
+            if (self.len2 > 1e-18) s = @min(1.0, @max(0.0, dot(d, self.axis) / self.len2));
+            const rad = [3]f64{ d[0] - s * self.axis[0], d[1] - s * self.axis[1], d[2] - s * self.axis[2] };
+            return .{
+                .s = s,
+                .rho = len3(rad),
+                .th0 = std.math.atan2(dot(rad, self.b0), dot(rad, self.n0)) - self.roll0,
+                .th1 = std.math.atan2(dot(rad, self.b1), dot(rad, self.n1)) - self.roll1,
+            };
+        }
+
+        /// The chart's s at the foot: the front's arc length there.
+        pub fn chartS(self: *const Capsule, ft: Foot) f32 {
+            return @floatCast(self.s0 + ft.s * (self.s1 - self.s0));
+        }
+
+        /// The chart's θ at the foot, in [0, 2π): the two rings' angles
+        /// lerped the short way round, so a frame twisting between rings
+        /// gives a continuous chart along the capsule.
+        pub fn chartTheta(_: *const Capsule, ft: Foot) f32 {
+            const two_pi = 2 * std.math.pi;
+            var dth = @mod(ft.th1 - ft.th0, two_pi);
+            if (dth > std.math.pi) dth -= two_pi;
+            const th = @mod(ft.th0 + ft.s * dth, two_pi);
+            return @floatCast(th);
+        }
+
         /// The profile's residual at angle θ (radians about the ring's
         /// frame): the ring's 24 slots, linearly interpolated.
-        fn residual(rs: [front.SLOTS]f32, theta: f64) f32 {
+        pub fn residual(rs: [front.SLOTS]f32, theta: f64) f32 {
             const N: f64 = front.SLOTS;
             var u = @mod(theta, 2 * std.math.pi) / (2 * std.math.pi) * N;
             if (u >= N) u -= N;
@@ -1875,22 +2070,25 @@ pub const World = struct {
             return std.math.lerp(a, b, fr);
         }
 
-        fn signed(self: *const Capsule, q: [3]f64) f32 {
-            const d = [3]f64{ q[0] - self.p0[0], q[1] - self.p0[1], q[2] - self.p0[2] };
-            var s: f64 = 0;
-            if (self.len2 > 1e-18) s = @min(1.0, @max(0.0, dot(d, self.axis) / self.len2));
-            const rad = [3]f64{ d[0] - s * self.axis[0], d[1] - s * self.axis[1], d[2] - s * self.axis[2] };
-            const rho = len3(rad);
-            const th0 = std.math.atan2(dot(rad, self.b0), dot(rad, self.n0)) - self.roll0;
-            const th1 = std.math.atan2(dot(rad, self.b1), dot(rad, self.n1)) - self.roll1;
-            var r1: [front.SLOTS]f32 = undefined;
-            for (self.ring1, 0..) |sl, i| r1[i] = sl.r;
+        pub fn signed(self: *const Capsule, q: [3]f64) f32 {
+            return self.signedAt(self.foot(q));
+        }
+
+        pub fn signedAt(self: *const Capsule, ft: Foot) f32 {
+            const s = ft.s;
+            const rho = ft.rho;
             const env: f32 = std.math.lerp(self.env0, self.env1, @as(f32, @floatCast(s)));
-            const res: f32 = std.math.lerp(residual(self.r0.*, th0), residual(r1, th1), @as(f32, @floatCast(s)));
+            const res: f32 = std.math.lerp(residual(self.r0, ft.th0), residual(self.r1, ft.th1), @as(f32, @floatCast(s)));
             // The residual fades to nothing on the axis.
             const fade: f32 = @floatCast(@min(1.0, rho / @max(0.5 * @as(f64, env), 1e-6)));
             const r: f32 = @max(self.floor, env + res * fade);
             return @as(f32, @floatCast(rho)) - r;
+        }
+
+        /// The ring residual at the foot: band 1's value at a sample the
+        /// capsule laid (what its radius carried above the envelope).
+        pub fn residualAt(self: *const Capsule, ft: Foot) f32 {
+            return std.math.lerp(residual(self.r0, ft.th0), residual(self.r1, ft.th1), @as(f32, @floatCast(ft.s)));
         }
     };
 
@@ -1919,6 +2117,9 @@ pub const World = struct {
         /// copied a new neighbour's zero over the point mass it was
         /// meant to receive.
         rank: u8 = 1,
+        /// P2.2's standing numbers for this brick's commit.
+        collared: u32 = 0,
+        provenance: u32 = 0,
     };
 
     const ApplyCtx = struct {
@@ -1978,10 +2179,12 @@ pub const World = struct {
             }
             if (bit == 63) break;
         }
+        var collared: u32 = 0;
+        var prov: u32 = 0;
         if (ru.surface_ops.items.len > 0) {
             // The carrier: ops in order (front id, or authoring order),
-            // each a smooth union with its own collar, the result held to
-            // the band. Stable, so equal orders keep insertion order.
+            // each into the TWO SLOTS, band 0 their one smooth union held
+            // to the band. Stable, so equal orders keep insertion order.
             std.sort.insertion(update.SurfaceOp, ru.surface_ops.items, {}, update.SurfaceOp.lessThan);
             const sbit = Channel.surface.bit();
             const pl = nb.ensurePlane(gpa, sbit) catch {
@@ -1989,10 +2192,35 @@ pub const World = struct {
                 ctx.failed.store(true, .release);
                 return;
             };
+            var slots: [3]*Plane = undefined; // own, other, collar
+            for ([_]Channel{ .own, .other, .collar }, 0..) |ch, n| {
+                slots[n] = nb.ensurePlane(gpa, ch.bit()) catch {
+                    nb.release(gpa);
+                    ctx.failed.store(true, .release);
+                    return;
+                };
+            }
             const bd = nb.band();
             const sscale = channel.attentionScale(sbit, ctx.world.registry.clamp(sbit), bd);
             var sdelta: f32 = 0;
+            // The provenance planes, made once a front's op is here: read
+            // for the collar's recency, written where the op wins (P2.2).
+            var pv: ?[4]*Plane = null;
             for (ru.surface_ops.items) |op| {
+                if (pv == null and (op.who != 0 or nb.has(Channel.who.bit()))) {
+                    var planes: [4]*Plane = undefined;
+                    for ([_]Channel{ .who, .segment, .chart_s, .chart_theta }, 0..) |ch, n| {
+                        planes[n] = nb.ensurePlane(gpa, ch.bit()) catch {
+                            nb.release(gpa);
+                            ctx.failed.store(true, .release);
+                            return;
+                        };
+                    }
+                    pv = planes;
+                }
+                const who_f: f32 = @floatFromInt(op.who);
+                const seg_f: f32 = @floatFromInt(op.segment);
+                const s0: f32 = @floatCast(op.s0);
                 var k: u32 = 0;
                 while (k < brick.N) : (k += 1) {
                     var j: u32 = 0;
@@ -2002,11 +2230,70 @@ pub const World = struct {
                             const idx = Brick.index(ii, j, k);
                             const d = op.plane[idx];
                             if (d == update.SurfaceOp.NONE) continue;
-                            const nv = @max(-bd, @min(bd, switch (op.mode) {
-                                .join => channel.smin(pl[idx], d, op.k, bd),
-                                .cut => @max(pl[idx], -d),
-                            }));
-                            sdelta = @max(sdelta, @abs(nv - pl[idx]));
+                            const cur = pl[idx];
+                            var own = slots[0][idx];
+                            var other = slots[1][idx];
+                            var kj = slots[2][idx];
+                            var nv: f32 = undefined;
+                            switch (op.mode) {
+                                .join => {
+                                    const dd = @max(d, -bd);
+                                    // Whose is the sample? Its own front's,
+                                    // within the collar's reach: hard into
+                                    // `own`. Anyone else's — another front,
+                                    // authored tissue, its own beyond the
+                                    // reach — a nearer one takes `own` and
+                                    // demotes what stood; a farther one
+                                    // joins `other` by the hard min, so a
+                                    // chain of capsules is one tube there.
+                                    var mine = false;
+                                    if (op.who != 0) {
+                                        if (pv.?[0][idx] == who_f and s0 - pv.?[2][idx] <= op.reach) mine = true;
+                                    }
+                                    const first = own >= bd and other >= bd;
+                                    if (mine) {
+                                        if (dd < own) {
+                                            own = dd;
+                                            const p4 = pv.?;
+                                            p4[1][idx] = seg_f;
+                                            p4[2][idx] = op.chart_s.?[idx];
+                                            p4[3][idx] = op.chart_theta.?[idx];
+                                            prov += 1;
+                                        }
+                                    } else if (dd < own) {
+                                        other = own;
+                                        own = dd;
+                                        if (pv) |p4| {
+                                            p4[0][idx] = who_f;
+                                            p4[1][idx] = seg_f;
+                                            p4[2][idx] = if (op.who != 0) op.chart_s.?[idx] else 0;
+                                            p4[3][idx] = if (op.who != 0) op.chart_theta.?[idx] else 0;
+                                        }
+                                        if (op.who != 0) prov += 1;
+                                    } else {
+                                        other = @min(other, dd);
+                                    }
+                                    // The join's collar: the least willing
+                                    // member's — a child's radius at the
+                                    // join is the smaller of the two.
+                                    kj = if (first) op.k else @min(kj, op.k);
+                                    nv = channel.smin(own, other, kj, bd);
+                                    if (kj > 0 and nv < @min(own, other)) collared += 1;
+                                },
+                                // A cut writes no provenance: the scar
+                                // remembers. It cuts the slots too, so a
+                                // later join recomposes from cut tissue.
+                                .cut => {
+                                    nv = @max(cur, -d);
+                                    own = @max(own, -d);
+                                    other = @max(other, -d);
+                                },
+                            }
+                            nv = @max(-bd, @min(bd, nv));
+                            slots[0][idx] = @min(own, bd);
+                            slots[1][idx] = @min(other, bd);
+                            slots[2][idx] = kj;
+                            sdelta = @max(sdelta, @abs(nv - cur));
                             pl[idx] = nv;
                         }
                     }
@@ -2015,7 +2302,7 @@ pub const World = struct {
             max_delta = @max(max_delta, sdelta);
             att = @max(att, sdelta / sscale);
         }
-        ctx.results[i] = .{ .b = nb, .old = old, .max_delta = max_delta, .attention = att, .materialised = old == null and ru.mask == 0, .rank = if (ru.mask != 0) 0 else 2 };
+        ctx.results[i] = .{ .b = nb, .old = old, .max_delta = max_delta, .attention = att, .materialised = old == null and ru.mask == 0, .rank = if (ru.mask != 0) 0 else 2, .collared = collared, .provenance = prov };
     }
 
     const FinalizeCtx = struct { world: *World, base: *const Snapshot, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: []const u64, now_ns: u64, head: []const Key, hash_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0) };
@@ -2214,7 +2501,7 @@ pub const World = struct {
     fn emit(gpa: std.mem.Allocator, list: *WriteList, target: *const Brick, bit: u6, idx: usize, v_in: f32) !void {
         const have: f32 = if (target.plane(bit)) |pl| pl[idx] else target.absentValue(bit);
         // A coarser holder's band is wider: far is far, at this brick's band.
-        const v = if (bit == Channel.surface.bit()) @min(v_in, target.band()) else v_in;
+        const v = if (channel.isDistance(bit)) @min(v_in, target.band()) else v_in;
         if (have == v) return;
         try list.append(gpa, .{ .key = target.key.raw(), .bit = bit, .idx = @intCast(idx), .value = v });
     }
@@ -2237,7 +2524,10 @@ pub const World = struct {
         while (mask != 0) {
             const bit: u6 = @intCast(@ctz(mask));
             mask &= mask - 1;
-            try emit(gpa, list, target, bit, idx, src.trilinear(bit, q));
+            // Provenance is not interpolated: an id between two ids is a
+            // third front. The nearer coarse sample's stands.
+            const v = if (channel.rule(bit) == .set_by_winner) src.nearest(bit, q) else src.trilinear(bit, q);
+            try emit(gpa, list, target, bit, idx, v);
         }
     }
 
@@ -2516,9 +2806,18 @@ pub const World = struct {
                 const pl = try mb.ensurePlane(gpa, wbit);
                 const have = pl[w.idx];
                 pl[w.idx] = w.value;
-                const d = @abs(w.value - have);
-                max_delta = @max(max_delta, d);
-                att = @max(att, d / channel.attentionScale(wbit, self.registry.clamp(wbit), mbd));
+                // The change floor and attention count what the world
+                // reads — the carrier and the additive channels. The
+                // slots and the provenance are the carrier's bookkeeping,
+                // scored where the carrier is: a copied `who` of six
+                // once woke every neighbour of a tube for nothing (G14 c's
+                // budgeted run evaluated more than the unbudgeted one).
+                const rule = channel.rule(wbit);
+                if (rule != .set_by_winner and rule != .distance) {
+                    const d = @abs(w.value - have);
+                    max_delta = @max(max_delta, d);
+                    att = @max(att, d / channel.attentionScale(wbit, self.registry.clamp(wbit), mbd));
+                }
                 self.stats.seam_writes += 1;
             }
             const cptr = changed.getPtr(key).?;
@@ -2636,11 +2935,13 @@ fn haloValue(hs: []const World.Live, p: [3]i64, bit: u6, target: *const Brick) f
     var v: f32 = undefined;
     if (finest.b.localOf(p)) |l| {
         v = finest.b.get(bit, l[0], l[1], l[2]);
+    } else if (channel.rule(bit) == .set_by_winner) {
+        v = finest.b.nearest(bit, .{ @floatFromInt(p[0]), @floatFromInt(p[1]), @floatFromInt(p[2]) });
     } else {
         v = finest.b.trilinear(bit, .{ @floatFromInt(p[0]), @floatFromInt(p[1]), @floatFromInt(p[2]) });
     }
     // A coarser holder's band is wider than this brick's: far is far.
-    if (bit == Channel.surface.bit()) v = @min(v, bd);
+    if (channel.isDistance(bit)) v = @min(v, bd);
     return v;
 }
 

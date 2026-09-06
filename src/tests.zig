@@ -1986,3 +1986,487 @@ test "G11 mutation: stepping by 2|φ|/L lands inside" {
     std.debug.print("\nG11 mutation: {d} rays, {d} overshoots\n", .{ c.rays, c.stats.overshoots });
     try testing.expect(c.stats.overshoots > 0);
 }
+
+// ── P2.2: the collar, provenance and the bands (G12) ─────────────────────
+//
+// The brief's G12 asked for |∇φ| continuous to 1e-3 across a bud's
+// junction. That is not an observable here: the reconstruction is the
+// cubic B-spline of the samples, C2 whatever they hold, so a crease and a
+// fillet both reconstruct smooth. G12 is bit-exact instead (the thresholds
+// file says how), and the crease is Christian's number, MEASURED by
+// `creaseProfile` and printed, never gated.
+
+/// The junction scene grown `steps`: a straight parent with the ring CA
+/// on and no steering, its child budded by hand at JUNCTION_STEP. No
+/// front reads the field to steer, so two runs differing only in the
+/// collar lay their tubes along the same axes — what (a)'s comparison
+/// against the hard union needs.
+fn junctionRun(gpa: std.mem.Allocator, collar: ?f32, gate: loam.world.CollarGate, steps: u32) !World {
+    var w = try World.init(gpa, .{ .seed = 3, .policy = .{ .collar_gate = gate } });
+    errdefer w.deinit();
+    var scene = seedbed.Scene{ .collar = collar };
+    try scene.build(&w, .junction);
+    var i: u64 = 0;
+    while (i <= steps) : (i += 1) {
+        if (i == seedbed.JUNCTION_STEP) try seedbed.bud(&w, 0, 0);
+        try w.step(now(i), null);
+    }
+    return w;
+}
+
+/// The coil grown `steps` at bend `coil` (radians per unit of arc).
+fn coilRun(gpa: std.mem.Allocator, collar: ?f32, gate: loam.world.CollarGate, coil: ?f32, steps: u32) !World {
+    var w = try World.init(gpa, .{ .seed = 3, .policy = .{ .collar_gate = gate } });
+    errdefer w.deinit();
+    var scene = seedbed.Scene{ .collar = collar };
+    try scene.build(&w, .coil);
+    if (coil) |c| w.fronts.items[0].params.coil = c;
+    try run(&w, steps, null);
+    return w;
+}
+
+/// Distance from `q` to the polyline through a front's ring centres.
+fn distToRings(rings: []const loam.front.Ring, q: [3]f64) f64 {
+    var best: f64 = std.math.inf(f64);
+    if (rings.len == 1) return loam.world.len3(.{ q[0] - rings[0].pos[0], q[1] - rings[0].pos[1], q[2] - rings[0].pos[2] });
+    var k: usize = 1;
+    while (k < rings.len) : (k += 1) {
+        const a = rings[k - 1].pos;
+        const b = rings[k].pos;
+        const ab = [3]f64{ b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+        const aq = [3]f64{ q[0] - a[0], q[1] - a[1], q[2] - a[2] };
+        const l2 = loam.world.dot(ab, ab);
+        const t: f64 = if (l2 > 1e-18) @min(1.0, @max(0.0, loam.world.dot(aq, ab) / l2)) else 0;
+        const d = [3]f64{ aq[0] - t * ab[0], aq[1] - t * ab[1], aq[2] - t * ab[2] };
+        best = @min(best, loam.world.len3(d));
+    }
+    return best;
+}
+
+/// The largest radius a front laid: envelope plus residual, over its rings.
+fn maxRadius(rings: []const loam.front.Ring) f32 {
+    var r: f32 = 0;
+    for (rings) |rg| {
+        var rm: f32 = 0;
+        for (rg.r) |v| rm = @max(rm, @abs(v));
+        r = @max(r, rg.envelope + rm);
+    }
+    return r;
+}
+
+/// The largest collar any front's capsule carried: collar × envelope.
+fn maxCollar(w: *const World) f32 {
+    var k: f32 = 0;
+    for (w.rings.items, 0..) |list, id| {
+        for (list.items) |rg| k = @max(k, w.fronts.items[id].params.collar * rg.envelope);
+    }
+    return k;
+}
+
+const CollarDiff = struct { samples: u64 = 0, higher: u64 = 0, lowered: u64 = 0, outside: u64 = 0, max_drop: f32 = 0, max_drop_outside: f32 = 0 };
+
+/// Every own sample of every brick in either world: A's carrier against
+/// B's (absent is far), and where they differ, whether the point is
+/// within `zone` of the child's axis (`child` null: no zone, every
+/// difference counts as outside).
+fn collarDiff(gpa: std.mem.Allocator, a: *const World, b: *const World, child: ?u32, zone: f64) !CollarDiff {
+    var out = CollarDiff{};
+    const sa = a.published();
+    const sb = b.published();
+    var keys = std.AutoArrayHashMapUnmanaged(u64, void){};
+    defer keys.deinit(gpa);
+    const ba = try sa.bricks(gpa);
+    defer gpa.free(ba);
+    const bb = try sb.bricks(gpa);
+    defer gpa.free(bb);
+    for (ba) |br| try keys.put(gpa, br.key.raw(), {});
+    for (bb) |br| try keys.put(gpa, br.key.raw(), {});
+    const rings: []const loam.front.Ring = if (child) |c| a.rings.items[c].items else &.{};
+    const sbit = Channel.surface.bit();
+    for (keys.keys()) |raw| {
+        const key = Key.fromRaw(raw);
+        const bd = channel.band(key.spacing());
+        const xa = sa.brickAt(key);
+        const xb = sb.brickAt(key);
+        const o = key.origin();
+        const sp = key.spacing();
+        var k: u32 = 0;
+        while (k < brick.N) : (k += 1) {
+            var j: u32 = 0;
+            while (j < brick.N) : (j += 1) {
+                var i: u32 = 0;
+                while (i < brick.N) : (i += 1) {
+                    const va: f32 = if (xa) |x| x.get(sbit, i, j, k) else bd;
+                    const vb: f32 = if (xb) |x| x.get(sbit, i, j, k) else bd;
+                    out.samples += 1;
+                    if (va == vb) continue;
+                    if (va > vb) {
+                        out.higher += 1;
+                        continue;
+                    }
+                    out.lowered += 1;
+                    const drop = vb - va;
+                    out.max_drop = @max(out.max_drop, drop);
+                    const q = [3]f64{ @floatFromInt(o[0] + i * sp), @floatFromInt(o[1] + j * sp), @floatFromInt(o[2] + k * sp) };
+                    const inside = child != null and distToRings(rings, q) <= zone;
+                    if (!inside) {
+                        out.outside += 1;
+                        out.max_drop_outside = @max(out.max_drop_outside, drop);
+                    }
+                }
+            }
+        }
+    }
+    return out;
+}
+
+test "G12 (a) the collar: against the hard union the collared junction is nowhere higher, lower only within the child's zone, by at most k/4 and by more than nothing" {
+    const gpa = testing.allocator;
+    var a = try junctionRun(gpa, null, .recent, 40);
+    defer a.deinit();
+    var b = try junctionRun(gpa, 0, .recent, 40);
+    defer b.deinit();
+    try guards.check(a.published());
+    const child: u32 = 1;
+    const zone: f64 = thresholds.g12Zone(maxRadius(a.rings.items[child].items), channel.band(1));
+    const d = try collarDiff(gpa, &a, &b, child, zone);
+    const k = maxCollar(&a);
+    std.debug.print("\nG12 (a): {d} samples; collared lower at {d}, higher at {d}, outside the child's zone ({d:.2} of its axis) {d}; largest drop {d:.3} against k/4 = {d:.3}; the collar acted on {d} samples over the run, provenance written {d}\n", .{ d.samples, d.lowered, d.higher, zone, d.outside, d.max_drop, k / 4, a.total.collar_samples, a.total.provenance_writes });
+    try testing.expectEqual(@as(u64, 0), d.higher);
+    try testing.expectEqual(@as(u64, 0), d.outside);
+    try testing.expect(d.lowered > 0);
+    try testing.expect(d.max_drop <= k / 4);
+}
+
+test "G12 (a) mutation: nothing is its own (`.none`) → the front beads into its own chain, the field lower far from the child" {
+    const gpa = testing.allocator;
+    var a = try junctionRun(gpa, null, .none, 40);
+    defer a.deinit();
+    var b = try junctionRun(gpa, 0, .recent, 40);
+    defer b.deinit();
+    const child: u32 = 1;
+    const zone: f64 = thresholds.g12Zone(maxRadius(a.rings.items[child].items), channel.band(1));
+    const d = try collarDiff(gpa, &a, &b, child, zone);
+    std.debug.print("\nG12 (a) mutation .none: lower at {d}, {d} of them outside the child's zone, the largest such drop {d:.3}\n", .{ d.lowered, d.outside, d.max_drop_outside });
+    try testing.expect(d.outside > 0);
+}
+
+test "G12 (a) the amendment: the coil's later turns are collared where they touch the earlier ones — self-touch beyond the reach is another front" {
+    const gpa = testing.allocator;
+    // One turn is 25 rings. In twenty steps the turns cannot touch; what
+    // the collar does act on is the coil's own INNER WALL five to seven
+    // rings back: a bend radius of 4 puts it within the collar's
+    // Euclidean reach (the chord) while beyond its arc reach — a coil
+    // tighter than the collar can tell from a self-touch. Recorded as
+    // the arc rule's limit, printed, not gated.
+    var a1 = try coilRun(gpa, null, .recent, null, 20);
+    defer a1.deinit();
+    var b1 = try coilRun(gpa, 0, .recent, null, 20);
+    defer b1.deinit();
+    const d1 = try collarDiff(gpa, &a1, &b1, null, 0);
+    var a = try coilRun(gpa, null, .recent, null, 80);
+    defer a.deinit();
+    var b = try coilRun(gpa, 0, .recent, null, 80);
+    defer b.deinit();
+    const d = try collarDiff(gpa, &a, &b, null, 0);
+    const k = maxCollar(&a);
+    std.debug.print("\nG12 (a) coil: after 80 steps {d} samples lower than the hard chain and {d} higher, largest drop {d:.3} against k/4 = {d:.3}; the collar acted on {d} samples (in the first 20 steps, before any turn could touch, {d} samples of the inner wall — the arc rule's limit at a bend radius of 4)\n", .{ d.lowered, d.higher, d.max_drop, k / 4, a.total.collar_samples, d1.lowered });
+    try testing.expectEqual(@as(u64, 0), d.higher);
+    try testing.expectEqual(@as(u64, 0), d1.higher);
+    try testing.expect(d.lowered > d1.lowered);
+    try testing.expect(d.max_drop <= k / 4);
+}
+
+test "G12 (a) mutation: its own at any age (`.own`) → the coil's self-touch is the hard crease, no sample lower than the hard chain" {
+    const gpa = testing.allocator;
+    var a = try coilRun(gpa, null, .own, null, 80);
+    defer a.deinit();
+    var b = try coilRun(gpa, 0, .recent, null, 80);
+    defer b.deinit();
+    const d = try collarDiff(gpa, &a, &b, null, 0);
+    std.debug.print("\nG12 (a) mutation .own: {d} samples lower than the hard chain after 80 steps (collar acted on {d})\n", .{ d.lowered, a.total.collar_samples });
+    try testing.expectEqual(@as(u64, 0), d.lowered);
+}
+
+const BandCheck = struct { provenanced: u64 = 0, exact: u64 = 0, collared: u64 = 0, mismatched: u64 = 0, chart_mismatch: u64 = 0, raised: u64 = 0, above_own: u64 = 0 };
+
+/// Every provenanced own sample: the capsule rebuilt from the ring
+/// records at (who, segment), its foot at the point, and the slot's own
+/// distance, the chart's s and θ read back; the carrier never above the
+/// slot (the union only lowers), and lower where a collar acted.
+fn bandCheck(gpa: std.mem.Allocator, w: *const World) !BandCheck {
+    var out = BandCheck{};
+    const snap = w.published();
+    const bs = try snap.bricks(gpa);
+    defer gpa.free(bs);
+    for (bs) |b| {
+        const bd = b.band();
+        var k: u32 = 0;
+        while (k < brick.N) : (k += 1) {
+            var j: u32 = 0;
+            while (j < brick.N) : (j += 1) {
+                var i: u32 = 0;
+                while (i < brick.N) : (i += 1) {
+                    const pv = b.provenanceAt(i, j, k) orelse continue;
+                    out.provenanced += 1;
+                    const cap = w.capsuleAt(pv.who, pv.segment) orelse {
+                        out.mismatched += 1;
+                        continue;
+                    };
+                    const p = b.pointAt(i, j, k);
+                    const q = [3]f64{ @floatFromInt(p[0]), @floatFromInt(p[1]), @floatFromInt(p[2]) };
+                    const ft = cap.foot(q);
+                    const expected = @min(bd, @max(cap.signedAt(ft), -bd));
+                    if (cap.chartS(ft) != pv.s or cap.chartTheta(ft) != pv.theta) out.chart_mismatch += 1;
+                    const own = b.get(Channel.own.bit(), i, j, k);
+                    const phi = b.get(Channel.surface.bit(), i, j, k);
+                    if (phi > own) out.above_own += 1;
+                    if (phi < own) out.collared += 1;
+                    if (own == expected) {
+                        out.exact += 1;
+                    } else if (own > expected) {
+                        out.raised += 1;
+                    } else out.mismatched += 1;
+                }
+            }
+        }
+    }
+    return out;
+}
+
+test "G12 (b) the bands: band 1 read through the provenance chart reproduces every deposit bit for bit, the carrier is never above it, and a cut leaves the scar its provenance" {
+    const gpa = testing.allocator;
+    var w = try junctionRun(gpa, null, .recent, 40);
+    defer w.deinit();
+    const c = try bandCheck(gpa, &w);
+    std.debug.print("\nG12 (b): {d} provenanced samples; {d} reproduce their deposit exactly, {d} raised, {d} mismatched; chart (s, θ) mismatches {d}; the carrier above its own slot at {d}, collared under it at {d}; tolerance {e}\n", .{ c.provenanced, c.exact, c.raised, c.mismatched, c.chart_mismatch, c.above_own, c.collared, thresholds.G12_BAND_TOL });
+    try testing.expect(c.provenanced > 1000);
+    try testing.expectEqual(c.provenanced, c.exact);
+    try testing.expectEqual(@as(u64, 0), c.chart_mismatch);
+    try testing.expectEqual(@as(u64, 0), c.above_own);
+    try testing.expect(c.collared > 0);
+    // Band 1 and 2 read at a provenanced sample on the parent's tube.
+    const centre = seedbed.sceneToLattice(.{ 0, 6, 0 });
+    const on_tube = [3]i64{ tree.floorI(centre[0]) + 3, tree.floorI(centre[1]), tree.floorI(centre[2]) };
+    const bark = w.bandQuery(w.published(), on_tube, .bark);
+    try testing.expect(bark.provenance != null);
+    try testing.expect(bark.band1 != null);
+    try testing.expectEqual(@as(u32, 0), bark.provenance.?.who);
+    // The scar remembers: a cut across the parent raises the carrier and
+    // the slots and writes no provenance, so the raised samples keep the
+    // parent's id and its chart.
+    try seedbed.damage(&w, .{ -6, 3, -6 }, .{ 6, 5, 6 });
+    try w.apply();
+    const after = try bandCheck(gpa, &w);
+    std.debug.print("G12 (b) the scar: {d} provenanced samples before the cut, {d} after; {d} raised above their deposit by the cut, still the parent's, charts intact ({d} mismatches)\n", .{ c.provenanced, after.provenanced, after.raised, after.chart_mismatch });
+    try testing.expectEqual(c.provenanced, after.provenanced);
+    try testing.expect(after.raised > 0);
+    try testing.expectEqual(@as(u64, 0), after.chart_mismatch);
+    try testing.expectEqual(@as(u64, 0), after.mismatched);
+}
+
+test "G12 (c) the sponge: a band-0 query gathers the carrier's coefficients and nothing else; a bark query pays for the provenance and the rings" {
+    const gpa = testing.allocator;
+    var w = try junctionRun(gpa, null, .recent, 30);
+    defer w.deinit();
+    const snap = w.published();
+    const bs = try snap.bricks(gpa);
+    defer gpa.free(bs);
+    var provenanced: u64 = 0;
+    var sponge_bytes: u64 = 0;
+    var bark_bytes: u64 = 0;
+    var sponge_extra: u64 = 0;
+    var bark_min: u64 = std.math.maxInt(u64);
+    for (bs) |b| {
+        var k: u32 = 0;
+        while (k < brick.N) : (k += 1) {
+            var j: u32 = 0;
+            while (j < brick.N) : (j += 1) {
+                var i: u32 = 0;
+                while (i < brick.N) : (i += 1) {
+                    const p = b.pointAt(i, j, k);
+                    const q = [3]i64{ p[0], p[1], p[2] };
+                    const sp = w.bandQuery(snap, q, .sponge);
+                    sponge_bytes += sp.bytes;
+                    if (sp.bytes != thresholds.G12_SPONGE_BYTES or sp.band1 != null or sp.provenance != null) sponge_extra += 1;
+                    if (b.provenanceAt(i, j, k) == null) continue;
+                    provenanced += 1;
+                    const bk = w.bandQuery(snap, q, .bark);
+                    bark_bytes += bk.bytes;
+                    bark_min = @min(bark_min, bk.bytes);
+                    if (bk.band1 == null) sponge_extra += 1;
+                }
+            }
+        }
+    }
+    std.debug.print("\nG12 (c): {d} provenanced samples; a sponge query {d} bytes each, a bark query {d} at least ({d:.1} on average) — the four provenance samples and {d}-byte ring records\n", .{ provenanced, thresholds.G12_SPONGE_BYTES, bark_min, @as(f64, @floatFromInt(bark_bytes)) / @as(f64, @floatFromInt(provenanced)), @sizeOf(loam.front.Ring) });
+    try testing.expect(provenanced > 1000);
+    try testing.expectEqual(@as(u64, 0), sponge_extra);
+    try testing.expect(bark_min >= thresholds.G12_SPONGE_BYTES + 4 * 4 + 2 * @sizeOf(loam.front.Ring));
+}
+
+// ── The inner elbow: Christian's number, measured ────────────────────────
+
+const Crease = struct {
+    /// The largest turn of the surface normal between neighbouring hits,
+    /// radians per lattice unit of separation — a crease concentrates
+    /// the turn, a fillet spreads it.
+    turn_per_unit: f64 = 0,
+    /// The median turn per unit over the sweep: the surface's own turn
+    /// there — the tube's bend along a generator, its curvature across —
+    /// against which the fold reads as an excess.
+    baseline: f64 = 0,
+    hits: usize = 0,
+    /// Where the largest turn sat, as the ray's angle from the bisector.
+    at_deg: f64 = 0,
+};
+
+/// Rays from `centre` in the plane (u, v), at angles ±`half` about u, to
+/// the reconstructed zero set (a march then a bisection on the spline);
+/// the B-spline gradient at each hit, and the turn between neighbours.
+fn creaseProfile(snap: *const loam.Snapshot, centre: [3]f64, u: [3]f64, v: [3]f64, half: f64, n: usize) Crease {
+    var out = Crease{};
+    var prev_g: ?[3]f64 = null;
+    var prev_p: [3]f64 = undefined;
+    var turns: [256]f64 = undefined;
+    var nt: usize = 0;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const psi = -half + 2 * half * @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(n - 1));
+        const cp = @cos(psi);
+        const sn = @sin(psi);
+        const d = [3]f64{ cp * u[0] + sn * v[0], cp * u[1] + sn * v[1], cp * u[2] + sn * v[2] };
+        // March out to the first sign change, then bisect.
+        var t0: f64 = 0;
+        var t1: f64 = 0.1;
+        var found = false;
+        while (t1 < 30) : ({
+            t0 = t1;
+            t1 += 0.1;
+        }) {
+            const p = [3]f64{ centre[0] + d[0] * t1, centre[1] + d[1] * t1, centre[2] + d[2] * t1 };
+            if (probe(snap, p, .spline) >= 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) continue;
+        var it: usize = 0;
+        while (it < 40) : (it += 1) {
+            const tm = 0.5 * (t0 + t1);
+            const p = [3]f64{ centre[0] + d[0] * tm, centre[1] + d[1] * tm, centre[2] + d[2] * tm };
+            if (probe(snap, p, .spline) >= 0) t1 = tm else t0 = tm;
+        }
+        const p = [3]f64{ centre[0] + d[0] * t1, centre[1] + d[1] * t1, centre[2] + d[2] * t1 };
+        const jet = snap.sampleJet(Channel.surface.bit(), p) orelse continue;
+        const g = loam.world.normalize(.{ jet.grad[0], jet.grad[1], jet.grad[2] });
+        out.hits += 1;
+        if (prev_g) |pg| {
+            const turn = std.math.acos(@min(1.0, @max(-1.0, loam.world.dot(g, pg))));
+            const sep = loam.world.len3(.{ p[0] - prev_p[0], p[1] - prev_p[1], p[2] - prev_p[2] });
+            if (sep > 1e-9) {
+                if (nt < turns.len) {
+                    turns[nt] = turn / sep;
+                    nt += 1;
+                }
+                if (turn / sep > out.turn_per_unit) {
+                    out.turn_per_unit = turn / sep;
+                    out.at_deg = psi * 180.0 / std.math.pi;
+                }
+            }
+        }
+        prev_g = g;
+        prev_p = p;
+    }
+    if (nt > 0) {
+        std.mem.sort(f64, turns[0..nt], {}, std.sort.asc(f64));
+        out.baseline = turns[nt / 2];
+    }
+    return out;
+}
+
+/// The inner elbow at ring `k` of a front: rays from the ring's centre
+/// in the plane of the bend, about the inner bisector (toward the centre
+/// of curvature); and the outer, opposite.
+fn elbowAt(snap: *const loam.Snapshot, rings: []const loam.front.Ring, k: usize) struct { inner: Crease, outer: Crease, bend_deg: f64 } {
+    const a = rings[k];
+    const b = rings[k + 1];
+    const bend = b.bendFrom(&a);
+    const u = loam.world.normalize(.{ b.dir[0] - a.dir[0], b.dir[1] - a.dir[1], b.dir[2] - a.dir[2] });
+    const v = loam.world.normalize(.{ b.dir[0] + a.dir[0], b.dir[1] + a.dir[1], b.dir[2] + a.dir[2] });
+    // A sweep of ±40° from the ring's centre reaches about a radius along
+    // the tube either way: across the fold, not along the bend.
+    const half = 40.0 * std.math.pi / 180.0;
+    return .{
+        .inner = creaseProfile(snap, a.pos, u, v, half, 81),
+        .outer = creaseProfile(snap, a.pos, .{ -u[0], -u[1], -u[2] }, v, half, 81),
+        .bend_deg = bend * 180.0 / std.math.pi,
+    };
+}
+
+fn printElbow(label: []const u8, r: f32, e: anytype) void {
+    const deg = 180.0 / std.math.pi;
+    std.debug.print("  {s:<30} bend {d:6.2}°/ring  inner fold {d:7.2}°/unit over a baseline of {d:6.2} (excess {d:6.2}, at {d:6.1}°)  outer {d:6.2} over {d:6.2}  tube 1/r {d:5.2}°/unit  trigger h/r {d:5.2}°\n", .{ label, e.bend_deg, e.inner.turn_per_unit * deg, e.inner.baseline * deg, (e.inner.turn_per_unit - e.inner.baseline) * deg, e.inner.at_deg, e.outer.turn_per_unit * deg, e.outer.baseline * deg, deg / r, thresholds.elbowTrigger(r, 1) * deg });
+}
+
+test "the inner elbow, measured: crease angle at the concave fold against the ring-to-ring bend, on the sapling, the coil and the bud junction" {
+    const gpa = testing.allocator;
+    std.debug.print("\nThe inner elbow ({s}): the normal's turn per lattice unit across the fold, from the B-spline jet at hits on the zero set\n", .{@tagName(builtin.mode)});
+    // The sapling's trunk at its sharpest ring, and the sharpest ring of any front.
+    {
+        var g: GrownWorld = undefined;
+        try g.grow(gpa, 7, 40, null);
+        defer g.deinit();
+        const snap = g.published();
+        var best_k: usize = 1;
+        var best_bend: f64 = 0;
+        const trunk = g.world.rings.items[0].items;
+        var k: usize = 1;
+        while (k + 1 < trunk.len) : (k += 1) {
+            const bend = trunk[k + 1].bendFrom(&trunk[k]);
+            if (bend > best_bend) {
+                best_bend = bend;
+                best_k = k;
+            }
+        }
+        printElbow("sapling trunk, sharpest ring", trunk[best_k].envelope, elbowAt(snap, trunk, best_k));
+        // And a typical ring: the trunk's median bend.
+        var bends: [256]f64 = undefined;
+        var nb: usize = 0;
+        k = 1;
+        while (k + 1 < trunk.len and nb < bends.len) : (k += 1) {
+            bends[nb] = trunk[k + 1].bendFrom(&trunk[k]);
+            nb += 1;
+        }
+        std.mem.sort(f64, bends[0..nb], {}, std.sort.asc(f64));
+        const median = bends[nb / 2];
+        k = 1;
+        while (k + 1 < trunk.len) : (k += 1) {
+            if (trunk[k + 1].bendFrom(&trunk[k]) == median) break;
+        }
+        printElbow("sapling trunk, median ring", trunk[k].envelope, elbowAt(snap, trunk, k));
+    }
+    // The coil at its set bend: a fold every ring, 14° each.
+    {
+        var w = try coilRun(gpa, null, .recent, null, 40);
+        defer w.deinit();
+        const rings = w.rings.items[0].items;
+        printElbow("coil 0.25 rad/unit, ring 20", rings[20].envelope, elbowAt(w.published(), rings, 20));
+    }
+    // The bud junction, collared and hard: rays from the junction on the
+    // parent's axis, in the plane of the parent and the child, about the
+    // bisector of the inner corner.
+    for ([_]?f32{ null, 0 }) |collar| {
+        var w = try junctionRun(gpa, collar, .recent, 40);
+        defer w.deinit();
+        const parent = w.rings.items[0].items;
+        const child = w.rings.items[1].items;
+        const jr = parent[seedbed.JUNCTION_STEP];
+        const cd = child[1].dir;
+        const u = loam.world.normalize(.{ jr.dir[0] + cd[0], jr.dir[1] + cd[1], jr.dir[2] + cd[2] });
+        const w2 = loam.world.normalize(.{ cd[0] - jr.dir[0], cd[1] - jr.dir[1], cd[2] - jr.dir[2] });
+        const c = creaseProfile(w.published(), jr.pos, u, w2, 40.0 * std.math.pi / 180.0, 81);
+        const deg = 180.0 / std.math.pi;
+        std.debug.print("  {s:<30} corner {d:6.2}°       inner fold {d:7.2}°/unit over a baseline of {d:6.2} (excess {d:6.2}, at {d:6.1}°)  the join's k {d:.2}\n", .{ if (collar == null) "bud junction, collared" else "bud junction, hard", child[1].bendFrom(&jr) * deg, c.turn_per_unit * deg, c.baseline * deg, (c.turn_per_unit - c.baseline) * deg, c.at_deg, if (collar == null) w.fronts.items[1].params.collar * child[1].envelope else 0 });
+    }
+}

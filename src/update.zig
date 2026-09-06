@@ -41,12 +41,26 @@ pub const Spawn = struct {
 
 /// One smooth-union operand for the surface channel: a plane of signed
 /// distances (+inf where the op says nothing), the collar radius, and
-/// the order the commit applies it in.
+/// the order the commit applies it in. A FRONT's op also carries its
+/// provenance (R12, P2.2): who (the front id plus one), the segment, the
+/// arc length of its start ring and the collar's reach behind it, and
+/// two planes of chart coordinates — (s, θ) at each sample's foot. The
+/// commit writes the four provenance channels where this op's distance
+/// is nearer than what stood, and reads `who` and `chart_s` of what
+/// stood to choose k: zero into the front's own deposit within the
+/// reach, `k` into anything else. An authored op has no provenance
+/// (`who` zero) and writes none.
 pub const SurfaceOp = struct {
     plane: *Plane,
     k: f32,
     order: u64,
     mode: Mode = .join,
+    who: u32 = 0,
+    segment: u32 = 0,
+    s0: f64 = 0,
+    reach: f32 = 0,
+    chart_s: ?*Plane = null,
+    chart_theta: ?*Plane = null,
 
     /// Join is the smooth union (what growth does); cut is the CSG
     /// difference φ = max(φ, −δ) with δ the cutter's own signed distance
@@ -77,6 +91,7 @@ pub const RegionUpdate = struct {
     /// programming error, loudly.
     pub fn delta(self: *RegionUpdate, a: std.mem.Allocator, bit: u6) !*Plane {
         std.debug.assert(bit != channel.Channel.surface.bit());
+        std.debug.assert(channel.rule(bit) != .set_by_winner and channel.rule(bit) != .distance); // provenance and the slots ride on the op
         if (self.deltas[bit]) |p| return p;
         const p = try a.create(Plane);
         @memset(p, 0);
@@ -100,8 +115,25 @@ pub const RegionUpdate = struct {
         const p = try a.create(Plane);
         @memset(p, SurfaceOp.NONE);
         try self.surface_ops.append(a, .{ .plane = p, .k = k, .order = order, .mode = mode });
-        self.mask |= channel.Channel.surface.mask();
+        self.mask |= channel.Channel.surface.mask() | channel.SLOT_MASK;
         return p;
+    }
+
+    pub const FrontPlanes = struct { phi: *Plane, s: *Plane, theta: *Plane };
+
+    /// A front's op: the join with its provenance, ordered by front id.
+    /// The chart planes start at zero and are read only where the
+    /// distance plane says something.
+    pub fn surfaceOpFront(self: *RegionUpdate, a: std.mem.Allocator, k: f32, who: u32, segment: u32, s0: f64, reach: f32) !FrontPlanes {
+        const p = try a.create(Plane);
+        @memset(p, SurfaceOp.NONE);
+        const cs = try a.create(Plane);
+        @memset(cs, 0);
+        const ct = try a.create(Plane);
+        @memset(ct, 0);
+        try self.surface_ops.append(a, .{ .plane = p, .k = k, .order = who - 1, .mode = .join, .who = who, .segment = segment, .s0 = s0, .reach = reach, .chart_s = cs, .chart_theta = ct });
+        self.mask |= channel.Channel.surface.mask() | channel.PROVENANCE_MASK | channel.SLOT_MASK;
+        return .{ .phi = p, .s = cs, .theta = ct };
     }
 
     pub fn isEmpty(self: *const RegionUpdate) bool {

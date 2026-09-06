@@ -44,6 +44,10 @@ pub const Plane = [SAMPLES]f32;
 
 pub const Error = error{ OutOfMemory, GaugeConflict };
 
+/// What a sample remembers of its deposit (R12): the front, the ring
+/// index of the sweep, and the chart's (s, θ) at the sample's foot.
+pub const Provenance = struct { who: u32, segment: u32, s: f32, theta: f32 };
+
 pub const Brick = struct {
     key: Key,
     mask: channel.Mask = 0,
@@ -201,6 +205,18 @@ pub const Brick = struct {
         return p[index(i, j, k)];
     }
 
+    /// The provenance of sample (i, j, k), or null where nobody laid it
+    /// (authored tissue, the void, a plane never written).
+    pub fn provenanceAt(self: *const Brick, i: u32, j: u32, k: u32) ?Provenance {
+        const id = channel.idOf(self.get(channel.Channel.who.bit(), i, j, k)) orelse return null;
+        return .{
+            .who = id,
+            .segment = @intFromFloat(self.get(channel.Channel.segment.bit(), i, j, k)),
+            .s = self.get(channel.Channel.chart_s.bit(), i, j, k),
+            .theta = self.get(channel.Channel.chart_theta.bit(), i, j, k),
+        };
+    }
+
     /// Lattice point of sample (i, j, k).
     pub fn pointAt(self: *const Brick, i: u32, j: u32, k: u32) [3]u32 {
         const o = self.origin();
@@ -259,6 +275,19 @@ pub const Brick = struct {
             t[a] = @floatCast(u - @as(f64, @floatFromInt(ii)));
         }
         return .{ .cell = cell, .t = t };
+    }
+
+    /// The sample nearest `p` (lattice units) inside the closed cube —
+    /// a hanging-node rule for what cannot be interpolated: provenance.
+    /// An id averaged with its neighbour is a third front; the nearer
+    /// coarse sample's is the one the fine point would have been written
+    /// by. Ties go to the lower index.
+    pub fn nearest(self: *const Brick, bit: u6, p: [3]f64) f32 {
+        const pl = self.plane(bit) orelse return self.absentValue(bit);
+        const l = self.locate(p);
+        var ijk: [3]u32 = undefined;
+        inline for (0..3) |a| ijk[a] = if (l.t[a] > 0.5) l.cell[a] + 1 else l.cell[a];
+        return pl[index(ijk[0], ijk[1], ijk[2])];
     }
 
     /// Trilinear reconstruction at `p` (lattice units) inside the closed

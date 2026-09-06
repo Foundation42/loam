@@ -14,6 +14,8 @@ run per edit makes the harness the activity rather than the work.
     zig build py-test                         # the ctypes binding, and G1 across two PROCESSES
     zig build run -- --units 8 --steps 40     # the step through work(8) calls: the same hash
     zig build run -- --cut 0.5 --steps 40     # CUT: fronts, half the head, finish; the cut on the trace
+    zig build run -- --scene junction --steps 40   # a bud junction: the collar's scene (G12); --collar 0 is the hard reference
+    zig build run -- --scene coil --steps 80       # a coiling tendril: self-touch, the inner elbow
     zig build run -- --help                   # loam-run, the seedbed
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
@@ -109,6 +111,30 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   at commit. Fronts sweep capsules with k = 0: a chain of a front's own
   capsules smooth-unioned with k > 0 beads at every joint (the ledger,
   P2.1); the collar is P2.2's.
+- **The collar is gated by provenance, through two slots (P2.2, G12).**
+  A capsule unions HARD into samples its own front laid within the
+  collar's REACH behind its start ring — `thresholds.collarReach`,
+  √(k² + 2ρk), measured along the arc through `chart_s`, never counted
+  in segments (a count is a function of dt) — and SMOOTH, with k the
+  ring's radius (`Params.collar` × envelope, "the child's radius at the
+  join"), into everything else: another front's tube, authored tissue,
+  its own older tube (self-touch beyond the reach is another front —
+  Christian's amendment). Every sample keeps `own` (the nearest
+  contributor's own distance, before any collar), `other` (the
+  runner-up's) and `collar` (the join's k, the least willing member's),
+  and `surface` is their ONE smooth union, recomposed when a slot
+  changes. With one slot a child's chain of capsules collared the same
+  parent sample once per capsule (1.46 deep against the smin's 0.75).
+  Provenance — `who` (id + 1, zero is nobody), `segment`, `chart_s`,
+  `chart_theta` — is written by the WINNER (the op nearer than what
+  stood) and by nothing else: a cut writes none, so the scar remembers
+  who grew there. None of the seven is ever a delta, reaches across a
+  face, or scores attention; the seam pass counts none of them toward
+  the change floor (a copied `who` of six once woke every neighbour of
+  a tube). The ring history (`World.rings`) is optional history, not in
+  the content hash; `Capsule.between` rebuilds any sweep from it with
+  the front's own arithmetic, and G12 (b) reads every deposit back
+  bit for bit. `--collar 0` reproduces the previous carrier exactly.
 - **A plane is an 11³ block.** The brick's 9³ samples sit at block
   coordinates 1..9; the halo (0 and 10) is the neighbours' layer beyond
   each face, copied at commit by the halo pass. `Brick.index(i, j, k)`

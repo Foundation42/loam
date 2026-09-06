@@ -81,11 +81,24 @@ pub const Params = struct {
     /// clamped at the floor; the demand for a finer gauge is counted
     /// (`StepStats.below_faithful`), and refinement (D2) is where it goes.
     min_radius: f32 = 0,
-    /// Collar radius k of the front's smooth union (R10), lattice units.
-    /// Zero — the hard union — in P2.1: a chain of a front's own capsules
-    /// smooth-unioned with k > 0 dips k/4 at every joint (beads); the
-    /// gradient-gated collar is P2.2's, with G12.
-    collar: f32 = 0.0,
+    /// The collar (R10, P2.2): the radius k of the smooth union where
+    /// this front's capsule meets ANOTHER front's deposit, authored
+    /// tissue, or its own tube beyond the collar's reach (self-touch:
+    /// the ammonite, the creeper doubling back), as a fraction of the
+    /// ring's envelope — 1 is "the child's radius at the join",
+    /// Christian's number with a biological referent; 0 is the hard
+    /// union everywhere, G12 (a)'s mutation. Into its own RECENT
+    /// deposit the union is always hard: a chain of a front's own
+    /// capsules smooth-unioned with k > 0 dips k/4 at every joint
+    /// (beads, the ledger P2.1), and provenance says which is which
+    /// (`thresholds.collarReach`).
+    collar: f32 = 1.0,
+    /// A fixed turn of the heading about the world's vertical, radians
+    /// per lattice unit of arc — a tendril's coil. Zero in every scene
+    /// but the inner elbow's deliberately tight curl (the ledger,
+    /// "P2.2 — the collar"), where the bend between rings has to be a
+    /// number the scene chose.
+    coil: f32 = 0.0,
     // Branching: a slot whose |residual| exceeds bud_threshold × envelope
     // for bud_rings consecutive rings is a bud; a bud fires when the front
     // is old enough and its cooldown has run.
@@ -96,6 +109,34 @@ pub const Params = struct {
     max_generation: u8 = 3,
     min_age: u32 = 12,
     branch_cooldown: u32 = 10,
+};
+
+/// One ring of a front's history — the loft table (R12, P2.2): what the
+/// capsule between this ring and the previous one was swept from, kept
+/// per front on the world in ring order, appended by the commit in id
+/// order. A band-1 query reads the sample's provenance (who, segment)
+/// and evaluates THIS at its chart; G12 (b) rebuilds the capsule from
+/// two of these and reads the deposit back bit for bit. The residual is
+/// the ring's AFTER its CA step and BEFORE a bud's slot is reset, which
+/// is what the capsule used; `bud` marks the slot that left — the scar.
+pub const Ring = struct {
+    segment: u32,
+    s: f64,
+    pos: [3]f64,
+    dir: [3]f64,
+    normal: [3]f64,
+    roll: f64,
+    envelope: f32,
+    r: [SLOTS]f32 = [_]f32{0} ** SLOTS,
+    tag: [SLOTS]u8 = [_]u8{0} ** SLOTS,
+    bud: ?u8 = null,
+
+    /// The bend from the previous ring's heading to this one's, radians.
+    pub fn bendFrom(self: *const Ring, prev: *const Ring) f64 {
+        var d: f64 = 0;
+        inline for (0..3) |a| d += self.dir[a] * prev.dir[a];
+        return std.math.acos(@min(1.0, @max(-1.0, d)));
+    }
 };
 
 pub const Front = struct {
@@ -114,6 +155,9 @@ pub const Front = struct {
     age: u32 = 0,
     cooldown: u32 = 0,
     born_epoch: u64 = 0,
+    /// Rings swept so far: the ring index the next capsule carries as its
+    /// `segment` is this plus one. The seed is ring zero.
+    segment: u32 = 0,
     morphogens: [4]f32 = .{ 0, 0, 0, 0 },
     ring: [SLOTS]Slot = [_]Slot{.{}} ** SLOTS,
     params: Params = .{},
@@ -125,8 +169,41 @@ pub const Front = struct {
     prev_dir: [3]f64 = .{ 0, 1, 0 },
     prev_normal: [3]f64 = .{ 0, 0, 1 },
     prev_roll: f64 = 0,
+    prev_s: f64 = 0,
     prev_envelope: f32 = 0,
     prev_r: [SLOTS]f32 = [_]f32{0} ** SLOTS,
+
+    /// The ring as the sweep saw it — what `Ring` records for the history.
+    pub fn ringRecord(self: *const Front, envelope: f32) Ring {
+        var r = Ring{
+            .segment = self.segment,
+            .s = self.s,
+            .pos = self.pos,
+            .dir = self.dir,
+            .normal = self.normal,
+            .roll = self.roll,
+            .envelope = envelope,
+        };
+        for (self.ring, 0..) |sl, i| {
+            r.r[i] = sl.r;
+            r.tag[i] = @intCast(@intFromEnum(sl.tag));
+        }
+        return r;
+    }
+
+    /// The previous ring, as the sweep starts from it.
+    pub fn prevRing(self: *const Front) Ring {
+        return .{
+            .segment = if (self.segment > 0) self.segment - 1 else 0,
+            .s = self.prev_s,
+            .pos = self.prev_pos,
+            .dir = self.prev_dir,
+            .normal = self.prev_normal,
+            .roll = self.prev_roll,
+            .envelope = self.prev_envelope,
+            .r = self.prev_r,
+        };
+    }
 
     /// Canonical bytes: every field, fixed layout, no padding — what the
     /// hash and the dump agree on.
@@ -144,6 +221,7 @@ pub const Front = struct {
         try w.writeInt(u32, self.age, .little);
         try w.writeInt(u32, self.cooldown, .little);
         try w.writeInt(u64, self.born_epoch, .little);
+        try w.writeInt(u32, self.segment, .little);
         for (self.morphogens) |m| try w.writeInt(u32, @bitCast(m), .little);
         for (self.ring) |sl| {
             try w.writeInt(u32, @bitCast(sl.r), .little);
@@ -164,6 +242,7 @@ pub const Front = struct {
             for (v) |c| try w.writeInt(u64, @bitCast(c), .little);
         }
         try w.writeInt(u64, @bitCast(self.prev_roll), .little);
+        try w.writeInt(u64, @bitCast(self.prev_s), .little);
         try w.writeInt(u32, @bitCast(self.prev_envelope), .little);
         for (self.prev_r) |r| try w.writeInt(u32, @bitCast(r), .little);
     }

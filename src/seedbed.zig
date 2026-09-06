@@ -183,6 +183,18 @@ pub fn capsuleLattice(w: *World, p0: [3]f64, p1: [3]f64, r: f64, k: f32, gauge: 
     }
 }
 
+/// Bud a child from front `parent` at ring slot `slot`, exactly as the
+/// front pass would from a bud tag — on the parent's last ring, out
+/// along the slot's radial at the branch angle, the child's radius by
+/// `child_ratio`. Queued; the next step assigns its id. The junction
+/// scene's second front (P2.2).
+pub fn bud(w: *World, parent: u32, slot: usize) !void {
+    const f = &w.fronts.items[parent];
+    var sp = w.budSpawn(f, slot, f.prev_envelope);
+    sp.params.length = 24;
+    try w.spawnFront(sp);
+}
+
 /// Spawn a front at a world position with a heading. Queued; `apply` or
 /// the next step assigns its id.
 pub fn plant(w: *World, pos_world: [3]f64, dir: [3]f64, params: front.Params) !void {
@@ -770,7 +782,20 @@ pub fn tropismEnsemble(gpa: std.mem.Allocator, n: u64, d: f64, coeff: f32, steps
 
 /// Named scenes. The same handful the gates use, so `loam-run --scene`
 /// shows exactly what a gate saw.
-pub const Preset = enum { sapling, blob, seams, diffusion, wound };
+/// `junction` and `coil` are P2.2's (G12 and the inner elbow): a straight
+/// parent with the ring CA on and no steering, and a child budded from
+/// it by hand at JUNCTION_STEP (`bud`); and a tendril coiling about the
+/// vertical at a bend the scene chose, touching its own previous turn.
+pub const Preset = enum { sapling, blob, seams, diffusion, wound, junction, coil };
+
+/// The step the junction scene buds its child at — the parent's twelfth
+/// ring, where its ring CA has had time to make bark.
+pub const JUNCTION_STEP: u64 = 12;
+/// The coil's bend, radians per lattice unit of arc: 14.3° a ring at
+/// dt = 1 s, a helix of radius 4 for a tube of radius 2, rising 3.75 a
+/// turn so consecutive turns touch.
+pub const COIL_BEND: f32 = 0.25;
+pub const COIL_RADIUS: f32 = 2.0;
 
 pub const Scene = struct {
     /// Operators the scene mounted; the world holds pointers into here,
@@ -796,6 +821,28 @@ pub const Scene = struct {
     avoid: ?f32 = null,
     inhibit: ?f32 = null,
     persist: ?f32 = null,
+    /// The collar as a fraction of the ring's radius (`Params.collar`);
+    /// null keeps the params' default of one. Zero is G12 (a)'s hard
+    /// reference (`loam-run --collar 0`).
+    collar: ?f32 = null,
+
+    /// The junction and coil scenes' front: no steering, no wander, no
+    /// draw-down (the coil returns over its own path and must not starve),
+    /// no buds of its own; the ring CA on, so the bark is real.
+    fn straightParams(self: *const Scene) front.Params {
+        var p = front.Params{};
+        p.tropism_light = 0;
+        p.tropism_stimulus = 0;
+        p.avoid_self = 0;
+        p.wander = 0;
+        p.taper = 0;
+        p.bulge = 0;
+        p.consume = 0;
+        p.max_generation = 0;
+        p.inhibit = 9; // never inhibited: a coil runs into its own last turn
+        if (self.collar) |c| p.collar = c;
+        return p;
+    }
 
     pub fn build(self: *Scene, w: *World, preset: Preset) !void {
         switch (preset) {
@@ -823,6 +870,22 @@ pub const Scene = struct {
                 self.decay[0] = .{ .bit = Channel.growth.bit(), .tau = 20 };
                 try w.addOperator(operators.operatorOf(operators.Decay, &self.decay[0]));
             },
+            .junction => {
+                try blobLattice(w, Channel.growth.bit(), sceneToLattice(.{ 0, 24, 0 }), 56, 1.0, 0);
+                var params = self.straightParams();
+                params.length = 40;
+                try plantLattice(w, sceneToLattice(.{ 0, 0, 0 }), .{ 0, 1, 0 }, params);
+                try w.apply();
+            },
+            .coil => {
+                try blobLattice(w, Channel.growth.bit(), sceneToLattice(.{ 0, 0, 0 }), 48, 1.0, 0);
+                var params = self.straightParams();
+                params.radius = COIL_RADIUS;
+                params.coil = COIL_BEND;
+                params.length = 80;
+                try plantLattice(w, sceneToLattice(.{ 0, -8, 0 }), .{ 1, 0.15, 0 }, params);
+                try w.apply();
+            },
             .sapling, .wound => {
                 try blobLattice(w, Channel.growth.bit(), sceneToLattice(.{ 0, 24, 0 }), 56, 1.0, 0);
                 try blobLattice(w, Channel.light.bit(), sceneToLattice(self.light), 64, 1.0, 0);
@@ -840,6 +903,7 @@ pub const Scene = struct {
                 if (self.avoid) |a| params.avoid_self = a;
                 if (self.inhibit) |v| params.inhibit = v;
                 if (self.persist) |v| params.persist = v;
+                if (self.collar) |c| params.collar = c;
                 try plantLattice(w, sceneToLattice(.{ 0, 0, 0 }), .{ 0, 1, 0 }, params);
                 try w.apply();
                 // No decay on Activity: it is a touch time now, and warmth is

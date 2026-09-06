@@ -34,7 +34,7 @@ w.run(60)
 print(w.root_hash().hex(), w.stats()["fronts"])
 ```
 
-## Status — Phase 2.1, 2.1a and 2.1b: the continuous carrier, attention, and the budget
+## Status — Phase 2.2: the collar, provenance and the bands, on the continuous carrier
 
 Matter is the zero set of a continuous signed implicit, `surface`,
 stored in 11³ blocks (the brick's 9³ samples and one halo layer from the
@@ -63,6 +63,22 @@ snapshot's hash and the trace: an input like the seed. The bridge reads
 the same bookkeeping as its dirty set: a brick keeps its slot on the GPU
 and is re-uploaded only when it changed.
 
+Where a child meets its parent the two tubes join through a collar of
+the child's radius — a smooth union that is real only there: along a
+front's own chain the union is hard, so no bead sits at a joint, and a
+tendril that curls back onto its own older tube meets it as it would
+another front. Provenance decides which is which: every sample a front
+lays remembers who laid it, at which ring, and where on that ring's
+chart, so the bark's finer bands read back through the ring history —
+a band-1 read through a sample's chart rebuilds its deposit to the bit
+— and a wound keeps the id of whoever grew there. Each sample keeps its
+two nearest contributors apart and the carrier is their one smooth
+union, so a child arriving as a chain of capsules is collared once
+(the ledger, "P2.2 — the collar, provenance and the bands", with the
+inner elbow of a hard chain measured against a bud's crease). `loam-run
+--scene junction` and `--scene coil` are the scenes; `--collar 0` is
+the hard union.
+
 The representation states what it can know — a structural feature of
 radius r belongs at a gauge with h ≤ r/2 (G13, struck by Christian from
 `tools/g13_predict.py`'s theory before the sweep ran) — and the finest
@@ -81,6 +97,7 @@ floor").
 
 | gate | claim | as measured (Debug, serial) |
 |---|---|---|
+| G12 collar | the smooth union happens where a child meets its parent and nowhere along a chain; the bark's bands read back through provenance | against the same scene under the hard union the collared junction is nowhere higher and lower only within the child's zone, by at most k/4 (468 samples, 0.520 against 0.525); a coil is collared where its turns touch and hard where its own recent capsules meet; band 1 read through each sample's chart rebuilds its deposit bit for bit (10,126 of 10,126) and a cut leaves the scar its provenance; a sponge-class query gathers 256 bytes and nothing of the history; "nothing is its own" beads the chain, "its own at any age" creases the coil |
 | G13 thin feature | sub-gauge structure survives the B-spline as theory predicts | survival and radius agree with the predictor to four decimals across three orientations and nine offsets; a capsule at r/h ≥ 1 survives, at r/h ≥ 2 its radius is within 4.6%; the gauge doubled loses it |
 | G9 continuity | the carrier is C2 across a same-gauge seam | 91,193 shared-face pairs, value, gradient and Hessian from both holders: exactly equal; no halo → they differ |
 | G10 bound | the summary's Lipschitz bound is conservative | 19,800 random pairs, 0 exceed it; the old axis-only bound is exceeded 45 times |
@@ -123,6 +140,8 @@ zig build run -- --scene wound --damage -10,8,-10,10,16,10@20 --steps 60 --budge
 zig build run -- --steps 160 --budget-fraction 0.5 --budget-order no_lag   # G14 (e)'s mutation, as a number
 zig build run -- --steps 40 --units 8           # the step through work(8) calls: the plain step's hash
 zig build run -- --steps 40 --cut 0.5 --trace run.txt   # CUT after the fronts and half the head; the cut point on every `# step` line
+zig build run -- --scene junction --steps 40    # a bud junction: the child collars into its parent at its own radius; --collar 0 is the hard union
+zig build run -- --scene coil --steps 80        # a coiling tendril: hard along its own recent chain, collared where its turns touch
 python3 -m unittest discover -s py/tests    # after zig build
 zig build test                              # the gates
 ```
@@ -143,22 +162,22 @@ transcript (`--cut 0.5`).
 | path | what |
 |---|---|
 | `src/lattice.zig` | the 20-bit dyadic lattice, Morton keys, the world↔lattice door |
-| `src/channel.zig` | channel bits, the registry with its user range, per-channel clamps |
+| `src/channel.zig` | channel bits, the registry with its user range, per-channel clamps; the seven of P2.2 — who, segment, chart_s, chart_theta (set by the winner), own, other, collar (the two slots and the join's k) |
 | `src/brick.zig` | 8-cell bricks at a gauge, 11³ blocks (9³ samples and a halo), the cubic B-spline and its derivatives, popcount-packed planes |
 | `src/summary.zig` | the conservative node payload: tight bounds, mask, ranges, Lipschitz bounds, majorant, version, and attention — the last change's magnitude and time, merged by max, decayed where it is read |
 | `src/fmath.zig` | the sim's own sin, cos and exp: the same bits in every binary |
 | `src/tree.zig` | the persistent 8-way tree, Merkle hashes, snapshots (the active set, since when each brick is owed, the budget the step ran under), point lookup and sampling, the attention walk |
-| `src/update.zig` | region-local update buffers: deltas, surface ops (join, cut), materialise, spawns |
-| `src/world.zig` | the step: the head under a budget (the fronts' bricks first, never cut; then the residual's score) → operate → fronts (the capsule sweep) → commit (frontier, seams, halos, summaries, the attention bookkeeping) → publish; the hazard-slot reader |
+| `src/update.zig` | region-local update buffers: deltas, surface ops (join, cut — a front's with its provenance and charts), materialise, spawns |
+| `src/world.zig` | the step: the head under a budget (the fronts' bricks first, never cut; then the residual's score) → operate → fronts (the capsule sweep, the charts) → commit (the two slots and the collar, frontier, seams, halos, summaries, the attention bookkeeping) → publish; the ring history and the band query; the hazard-slot reader |
 | `src/operators.zig` | Diffusion, Decay, Advection, Healing; the operator vtable |
-| `src/front.zig` | the Lagrangian front carrying loop-loft's ring |
+| `src/front.zig` | the Lagrangian front carrying loop-loft's ring; the ring record the history keeps |
 | `src/ray.zig` | the traversal cursor: near-to-far, summary rejection, the `--no-skip` instrument; the sphere tracer |
 | `src/guards.zig` | every invariant, checkable; corrupted one by one in the self-test |
 | `src/dump.zig` | the snapshot as one canonical struple map |
 | `src/seedbed.zig` | the authoring verbs and the named scenes |
 | `src/run.zig` | `loam-run` |
 | `src/capi.zig` | the C seam (`libloam.so`) |
-| `src/thresholds.zig` | the gate numbers, PROPOSED until struck; G13's are struck, with the prediction frozen beside them; G14 (e)'s prediction frozen beside τ |
+| `src/thresholds.zig` | the gate numbers, PROPOSED until struck; G13's are struck, with the prediction frozen beside them; G14 (e)'s prediction frozen beside τ; the collar's reach derived beside G12 |
 | `src/tests.zig` | the gates, each with its named mutation |
 | `py/loam/` | the ctypes binding and the dump reader |
 | `py/tests/` | the Python gates |

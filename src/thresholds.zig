@@ -178,22 +178,84 @@ pub const G15_UNITS: u32 = 8; // PROPOSED — small enough that the wounded sapl
 pub const G15_CUT_FRACTION: f32 = 0.5; // PROPOSED
 pub const G15_MAX_DEVIATION: f32 = 0.05; // PROPOSED — of SPREAD's inside count
 
-/// G12 (Phase 2, P2.2 — brief STRUCK Sunday 2026-09-06 evening, not
-/// built): the collar is gated by provenance — a capsule unions HARD into
-/// samples its own front wrote within the last COLLAR_RECENT_SEGMENTS
-/// segments, and SMOOTH, with k the child's radius, into any other
-/// sample: another front's, or its own older tube (the ammonite, the
-/// creeper doubling back — self-touch after m rings is another front for
-/// collar purposes). m is chosen from the sweep's geometry at build time
-/// so that consecutive capsules sharing an end-sphere are inside it and
-/// nothing else is; the value here is a placeholder until then.
-/// G12_GRADIENT_TOL: |∇φ| continuous across a bud's junction to this per
-/// lattice unit — the polynomial smin is C1 by construction, so this is
-/// float slack, not a tolerance to tune. The inner elbow of a hard chain
-/// is measured once (crease angle vs ring-to-ring bend, the sapling and a
-/// tight curl) and recorded: the spine's trigger, a number.
-pub const COLLAR_RECENT_SEGMENTS: u32 = 2; // PLACEHOLDER — chosen from the ring spacing at build time
-pub const G12_GRADIENT_TOL: f32 = 1e-3; // PROPOSED
+/// G12 (Phase 2, P2.2 — brief STRUCK Sunday 2026-09-06 evening, built
+/// the same night): THE COLLAR IS GATED BY PROVENANCE. A capsule
+/// unions HARD (k = 0) into samples its own front laid within the
+/// collar's REACH behind the capsule's start ring, and SMOOTH, with k
+/// the ring's radius (`Params.collar` × the envelope — "the child's
+/// radius at the join", Christian's number), into everything else:
+/// another front's tube, authored tissue, or its own older tube (the
+/// ammonite, the creeper doubling back — self-touch beyond the reach is
+/// another front for collar purposes; his amendment).
+///
+/// The reach is DERIVED, not chosen. smin(a, b, k) differs from min(a, b)
+/// only where |a − b| < k. On the front's own tube — radius r, samples
+/// out to r + band — the new capsule's start cap reads √(ρ² + z²) − r
+/// against the tube's own ρ − r at z behind the ring, so the two are
+/// within k of each other out to z = √(k² + 2ρk), largest at the band's
+/// outer edge (`collarReach`). Behind that the smooth union IS the hard
+/// one, so the window is exactly the zone where the choice matters, and
+/// it is measured along the front's arc through `chart_s` rather than
+/// counted in segments: the count is a function of dt (the trunk's reach
+/// is 6.7 lattice units — seven rings at dt = 1 s, fourteen at 0.5 s)
+/// where the arc is not, the reason τ was struck in fed seconds. A curl
+/// self-touches only after 2π·r of arc, and 2π > √(3 + 2·band/r) for any
+/// r above 0.16 h, so no honest self-touch falls inside the reach.
+///
+/// The brief's "|∇φ| continuous to 1e-3 across the junction" was NOT an
+/// observable and is withdrawn: the reconstruction is the cubic B-spline
+/// of the samples, C2 whatever they hold, so a crease and a fillet both
+/// reconstruct smooth and the C1 of the smin cannot be seen through it.
+/// G12 is bit-exact instead, and the crease is a MEASUREMENT (below):
+///   (a) THE COLLAR — against the same scene under the hard union (every
+///       collar 0; straight fronts, so the paths agree): the collared
+///       field is nowhere higher (smin ≤ min), lower only within
+///       g12Zone of the child's axis — beyond the child's radius plus
+///       the band its field is far, the union's identity — and lower
+///       there by at most k/4 (the smin's own bound) and by more than
+///       nothing. Mutations, executable (`Policy.collar_gate`): the
+///       window dropped (`.none`) → the front beads into its own chain,
+///       differences far from the child; the window made infinite
+///       (`.own`) → the coil's self-touch is a hard crease, no
+///       difference where its turns meet.
+///   (b) THE BANDS — band 1 is the ring morphology read through the
+///       provenance chart, and outside the collars it reproduces band 0
+///       BIT FOR BIT: the capsule rebuilt from the ring records at (who,
+///       segment) gives the sample's φ, its chart_s and its chart_theta
+///       exactly (G12_BAND_TOL is zero, and not a tolerance). Mutation,
+///       by hand: θ written in the start ring's frame at every foot →
+///       mismatches wherever the frames twist.
+///   (c) THE SPONGE — a band-0 query gathers G12_SPONGE_BYTES and no
+///       provenance and no ring history; a bark query gathers more.
+///       Mutation: the class ignored → every query pays for the bark.
+pub fn collarReach(k: f32, rho: f32) f32 {
+    return @sqrt(k * k + 2 * rho * k);
+}
+/// (a)'s zone: within this of the child's axis the child's field is
+/// nearer than the band and the union can act; beyond, it is far.
+pub fn g12Zone(child_radius: f32, band_lu: f32) f32 {
+    return child_radius + band_lu;
+}
+pub const G12_BAND_TOL: f32 = 0; // bit-exact: the same capsule, the same arithmetic
+/// A band-0 read at a lattice point: the B-spline's 64 coefficients of
+/// the surface plane, four bytes each — what G7 counts for a plane.
+pub const G12_SPONGE_BYTES: u64 = 64 * 4;
+
+/// THE INNER ELBOW (Christian's number, measured once and held in the
+/// ledger, not gated): two of a front's own capsules sharing an
+/// end-sphere are C1 on the outside of a bend and meet in a concave fold
+/// on the inside whose normal turns by the bend angle β between rings.
+/// The B-spline spreads that turn over about a cell. The tube's own
+/// surface turns 1/r per lattice unit around it, so a fold whose turn
+/// per unit exceeds the tube's is one the eye can find; the spine's
+/// trigger, PROPOSED: a scene whose ring-to-ring bend, spread over one
+/// cell, turns faster than the tube — β > h/r radians, 0.33 (19°) for
+/// the trunk at gauge 0, 0.5 (29°) for a twig of two. Measured on the
+/// sapling and on a deliberately tight coil (`Params.coil`), "P2.2 — the
+/// collar" in the ledger.
+pub fn elbowTrigger(r: f32, h: f32) f32 {
+    return h / r;
+}
 
 /// The change floor: a brick whose largest committed delta is below this
 /// is not active next step, and a boundary sample below it does not
@@ -245,5 +307,13 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// is a copy of the neighbours' own samples, hashed where they are
 /// owned, and hashing it again was a second truth in the identity;
 /// `HaloStale` and G9 are the halo's witnesses, and a corrupted halo
-/// sample now leaves the hash where it is while the guard fires).
-pub const G1_REFERENCE: []const u8 = "3fd87589c8d5e3f15becdf713f61dc4c04ca0c706acc0d6e04eee9edbf44cd7b";
+/// sample now leaves the hash where it is while the guard fires). THE
+/// COLLAR `d64a1b0f…` (P2.2: every brick a front laid carries seven new
+/// planes — who, segment, chart_s, chart_theta, own, other, collar —
+/// and every front its segment count and previous arc length; the
+/// sapling's children now smooth-union into the trunk with k their own
+/// radius, which is real tissue a newborn child reads, so the wound
+/// fixture's fronts move by a few hundredths of a unit in their first
+/// steps; under `--collar 0` the new build reproduces the previous
+/// commit's fronts to the last digit and its inside count exactly).
+pub const G1_REFERENCE: []const u8 = "d64a1b0f11dc0ba29253d73ddc789f0080e6ba4daf335a87e5f4033e4729a026";

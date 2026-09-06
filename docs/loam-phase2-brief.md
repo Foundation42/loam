@@ -163,7 +163,7 @@ that must bite.
 | G9 Continuity | the carrier is C2 across a same-gauge seam | max over shared-face probe points of \|∇φ_A − ∇φ_B\| and \|∇²φ_A − ∇²φ_B\| from the two holders' reconstructions | 0 to float tolerance ⟨1e-5⟩ | drop the halo copy → C0 only, derivatives disagree |
 | G10 Bound | the summary's L is conservative | for every brick, max over probe pairs of \|φ(x) − φ(y)\|/‖x − y‖ ≤ L | ≤ L, exactly | L from finite differences instead of coefficients → a pair exceeds it |
 | G11 Sphere trace | a march stepped by \|φ\|/L never overshoots the zero set | for N random rays, the first sign change lies within one bisection tolerance of the hit; no hit missed that a dense march finds | 0 misses in ⟨4096⟩ rays | step by 2\|φ\|/L → overshoots |
-| G12 Collar | smooth union is smooth at a branch | \|∇φ\| continuous across the junction; provenance-blended band signal continuous | no jump above ⟨…⟩ | hard min → a crease; nearest-front ownership → the bark rotates |
+| G12 Collar (BUILT Sunday night, restated: the brief's \|∇φ\| is not an observable through a C2 reconstruction) | the collar is where a child meets its parent and nowhere along a chain; the bands reproduce the deposit | (a) against the hard union: nowhere higher, lower only within the child's zone, by at most k/4 — 468 samples, drop 0.520 against 0.525; the coil's self-touch collared; (b) band 1 through the provenance chart reproduces every deposit bit for bit — 10,126 of 10,126; a cut keeps the scar's provenance; (c) a sponge query gathers 256 bytes, a bark query 720 and up | 0 higher; 0 outside; ≤ k/4; exact; = 256 | `.none` → beads along the chain (5813 outside); `.own` → the coil's self-touch hard (0 lower); θ in the wrong frame → chart mismatches; the class ignored → the sponge pays |
 | G13 Thin feature (STRUCK) | sub-gauge structure survives the B-spline | a straight capsule across a radius sweep ⟨0.5 … 6⟩ r/h, nine axis offsets in the cell, three orientations: whether the zero set survives, and r_rec/r worst and best | (a) the instrument reads the prediction: survival matches, r_rec/r within ⟨1%⟩ of `tools/g13_predict.py`; (b) survives at r/h ≥ ⟨1.0⟩; (c) \|r_rec − r\|/r ≤ ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and thinner is refinement's problem | gauge doubled without refinement → vanishes at 1.0, thins 30% at 2.0 (bites b, c); control values half a cell off → ±40% at 2.0 (bites a, c); trilinear → survives lower, thins less (bites a only: the instrument's variation, recorded) |
 | G14 Attention (built Sunday afternoon; (a) restated at build, the head in two tiers by the ruling, (c) named invariance and (d) reproducibility added by the ruling, see the ledger) | the step's work follows where things are changing, and a reader can see it without touching a brick | (a) the evaluated set is the head of the active set — the fronts' bricks never cut, then the backlog, both in key order, then by attention — recomputable from the published snapshot alone, evaluations == ops × its size, and no front step skipped under any budget with the overrun reported, every step (G5 made graded); (d) the budget is on the transcript: a run replayed from its recorded per-step budgets publishes the same content hash, serial and over the job system, and a record altered where it bites does not; (b) a walk rejecting attention-zero subtrees from summaries alone visits exactly the bricks changed within τ·ln(a₀/floor) of now; (c) under a budget of ⟨50%⟩ of the step's active bricks, the ones evaluated are the highest-attention ones, and the sapling grown under budget ends within ⟨5%⟩ of the unbudgeted run's inside count | exact; exact; ⟨5%⟩ | (a) attention ignored → evaluations scale with the brick count; (b) attention not merged → the walk visits every brick; (c) budget taken in key order instead of attention order → the tips lag and the deviation exceeds the floor |
 | G14 (e) The residual (pre-registered Sunday afternoon, then built: lags 19–20 against a bound of 20, the cold region never served without the lag term) | deferral costs, so no brick with real pending change starves under a hot region | two diffusing regions, one at ⟨10⟩× the other's attention, under a budget the hot region alone fills: the longest lag at which any cold brick is evaluated, against the prediction from τ | ≤ k = ⌈(R − 1)·τ/dt + R⌉ + ⌈n_cold / slots⌉, from `g14ePredictedSteps` before the run; and the cold region IS deferred (its least lag > one step) | the lag term zeroed → the cold region is never served in the run |
@@ -398,8 +398,19 @@ and P2.2 is where provenance arrives. The capsule chain may still win
 on simplicity for now; the choice is made in P2.2's brief, not here.
 
 *P2.2's brief — proposed Sunday 2026-09-06 evening; STRUCK by Christian
-the same evening, with one amendment and one number to record; nothing
-of it built — "open with fresh heads for P2.2".*
+the same evening, with one amendment and one number to record; BUILT
+the same night (the ledger, "P2.2 — the collar, provenance and the
+bands"). Three departures from the text below, each found by a gate or
+a derivation and recorded there: the recency window is the collar's
+REACH along the arc (`thresholds.collarReach`) rather than a count of
+segments, because a count is a function of dt; the "|∇φ| continuous to
+1e-3" observable is withdrawn — a C2 reconstruction shows no C1
+anywhere — and G12 is bit-exact against the hard union and against the
+ring records; and the one-slot provenance is the TWO-SLOT form from the
+start — `own`, `other`, `collar` — because G12 (a)'s k/4 bound caught a
+child's chain of capsules collaring the same parent sample once per
+capsule, 1.46 deep against 0.75, deeper the shorter the capsules. The
+inner elbow is measured and tabled there.*
 
 *The amendment: hard only into own RECENT deposit.* "'Own front' is the
 wrong predicate; 'own front, within the last m segments' is the right

@@ -45,6 +45,8 @@ const usage =
     \\  --avoid A            the front's self-avoidance coefficient (default 0.5)
     \\  --inhibit I          the front's inhibition threshold (default the params')
     \\  --persist P          the front's heading persistence (default 1)
+    \\  --collar C           the collar as a fraction of the ring's radius (default 1; 0 is the hard union, G12 a's reference)
+    \\  --collar-gate G      what a capsule unions hard into: recent (struck) | none | own — the two are G12 (a)'s mutations
     \\  --phases             print wall-clock per phase beside each line
     \\  --budget N           evaluate at most N bricks a step, attention first (R15)
     \\  --budget-fraction F  the same as a fraction of each step's active set (G14 c)
@@ -96,6 +98,8 @@ const Opts = struct {
     avoid: ?f32 = null,
     inhibit: ?f32 = null,
     persist: ?f32 = null,
+    collar: ?f32 = null,
+    collar_gate: loam.world.CollarGate = .recent,
     sweep: std.ArrayListUnmanaged(f64) = .{},
     seeds: u64 = 6,
     coeff: f32 = seedbed.TROPISM_COEFF,
@@ -258,6 +262,11 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             o.inhibit = try std.fmt.parseFloat(f32, try next(args, &i));
         } else if (std.mem.eql(u8, a, "--persist")) {
             o.persist = try std.fmt.parseFloat(f32, try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--collar")) {
+            o.collar = try std.fmt.parseFloat(f32, try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--collar-gate")) {
+            const v = try next(args, &i);
+            o.collar_gate = std.meta.stringToEnum(loam.world.CollarGate, v) orelse return error.UnknownGate;
         } else {
             std.debug.print("unknown flag: {s}\n", .{a});
             return error.UnknownFlag;
@@ -333,6 +342,8 @@ pub fn main() !void {
     scene.avoid = opts.avoid;
     scene.inhibit = opts.inhibit;
     scene.persist = opts.persist;
+    scene.collar = opts.collar;
+    world.policy.collar_gate = opts.collar_gate;
     var trace_file: ?std.fs.File = null;
     if (opts.trace) |path| trace_file = try std.fs.cwd().createFile(path, .{});
     defer if (trace_file) |f| f.close();
@@ -353,6 +364,7 @@ pub fn main() !void {
     var step: u64 = 0;
     var total_ms: f64 = 0;
     while (step <= opts.steps) : (step += 1) {
+        if (opts.scene == .junction and step == seedbed.JUNCTION_STEP) try seedbed.bud(&world, 0, 0);
         if (opts.damage) |d| if (d.step == step) {
             try seedbed.damage(&world, d.lo, d.hi);
             try world.apply();
@@ -412,6 +424,7 @@ pub fn main() !void {
             try stdout.print("step {d:>4}  active {d:>5}→{d:<5} evals {d:>6}  fronts {d}/{d} dormant  changed {d:>4} (+{d} new, {d} seam)  writes {d}/{d} seam/halo  spawns {d}  {d:.2} ms\n", .{
                 step, s.active_in, s.active_out, s.region_evals, live, dormant, s.bricks_changed, s.bricks_materialised, s.seam_bricks, s.seam_writes, s.halo_writes, s.spawns, ms,
             });
+            if (s.collar_samples > 0 or s.provenance_writes > 0) try stdout.print("           collar acted on {d} samples; provenance written at {d}\n", .{ s.collar_samples, s.provenance_writes });
             if (world.policy.budget != null) try stdout.print("           budget {d}: {d} carried, {d} faded, {d} front-steps skipped, overrun {d}, backlog {d} ({d} steps over)\n", .{ world.policy.budget.?, s.carried, s.faded, s.fronts_skipped, s.overrun, s.backlog, world.overload_steps });
             if (opts.units != null or opts.cut != null) try stdout.print("           units {d} in {d} calls, {d} in finish; cut at {d}\n", .{ world.published().units, world.published().calls, s.units_finish, if (world.published().cut_at) |c| @as(i64, c) else -1 });
             if (opts.phases) try stdout.print("           operate {d:.2}  fronts {d:.2}  apply {d:.2}  frontier {d:.2}  seams {d:.2}  finalize {d:.2}  build {d:.2}  publish {d:.2} ms\n", .{

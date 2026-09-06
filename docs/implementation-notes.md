@@ -1,7 +1,10 @@
 # Implementation notes — the ledger
 
 **Status:** Phase 1 built, 2026-09-06: P1.1–P1.7, G1–G8 green and bitten.
-**P2.1a built Sunday 2026-09-06, afternoon** — attention: derived from
+**P2.2 built Sunday 2026-09-06, night** — the collar gated by
+provenance with the two-slot fill, the bands through the ring history,
+G12 bit-exact and bitten, the inner elbow measured ("P2.2 — the collar,
+provenance and the bands" below). **P2.1a built Sunday 2026-09-06, afternoon** — attention: derived from
 each brick's last change, in the summaries and the hash, ordering the
 step under a budget; G14 green and bitten, G1 re-baselined ("P2.1a —
 attention" below); RULED the same afternoon — "Attention and obligation
@@ -1697,6 +1700,221 @@ trigger — are in the brief in his words, with `COLLAR_RECENT_SEGMENTS`
 Everything else stands as written. Nothing built: "Let's wrap it up,
 and open with fresh heads for P2.2."
 
+## P2.2 — the collar, provenance and the bands (Sunday 2026-09-06, night; G12 green and bitten, G1 again)
+
+Built from the brief as struck, with three things found on the way that
+changed what was built, each recorded here with the number that found
+it. Christian's amendment (hard only into own RECENT deposit) and his
+number (the inner elbow) are both in; the one place the letter of the
+strike was not followed is named first.
+
+**The recency window is arc length, not a count.** "Own front, within
+the last m segments" is built as "own front, within the collar's REACH
+behind the capsule's start ring, along the arc" — `thresholds.collarReach`,
+√(k² + 2ρk) with ρ the tube's radius out to the band's edge: the
+distance behind a ring at which the new capsule's start cap is within
+k of the tube's own distance, beyond which smin IS min. The reach is
+derived from the geometry, as he asked m to be, but a count of segments
+is a function of dt (the trunk's 6.7 units are seven rings at dt = 1 s
+and fourteen at 0.5 s) where the arc is not — the reason τ was struck
+in fed seconds. `segment` is stored as struck and read by the bands;
+the window reads `chart_s`, which is stored beside it. His to strike
+back to a count if he wants one.
+
+**The brief's observable did not exist.** "|∇φ| continuous to 1e-3
+across the junction" was withdrawn before any gate ran: the
+reconstruction is the cubic B-spline of the samples and is C2 whatever
+they hold, so a crease and a fillet both reconstruct smooth and the C1
+of the smin cannot be seen through it. `G12_GRADIENT_TOL` is gone. G12
+is bit-exact instead (below), and the crease is a measurement.
+
+**One slot was not enough, and the gate said so.** The first build kept
+one contributor per sample, as the brief proposed: a capsule unioned
+hard into samples its own front laid recently and smooth into the rest,
+the winner writing its provenance. G12 (a)'s bound — the collared field
+is under the hard union by AT MOST k/4, the smin's own limit — failed
+at 1.46 against 0.75: a child arrives as a chain of capsules and each
+one smooth-unioned AGAIN into the same parent-owned samples, so the
+fillet at a junction was the sum of three or four collars and would
+deepen as capsules shortened — a representation defect that depends on
+dt. That is the case Christian named the two-slot form the fill for
+("G12's mutation is what tells you when to pay for it"), and it is
+paid: every sample keeps `own` (the nearest contributor's own signed
+distance, before any collar), `other` (the runner-up's) and `collar`
+(the join's k), and band 0 is their ONE smooth union, recomposed by the
+commit whenever a slot changes. A front's capsule goes HARD into `own`
+where the sample is its own recent deposit; a nearer stranger takes
+`own` and demotes what stood to `other`; a farther one joins `other` by
+the hard min — so a chain of a child's capsules is one tube in the
+runner-up slot and the parent meets it once. The join's k is the least
+willing member's, min over the ops that touched the sample: a child's
+radius at the join is the smaller of the two, and a hard front makes a
+hard join. A cut writes no provenance (the scar remembers who grew
+there — Christian) but cuts both slots, so a later join recomposes
+from cut tissue. The third contributor at a three-way junction is lost
+into `other` by the hard min: the two-slot limit, stated. The largest
+drop then read 0.520 against the child's k/4 of 0.525.
+
+**The seam pass was waking the neighbours.** A seam copy of a `who`
+sample — nobody to front six — counted as a change of six toward the
+active-set floor, so every brick beside a tube woke for nothing: G14
+(c)'s budgeted sapling evaluated more than the unbudgeted one, and the
+key-order mutation stopped biting (3.8% against the 5% floor). The
+floor and attention now count what the world reads — the carrier and
+the additive channels; the slots and the provenance are the carrier's
+bookkeeping, scored where the carrier is. G14 (c) reads 5050 = 5050
+from 12.6% fewer evaluations again; key order loses 34.7%.
+
+### What was built
+
+- Seven channels: `who` (front id plus one; zero is nobody), `segment`,
+  `chart_s`, `chart_theta` (the chart's (s, θ) at the sample's foot on
+  the capsule's axis, θ lerped the short way round between the two
+  rings' frames), rule `.set_by_winner`; `own`, `other` (rule
+  `.distance`: far absent, band-clamped, interpolated across a hanging
+  node like the carrier) and `collar` (nearest across a hanging node:
+  an id between two ids is a third front, and so is a k). None is ever
+  a delta (`RegionUpdate.delta` asserts); none reaches across a face
+  for the frontier; none scores attention. A front's `SurfaceOp`
+  carries who, segment, the start ring's arc and the reach, and two
+  chart planes; an authored op carries none and writes `own`/`other`/
+  `collar` only.
+- `Params.collar` is now a FRACTION of the ring's envelope, default 1
+  ("the child's radius at the join"); 0 is the hard union everywhere
+  and the G12 (a) reference. `Params.coil`: a fixed turn of the heading
+  about the scene's vertical per unit of arc, the elbow measurement's
+  knob. `Front.segment` and `prev_s` (in the canonical bytes).
+- The ring history — `World.rings`, per front, ring zero the seed,
+  appended by the commit in id order from the front pass's sinks; a
+  `Ring` is 224 bytes (pos, dir, normal, roll, s, envelope, the 24
+  residuals and tags, the slot that budded). Not in the content hash:
+  it is the fronts' past, which the hashes of the steps that made it
+  hold; nothing on the sim path reads it. `Capsule.between(a, b)`
+  rebuilds the sweep from two rings with the same arithmetic the front
+  used (`Capsule.of` goes through it), and `foot`/`chartS`/`chartTheta`
+  are the one place the chart is computed.
+- Bands: `World.bandQuery(snap, p, class)` — `.sponge` reads band 0 and
+  gathers `G12_SPONGE_BYTES` (256, the plane's 64 coefficients as G7
+  counts them) and nothing else; `.bark` reads the four provenance
+  samples and the ring records, band 1 the residual at the chart
+  (lerped between the ring and the one before), band 2 its second
+  difference along s, and whether the slot at θ budded here (a scar).
+- `Policy.collar_gate`: `.recent` (struck), `.none`, `.own` — the two
+  executable mutations; `loam-run --collar C`, `--collar-gate G`; two
+  scenes, `--scene junction` (a straight parent with the ring CA on, no
+  steering; its child budded by hand at step 12 through `seedbed.bud`)
+  and `--scene coil` (a tendril at 0.25 rad per unit, radius 2, rising
+  3.75 a turn so its turns touch); `collar acted on N samples;
+  provenance written at M` on every reported step.
+
+### G12, as it stands (ReleaseSafe, serial)
+
+| gate | measure | value | threshold | mutation | bit? |
+|---|---|---|---|---|---|
+| G12 (a) the collar | the collared junction against the same scene under the hard union (straight fronts, so the tubes agree): samples higher; lower outside the child's zone (its radius + band = 6.00 of its axis); the largest drop | 1,341,360 samples; 468 lower, 0 higher, 0 outside; drop 0.520 | 0; 0; ≤ k/4 = 0.525 (the join's k 2.10) | `.none`: nothing is its own → 9507 lower, 5813 outside the zone, beads of 0.750 along the parent's chain | yes |
+| G12 (a) the amendment | the coil after 80 steps against its hard chain | 2353 lower, 0 higher, drop 0.500 = k/4; the collar acted on 21,165 samples | > the first 20 steps' count; 0; ≤ k/4 | `.own`: its own at any age → 0 lower, the collar acted on 0 | yes |
+| G12 (b) the bands | every provenanced sample: the capsule rebuilt from the ring records at (who, segment) against `own`, the chart's s and θ; the carrier never above its slot | 10,126 of 10,126 exact; 0 chart mismatches; 0 above; 468 collared under | all; 0; 0 (`G12_BAND_TOL` is 0) | by hand: θ taken in the start ring's frame at every foot → mismatches wherever the frames twist | yes (hand) |
+| G12 (b) the scar | a cut across the parent: provenanced samples before and after, raised above their deposit, charts | 10,126 → 10,126; 223 raised, still the parent's; 0 mismatches | equal; > 0; 0 | — | — |
+| G12 (c) the sponge | bytes a band-0 query gathers; a bark query's least | 256; 720 (907.9 on average) | = 256; ≥ 256 + 16 + 2·224 | by hand, the class ignored → a sponge pays for the bark | yes (hand) |
+
+(b)'s exactness is the two slots' doing: `own` is the winner's own
+distance and no collar ever lowers it, so the recomputation is exact
+at every sample and not only outside the collars, which is what the
+one-slot version would have had to settle for. The hand mutations
+were run once each and reverted.
+
+### The inner elbow, measured (Christian's number)
+
+Rays from a ring's centre in the plane of the bend, ±40° about the
+inner bisector, to the reconstructed zero set; the B-spline gradient at
+each hit; the largest turn of the normal between neighbouring hits per
+lattice unit of their separation, against the median turn over the
+sweep — the surface's own turn there, so the fold reads as an EXCESS.
+The same in every build mode.
+
+| elbow | bend per ring | fold, °/unit | baseline | excess | the tube's 1/r |
+|---|---|---|---|---|---|
+| sapling trunk, its sharpest ring | 21.30° | 10.44 | 5.80 | 4.63 | 18.1 |
+| sapling trunk, its median ring | 10.17° | 18.02 | 4.31 | 13.71 | 21.6 |
+| the coil, 14.16° a ring (radius 4, tube 2) | 14.16° | 35.82 | 27.39 | 8.43 | 28.6 |
+| the bud junction, hard (k = 0) | corner 45.84° | 194.84 | 2.01 | 192.83 | — |
+| the bud junction, collared (k = 2.10) | corner 45.84° | 111.33 | 3.06 | 108.27 | — |
+
+Read against his question: a hard chain's inner elbow at the coil's
+14° a ring is a fold of eight degrees per unit over the wall's own
+turn; the sapling's trunk elbows (10–21° a ring) are under its bark —
+the median ring's excess is the ring CA's own relief, an impulse, not
+the fold, and the sharpest ring folds inward past its own radius (a
+bend radius of 2.7 under a tube of 3). A bud's hard crease is 193°/unit,
+an order of magnitude above anything a chain makes, and the collar at
+the child's radius halves it. The spine's trigger stays PROPOSED as
+`elbowTrigger` = h/r with this against it: the trunk's sharpest bend
+(21°) exceeds h/r (18°) and its fold is still invisible, so the formula
+is too strict; the number to watch is the excess, and nothing in these
+scenes brings a chain within a decade of a junction's crease.
+
+### The coil's inner wall — the arc rule's limit
+
+In the coil's first 20 steps, before any turn could touch, 213 samples
+of its own inner wall were collared: at a bend radius of 4 the tube
+five to seven rings back is within the collar's Euclidean reach (the
+chord) while beyond its arc reach, so the rule reads it as another
+front. A coil tighter than the collar's reach cannot be told from a
+self-touch by any window in arc; recorded, printed by the gate, not
+gated. A tube whose bend radius exceeds the reach (the sapling's) is
+unaffected.
+
+### The habit check
+
+`loam-run --trace` on both sides, `tools/diff_traces.py` between:
+
+- the new build under `--collar 0` against the previous commit's
+  binary: every front agrees to the last digit over 40 steps
+  (separation 0.000), the inside count 1755 in both, growth to the
+  thousandth. The representation change did not move a front.
+- the collar against the hard union: the trunk moves 0.004 units by
+  step 40; the two children, born at steps 26 and 38, diverge at step
+  39 by 0.034 and 0.214 — what a newborn child reads one radius ahead
+  is the fillet, which is real tissue. At 100 steps the sapling holds
+  4966 inside samples against 4914 hard; the collar acts on 300–400
+  samples a step once the buds are out.
+
+### The cost, and G1
+
+The step cost, sapling seed 7, 100 steps, serial, `loam-run --phases`:
+
+| build | previous commit | this build, `--collar 0` | this build |
+|---|---|---|---|
+| Debug, ms/step | 21.49 | 38.88 | 40.29 |
+| Debug µs/unit: apply / seams / finalize (hash) | 45 / 92 / 149 (96) | 112 / 154 / 411 (231) | 100 / 155 / 419 (241) |
+| ReleaseSafe, ms/step | 2.96 | 4.98 | 5.18 |
+
+Seven planes on every brick a front laid — twelve where there were
+five — and every pass that walks planes pays in proportion: the clone
+at apply, the seam collect, the hash. The collar itself costs 1.4 ms
+Debug (the junction bricks keep changing while a child's chain
+extends: seam units 97 → 148 at step 100). Candidates, none taken: the
+seam collect reads seven bookkeeping planes whose shared points both
+holders already hold from the same op; `own` duplicates `surface`
+wherever `other` is far; `who` and `segment` would pack. About 37 KB
+more per tissue brick.
+
+G1's reference moves, `3fd87589…` → `d64a1b0f…`: the seven planes and
+the fronts' two new fields are in the hash, and the sapling's children
+now collar into the trunk. The suite: 87 gates, 238 s ReleaseSafe;
+`verify-dump` (the seven planes named in the dump, the two slots read
+as distances) and `py-test` (G1 across two processes) pass; the
+matryoshka bridge's three tests pass unchanged against the new leaf
+(it reads `surface` by bit; the stride did not move).
+
+### Open
+
+The cost above. The two-slot limit at a three-way junction. The coil's
+inner wall. `elbowTrigger`, for Christian: the measured excess against
+h/r. The arc window against his count of segments. From before: a
+units-schedule replay; the D5 signal on lag-weighted pending; the
+shared sapling fixture.
+
 ## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
 
 The deferred fill D1 named, paid for by P2.1a: the bridge re-packed
@@ -1812,6 +2030,12 @@ After "The step cost" (the same afternoon), the growing sapling at
 2,373), ReleaseSafe 3.30 (seams 159, finalize 98, the hash 70). Units
 by phase and the microseconds of each are on every `loam-run --phases`
 line now.
+
+After P2.2 (the same night), the same run: Debug 40.3 ms a step
+(seams 1,918 ms and finalize 1,307 of 4,069, the hash 756),
+ReleaseSafe 5.18 (seams 265, finalize 159, the hash 97) — seven new
+planes on every tissue brick; the table in "P2.2 — the collar" has the
+previous commit and the hard union beside it.
 
 The attention walk's overhead (P2.1a, a standing number — it will drift
 as the tree grows): leaves examined per attentive brick, sapling seed 7

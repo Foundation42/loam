@@ -162,7 +162,7 @@ pub fn expectedHalo(s: *const tree.Snapshot, target: *const Brick, bit: u6, p: [
     } else {
         v = finest.trilinear(bit, .{ @floatFromInt(p[0]), @floatFromInt(p[1]), @floatFromInt(p[2]) });
     }
-    if (bit == channel.Channel.surface.bit()) v = @min(v, bd);
+    if (channel.isDistance(bit)) v = @min(v, bd);
     return v;
 }
 
