@@ -516,6 +516,73 @@ new planes: the hash moves).
 near the surface for the silhouettes if the footprint truncation leaves
 any (stable temporal sampling, spec Phase 2).
 
+*P2.3's brief — proposed Sunday 2026-09-06, night, after the ruling
+"P2.3 first, 5.18 ms pinned"; PROPOSED, for Christian's strike.*
+
+**The fact this beat exists to produce.** Which planes a bark read
+touches at a hit, and at what footprint. Everything below is arranged
+so that number falls out first and the cost beat can read it.
+
+**What a hit reads.** A ray hits the zero set at p with the normal from
+the jet (has it: band 0, the 64 coefficients). The bark needs the CHART
+at p — (s, θ) of the front that laid it — and the front's ring history
+for bands 1–2, and a per-material amplitude vector for bands 3+. The
+chart is read from the provenance planes with two rules that R12
+already implies: `who` is taken NEAREST (an id between two ids is a
+third front), and `chart_theta` is interpolated as (cos θ, sin θ) and
+recovered by atan2 — an angle interpolated across its wrap is a
+sliver of nonsense at θ = 2π, and the cubic B-spline of (cos, sin)
+reproduces a slowly twisting chart. `chart_s` interpolates as it is:
+the B-spline has linear precision, so along a straight tube the
+interpolated s IS the arc, exactly. Where `who` changes between
+neighbouring samples — inside a collar, and nowhere else (G12 a's
+zone) — the hit takes the dominant slot's chart and the bark has a
+seam there: a branch collar HAS a ridge, and one slot cannot blend two
+charts' signals (the two-slot form holds `other`'s distance, not its
+chart; R12's w_i ∝ exp(−kφ_i) blend is the fill if the ridge is wrong,
+and the gate below is what says so).
+
+**Bands by footprint (R13).** A query names its class and its
+FOOTPRINT — the ray's width at the hit, lattice units — and a band is
+evaluated only if its scale is at least the footprint. The scales are
+the representation's, not tuned: band 1 is the ring's slot pitch,
+2π·r/24 (0.79 units for the trunk); band 2 the ring pitch, speed·dt
+(1 unit); bands 3+ procedural at the amplitude vector's octaves,
+⟨0.5, 0.25⟩ units PROPOSED for bark, keyed by (s, θ) so they stick to
+the tube and never swim. A sponge reads band 0 whatever its footprint;
+a bark hit at a far footprint reads the chart and stops; a close one
+reads the ring records too. The bytes are counted as G7 and G12 (c)
+count them.
+
+**The picture (matryoshka).** The pack carries, beside the carrier,
+`chart_s`, cos θ, sin θ and `who` — four planes, the stride 1336 →
+⟨6664⟩ — and a ring table in a second SSBO (24 residuals and the arc
+per ring per front: 100 bytes a ring, the sapling's ~2,000 rings 200
+KB). The shader at a hit computes the footprint from the ray's cone,
+reads the chart, evaluates the bands it may, and shades: albedo
+darkened in band 1's grooves, the normal bent by band 3's gradient.
+`--loam-bark` on the mount; the close-up camera on the README's line.
+"The ensemble near the surface for the silhouettes" is RECORDED, NOT
+BUILT, with its trigger: shimmer at a silhouette in the close-up under
+the footprint cut.
+
+**Gates.** G16 (a) THE CHART IS CONTINUOUS ALONG A TUBE: on the
+junction scene, probes on the parent's surface along a generator
+through the junction; between neighbours the interpolated s advances
+by the arc step to within ⟨G16_CHART_TOL = 1e-3⟩ (linear precision, so
+float slack) and θ moves by the frame's twist and no more; `who`
+changes only inside G12's zone. Mutations: θ interpolated as an angle
+→ a jump of 2π at the wrap; `who` interpolated → a third front's id.
+(b) THE FOOTPRINT: over a sweep of footprints at one hit, the bands
+evaluated are exactly those whose scale is at least the footprint, and
+the bytes gathered are monotone in it; a sponge is 256 at every
+footprint. Mutation: the footprint ignored → every hit pays for
+everything. (c) THE NUMBER: the bridge's bytes per brick and the
+frame time of the close-up against the plain sapling, in the ledger's
+measurements with the regime; the regression line, 5.18 ms ReleaseSafe
+on the sapling, re-measured and stated. The picture itself is
+Christian's eyes.
+
 ## 4. Scope fence
 
 - No refinement: cross-gauge stays C0 and D2 opens with prolongation.
