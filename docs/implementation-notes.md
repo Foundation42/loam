@@ -1388,6 +1388,44 @@ single "how far behind" number Chat named (the backlog count and the
 consecutive-overload count stand in for it); τ's strike; P2.1b, whose
 cut bricks ride this score with lag ≥ one step by construction.
 
+## The suite's footprint (Sunday 2026-09-06, afternoon)
+
+Christian: "Is there anything we can do in the tests to reduce the
+carbon footprint. They are taking a long time." Measured first:
+
+| regime | compile | run | wall | hash |
+|---|---|---|---|---|
+| Debug, alone | 2 s | ~4.5 min | ~4.5 min | `019f9e0a…` |
+| Debug, beside a loam-run and a matryoshka build | 2 s | 7 min | 7 min | the same |
+| ReleaseSafe | 17 s | 2 min | 166 s | the same |
+
+Peak memory 7 GB in both regimes — the G3 ensemble's eighteen worlds on
+threads under the testing allocator, not a leak (a retired snapshot is
+released at the next publish unless a reader hazards it; the world's
+own reference goes with it); noted for a check, not chased. And the
+cache held 241 test binaries, 3.8 GB: every `-Dtest-filter` run compiles
+its own, which in Debug is 2 s and in ReleaseSafe 17 s.
+
+Taken (Christian: "Yes, running the tests ReleaseSafe — good idea"):
+the gates build at `-Dtest-optimize`, ReleaseSafe by default — the
+same runtime safety as Debug, optimised — through their own module set
+so `loam-run` and the seam keep `-Doptimize`, Debug by default, the
+measuring regime. The suite in 166 s against 270 with the frozen
+reference unmoved, which is G1's Debug-equals-Release claim exercised
+on every run from now on. Every timing a gate prints names its mode
+(G5's format string said "Debug" outright; it says `builtin.mode` now).
+Five full suites today, one per commit, was the rule followed, not
+broken; what would have saved more is fewer commits.
+
+Not done, recorded with a trigger: the sapling scene is built about
+45 times per suite (2 s each in Debug, 0.3 in ReleaseSafe) — a shared
+base snapshot, retained per test, would remove most of that; and
+G14 (c)'s three tests each grow the unbudgeted sapling once more (a
+cached run would save two). Worth it when the suite passes five
+minutes in ReleaseSafe. Runtime gate selection through an environment
+variable, to compile once and run several gates, is moot while a Debug
+compile is 2 s.
+
 ## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
 
 The deferred fill D1 named, paid for by P2.1a: the bridge re-packed

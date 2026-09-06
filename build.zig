@@ -1,22 +1,38 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+/// The module set — common, struple, loam — at one optimize mode.
+const Mods = struct { common: *std.Build.Module, struple: *std.Build.Module, loam: *std.Build.Module };
 
+fn modules(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, public: bool) Mods {
     const common_dep = b.dependency("common", .{ .target = target, .optimize = optimize });
     const struple_dep = b.dependency("struple", .{ .target = target, .optimize = optimize });
     const common_mod = common_dep.module("common");
     const struple_mod = struple_dep.module("struple");
-
-    // The public library module — depend on this as `loam`.
-    const mod = b.addModule("loam", .{
+    const opts = std.Build.Module.CreateOptions{
         .root_source_file = b.path("src/loam.zig"),
         .target = target,
         .optimize = optimize,
-    });
-    mod.addImport("common", common_mod);
-    mod.addImport("struple", struple_mod);
+    };
+    // The public library module — depend on this as `loam`.
+    const loam_mod = if (public) b.addModule("loam", opts) else b.createModule(opts);
+    loam_mod.addImport("common", common_mod);
+    loam_mod.addImport("struple", struple_mod);
+    return .{ .common = common_mod, .struple = struple_mod, .loam = loam_mod };
+}
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+    // The gates run ReleaseSafe unless told otherwise: the same safety
+    // checks as Debug, the suite in 166 s against 270 (Christian, Sunday
+    // 2026-09-06: "running the tests ReleaseSafe — good idea"). The
+    // artefacts — loam-run, the seam — keep `-Doptimize`, Debug by
+    // default, which is the measuring regime.
+    const test_optimize = b.option(std.builtin.OptimizeMode, "test-optimize", "Optimize mode for the gates (default ReleaseSafe)") orelse .ReleaseSafe;
+
+    const m = modules(b, target, optimize, true);
+    const common_mod = m.common;
+    const mod = m.loam;
 
     const lib = b.addLibrary(.{
         .linkage = .static,
@@ -81,15 +97,24 @@ pub fn build(b: *std.Build) void {
     py_test.step.dependOn(b.getInstallStep());
     b.step("py-test", "Run the Python tests over libloam.so and loam-run").dependOn(&py_test.step);
 
-    // Tests: src/loam.zig pulls in the gates from src/tests.zig.
-    // `-Dtest-filter=<substring>` runs only matching tests.
-    const tests = b.addTest(.{ .root_module = mod });
+    // Tests: src/loam.zig pulls in the gates from src/tests.zig, built
+    // at `test_optimize`. `-Dtest-filter=<substring>` runs only matching
+    // tests; every timing a gate prints names its mode.
+    const tm = if (test_optimize == optimize) m else modules(b, target, test_optimize, false);
+    const tests = b.addTest(.{ .root_module = tm.loam });
     if (b.option([]const u8, "test-filter", "Only run tests whose name contains this")) |f| {
         tests.filters = b.allocator.dupe([]const u8, &.{f}) catch @panic("OOM");
     }
     const run_tests = b.addRunArtifact(tests);
-    const test_step = b.step("test", "Run the gates");
+    const test_step = b.step("test", "Run the gates (ReleaseSafe; -Dtest-optimize=Debug for the other regime)");
     test_step.dependOn(&run_tests.step);
-    const run_tests_exe = b.addTest(.{ .root_module = run_mod });
+    const test_run_mod = b.createModule(.{
+        .root_source_file = b.path("src/run.zig"),
+        .target = target,
+        .optimize = test_optimize,
+    });
+    test_run_mod.addImport("loam", tm.loam);
+    test_run_mod.addImport("common", tm.common);
+    const run_tests_exe = b.addTest(.{ .root_module = test_run_mod });
     test_step.dependOn(&b.addRunArtifact(run_tests_exe).step);
 }

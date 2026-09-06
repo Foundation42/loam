@@ -5,6 +5,7 @@
 //! produced. Thresholds live in `thresholds.zig`, PROPOSED until struck.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const common = @import("common");
 const jobs = common.jobs;
@@ -672,7 +673,7 @@ test "G5: dormant tissue costs nothing — evaluations track the active set, not
     const ms = @as(f64, @floatFromInt(timer.read())) / 1e6;
     const bricks = g.published().brick_count;
     const worst = @as(u64, bricks) * 80 * n_ops;
-    std.debug.print("\nG5: {d} evals over 80 steps for {d} bricks (all-regions would be {d}); {d:.1} ms total, Debug, serial\n", .{ g.world.total.region_evals, bricks, worst, ms });
+    std.debug.print("\nG5: {d} evals over 80 steps for {d} bricks (all-regions would be {d}); {d:.1} ms total, {s}, serial\n", .{ g.world.total.region_evals, bricks, worst, ms, @tagName(builtin.mode) });
     try testing.expectEqual(sum_active * n_ops, g.world.total.region_evals);
     try testing.expect(g.world.total.region_evals * 20 < worst);
 }

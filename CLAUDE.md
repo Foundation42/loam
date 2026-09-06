@@ -6,9 +6,10 @@ Pick a gate because the change can break the thing it watches, never to
 feel reassured. Chris has asked for this in every sibling repo; a suite
 run per edit makes the harness the activity rather than the work.
 
-    zig build test -Dtest-filter=straddling   # one gate, seconds
-    zig build test                            # 48 gates, ~3 min Debug — before a commit
-    zig build test -Doptimize=ReleaseFast     # the same in ~20 s; know the delta, don't lean on it
+    zig build test -Dtest-filter=straddling   # one gate: 17 s to compile ReleaseSafe, then seconds
+    zig build test                            # 72 gates, ~3 min ReleaseSafe — before a commit
+    zig build test -Dtest-optimize=Debug -Dtest-filter=…   # the other regime: 2 s to compile, slower to run
+    zig build test -Dtest-optimize=ReleaseFast              # the delta, when Christian asks for it
     zig build verify-dump                     # loam-run writes a dump, the struple PYTHON port reads it
     zig build py-test                         # the ctypes binding, and G1 across two PROCESSES
     zig build run -- --help                   # loam-run, the seedbed
@@ -24,8 +25,13 @@ the blast radius.
 Rules that hold whatever you picked:
 
 - A gate that passed stays passed until the code changes.
-- Debug builds while iterating. `loam-run --phases` prints wall-clock
-  per phase; the numbers in the ledger state which build they came from.
+- The gates run ReleaseSafe by default — the same safety checks as
+  Debug, the suite in 166 s against 270 (Christian, Sunday 2026-09-06:
+  "running the tests ReleaseSafe — good idea") — and every timing a
+  gate prints names its mode (`@tagName(builtin.mode)`), never assumes
+  it. `loam-run` is unaffected: Debug is its measuring regime,
+  `--phases` prints wall-clock per phase, and the numbers in the ledger
+  state which build they came from. One suite per commit, not per edit.
 - One GPU gate at a time, when a sibling repo's are involved.
 
 ## The ledger
