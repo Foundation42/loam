@@ -1572,6 +1572,10 @@ pub const World = struct {
         const ahead = aheadOf(f);
         const g = base.sample(Channel.growth.bit(), ahead);
         if (g <= thresholds.EPSILON) return false;
+        // A negative `inhibit` is a TUNNELLING front (a vein through
+        // marble): it lives inside matter and is inhibited by air ahead
+        // — a vein already carved — rather than by matter.
+        if (f.params.inhibit < 0) return occupancy(base, ahead) >= -f.params.inhibit;
         return occupancy(base, ahead) <= f.params.inhibit;
     }
 

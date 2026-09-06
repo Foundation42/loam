@@ -861,7 +861,7 @@ pub fn tropismEnsemble(gpa: std.mem.Allocator, n: u64, d: f64, coeff: f32, steps
 /// parent with the ring CA on and no steering, and a child budded from
 /// it by hand at JUNCTION_STEP (`bud`); and a tendril coiling about the
 /// vertical at a bend the scene chose, touching its own previous turn.
-pub const Preset = enum { sapling, blob, seams, diffusion, wound, junction, coil, plates };
+pub const Preset = enum { sapling, blob, seams, diffusion, wound, junction, coil, plates, marble };
 
 /// The material seedbed's first archetype (the play after P2.3): a slab
 /// PLATES_HALF units wide and PLATES_DEPTH deep with its face at z = 0,
@@ -874,6 +874,22 @@ pub const PLATES_DEPTH: f64 = 12;
 pub const PLATES_CRACKS: u32 = 24;
 pub const PLATES_GROOVE: f32 = 1.2;
 pub const PLATES_STEPS: u32 = 80;
+
+/// The second archetype, volumetric (Christian: "a loam gradient field
+/// that is reasonably milky white with a black structure inside it"):
+/// a cube of base MARBLE_HALF units a side, MARBLE_VEINS crack fronts
+/// freed from any plane carving veins of MARBLE_VEIN through it,
+/// steering away from every vein already there and stopping where they
+/// meet one. The archetype is the cube's carrier: negative in the base,
+/// positive inside a vein, sampled at a hit's world position.
+pub const MARBLE_HALF: f64 = 24;
+pub const MARBLE_VEINS: u32 = 28;
+pub const MARBLE_VEIN: f32 = 0.9;
+pub const MARBLE_STEPS: u32 = 90;
+/// The bake stays inside the cube's faces by this much: the faces are
+/// the cube's own surface, and a tile that reached them wore a line of
+/// half-vein at every mirror.
+pub const MARBLE_BAKE_HALF: f64 = MARBLE_HALF - 4;
 
 /// The step the junction scene buds its child at — the parent's twelfth
 /// ring, where its ring CA has had time to make bark.
@@ -985,6 +1001,30 @@ pub const Scene = struct {
                     const y = c[1] + (stream.unit() * 2 - 1) * (PLATES_HALF - 4);
                     const ang = stream.unit() * 2 * std.math.pi;
                     try plantLattice(w, .{ x, y, c[2] }, .{ fmath.cos(ang), fmath.sin(ang), 0 }, params);
+                }
+                try w.apply();
+            },
+            .marble => {
+                const c = sceneToLattice(.{ 0, 0, 0 });
+                try blobLattice(w, Channel.growth.bit(), c, 64, 1.0, 0);
+                try slabLattice(w, .{ c[0] - MARBLE_HALF, c[1] - MARBLE_HALF, c[2] - MARBLE_HALF }, .{ c[0] + MARBLE_HALF, c[1] + MARBLE_HALF, c[2] + MARBLE_HALF }, 0);
+                try w.apply();
+                var params = self.straightParams();
+                params.radius = MARBLE_VEIN;
+                params.carve = true;
+                params.wander = 0.25;
+                params.avoid_self = -0.6; // toward the base: away from every vein and the faces
+                params.inhibit = -0.6; // tunnelling: a vein that meets a vein, or a face, stops there
+                params.length = 90;
+                params.drift = 0;
+                var stream = rng.Stream.front(w.seed, 1, 0);
+                var i: u32 = 0;
+                while (i < MARBLE_VEINS) : (i += 1) {
+                    const x = c[0] + (stream.unit() * 2 - 1) * (MARBLE_HALF - 4);
+                    const y = c[1] + (stream.unit() * 2 - 1) * (MARBLE_HALF - 4);
+                    const z = c[2] + (stream.unit() * 2 - 1) * (MARBLE_HALF - 4);
+                    const d = world_mod.normalize(.{ stream.gauss(), stream.gauss(), stream.gauss() });
+                    try plantLattice(w, .{ x, y, z }, d, params);
                 }
                 try w.apply();
             },

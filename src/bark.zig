@@ -689,3 +689,118 @@ test "the relief tiles by mirroring: continuous across every edge, and its gradi
     const d = r.at(1.3, 2.2);
     try std.testing.expectApproxEqAbs(c.v, d.v, 1e-6);
 }
+
+// ── The volumetric archetype: a field sampled as a 3-D texture ───────────
+//
+// Christian's marble: "a loam gradient field that is reasonably milky
+// white with a black structure inside it, and the tree picks up the
+// (wrapped/scaled) material field in world space." The archetype is
+// the cube world's carrier — negative in the base, positive inside a
+// vein — baked to a dense grid and read at a hit's world position,
+// scaled to the archetype's units and folded by mirroring on every
+// axis so the tiling has no seam. A cut through the matter shows the
+// same veins inside. No chart, no frame: the field is the texture.
+
+pub const Volume = struct {
+    res: u32,
+    /// The cube's extent in the archetype's own lattice units.
+    extent: f32,
+    /// φ over the cube, res³, z rows of y rows of x.
+    phi: []f32,
+    hash: [32]u8,
+    min: f32,
+    max: f32,
+
+    pub fn deinit(self: *Volume, gpa: std.mem.Allocator) void {
+        gpa.free(self.phi);
+    }
+
+    /// Bake the cube `centre ± half` of world `w` at `res` samples an
+    /// edge: the carrier by the spline.
+    pub fn bake(gpa: std.mem.Allocator, w: *const World, centre: [3]f64, half: f64, res: u32) !Volume {
+        const snap = w.published();
+        const n: usize = @as(usize, res) * res * res;
+        var out = Volume{ .res = res, .extent = @floatCast(2 * half), .phi = try gpa.alloc(f32, n), .hash = snap.contentHash(), .min = std.math.inf(f32), .max = -std.math.inf(f32) };
+        var k: u32 = 0;
+        while (k < res) : (k += 1) {
+            var j: u32 = 0;
+            while (j < res) : (j += 1) {
+                var i: u32 = 0;
+                while (i < res) : (i += 1) {
+                    const p = [3]f64{
+                        centre[0] - half + (@as(f64, @floatFromInt(i)) + 0.5) / @as(f64, @floatFromInt(res)) * 2 * half,
+                        centre[1] - half + (@as(f64, @floatFromInt(j)) + 0.5) / @as(f64, @floatFromInt(res)) * 2 * half,
+                        centre[2] - half + (@as(f64, @floatFromInt(k)) + 0.5) / @as(f64, @floatFromInt(res)) * 2 * half,
+                    };
+                    const v = snap.sample(Channel.surface.bit(), p);
+                    out.phi[(@as(usize, k) * res + j) * res + i] = v;
+                    out.min = @min(out.min, v);
+                    out.max = @max(out.max, v);
+                }
+            }
+        }
+        return out;
+    }
+
+    /// φ at `p` in the archetype's units, mirrored on every axis, trilinear.
+    pub fn at(self: *const Volume, p: [3]f32) f32 {
+        const e = self.extent;
+        const r: f32 = @floatFromInt(self.res);
+        var c: [3]f32 = undefined;
+        inline for (0..3) |a| {
+            var f = @mod(p[a], 2 * e);
+            if (f >= e) f = 2 * e - f;
+            c[a] = f / e * r - 0.5;
+        }
+        const x0f = @floor(c[0]);
+        const y0f = @floor(c[1]);
+        const z0f = @floor(c[2]);
+        const tx = c[0] - x0f;
+        const ty = c[1] - y0f;
+        const tz = c[2] - z0f;
+        const x0: i32 = @intFromFloat(x0f);
+        const y0: i32 = @intFromFloat(y0f);
+        const z0: i32 = @intFromFloat(z0f);
+        var v: f32 = 0;
+        inline for (0..2) |dz| {
+            inline for (0..2) |dy| {
+                inline for (0..2) |dx| {
+                    const wgt = (if (dx == 0) 1 - tx else tx) * (if (dy == 0) 1 - ty else ty) * (if (dz == 0) 1 - tz else tz);
+                    v += wgt * self.voxel(x0 + @as(i32, @intCast(dx)), y0 + @as(i32, @intCast(dy)), z0 + @as(i32, @intCast(dz)));
+                }
+            }
+        }
+        return v;
+    }
+
+    fn voxel(self: *const Volume, x: i32, y: i32, z: i32) f32 {
+        const r: i32 = @intCast(self.res);
+        const cx: usize = @intCast(@min(r - 1, @max(0, x)));
+        const cy: usize = @intCast(@min(r - 1, @max(0, y)));
+        const cz: usize = @intCast(@min(r - 1, @max(0, z)));
+        return self.phi[(cz * self.res + cy) * self.res + cx];
+    }
+};
+
+/// The marble's blend at a hit: 0 in the base, 1 inside a vein, smooth
+/// across the vein's band — the material's colour is a mix by it.
+pub fn veinBlend(vol: *const Volume, p_w: [3]f32, unit: f32, vein: f32) f32 {
+    const q = [3]f32{ p_w[0] / unit, p_w[1] / unit, p_w[2] / unit };
+    const phi = vol.at(q);
+    // The carved vein is where φ is positive; the edge softened over the
+    // vein's own width.
+    const t = @min(1, @max(0, (phi + vein) / (2 * vein)));
+    return t * t * (3 - 2 * t);
+}
+
+test "the volume tiles by mirroring on every axis and reads its own voxels back" {
+    const gpa = std.testing.allocator;
+    var v = Volume{ .res = 4, .extent = 4, .phi = try gpa.alloc(f32, 64), .hash = undefined, .min = 0, .max = 3 };
+    defer v.deinit(gpa);
+    for (0..64) |i| v.phi[i] = @floatFromInt(i % 4);
+    // Voxel centres read back exactly; a point two tiles over is the same.
+    try std.testing.expectApproxEqAbs(@as(f32, 2), v.at(.{ 2.5, 1.5, 0.5 }), 1e-6);
+    try std.testing.expectApproxEqAbs(v.at(.{ 1.3, 2.2, 0.7 }), v.at(.{ 1.3 + 8, 2.2 - 8, 0.7 + 16 }), 1e-6);
+    // Across a mirror edge the field is continuous.
+    try std.testing.expectApproxEqAbs(v.at(.{ 3.99, 1, 1 }), v.at(.{ 4.01, 1, 1 }), 0.05);
+}

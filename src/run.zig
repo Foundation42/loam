@@ -36,6 +36,7 @@ const usage =
     \\  --damage x0,y0,z0,x1,y1,z1@step   clear material in the box at step
     \\  --slice CH:AXIS:COORD:RES:FILE    write a PGM slice at the end (e.g. surface:z:0:128:out.pgm; the carrier is drawn as inside = 1)
     \\  --relief RES:FILE     bake the plates' face as a relief (the material seedbed) and write it as a PGM, deepest groove white
+    \\  --volume RES:FILE     bake the marble's cube as a volume and write its middle slice as a PGM, veins white
     \\  --project CH:AXIS:RES:FILE        write a PGM max-projection along AXIS at the end
     \\  --dump FILE          write the snapshot as a struple map at the end
     \\  --ray ox,oy,oz,dx,dy,dz           count leaves a ray samples vs crosses at the end
@@ -78,6 +79,7 @@ const Opts = struct {
     damage: ?struct { lo: [3]f64, hi: [3]f64, step: u32 } = null,
     slices: std.ArrayListUnmanaged(Slice) = .{},
     relief: ?struct { res: u32, path: []const u8 } = null,
+    volume: ?struct { res: u32, path: []const u8 } = null,
     projections: std.ArrayListUnmanaged(Slice) = .{},
     dump: ?[]const u8 = null,
     ray: ?[6]f64 = null,
@@ -189,6 +191,10 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             const v = try next(args, &i);
             const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadRelief;
             o.relief = .{ .res = try std.fmt.parseInt(u32, v[0..colon], 10), .path = v[colon + 1 ..] };
+        } else if (std.mem.eql(u8, a, "--volume")) {
+            const v = try next(args, &i);
+            const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadVolume;
+            o.volume = .{ .res = try std.fmt.parseInt(u32, v[0..colon], 10), .path = v[colon + 1 ..] };
         } else if (std.mem.eql(u8, a, "--slice")) {
             const v = try next(args, &i);
             var it = std.mem.splitScalar(u8, v, ':');
@@ -500,6 +506,22 @@ pub fn main() !void {
         for (vals, relief.h) |*v, h| v.* = h / @max(relief.max_depth, 1e-6);
         try seedbed.writePgm(rl.path, rl.res, vals, 1.0);
         try stdout.print("relief {d}×{d} over ±{d:.0}, deepest groove {d:.2} units, archetype {s} → {s}\n", .{ rl.res, rl.res, seedbed.PLATES_HALF, relief.max_depth, std.fmt.fmtSliceHexLower(relief.hash[0..8]), rl.path });
+    }
+    if (opts.volume) |vo| {
+        // The volumetric archetype: the marble's cube frozen as a grid,
+        // the middle slice as a picture, the veins white.
+        const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
+        var vol = try loam.bark.Volume.bake(gpa, &world, c, seedbed.MARBLE_BAKE_HALF, vo.res);
+        defer vol.deinit(gpa);
+        const vals = try gpa.alloc(f32, @as(usize, vo.res) * vo.res);
+        defer gpa.free(vals);
+        const mid: usize = vo.res / 2;
+        for (0..vo.res) |j| for (0..vo.res) |i| {
+            const phi = vol.phi[(mid * vo.res + j) * vo.res + i];
+            vals[j * vo.res + i] = @min(1, @max(0, (phi + seedbed.MARBLE_VEIN) / (2 * seedbed.MARBLE_VEIN)));
+        };
+        try seedbed.writePgm(vo.path, vo.res, vals, 1.0);
+        try stdout.print("volume {d}³ over ±{d:.0}, φ {d:.2}..{d:.2}, archetype {s} → {s}\n", .{ vo.res, seedbed.MARBLE_BAKE_HALF, vol.min, vol.max, std.fmt.fmtSliceHexLower(vol.hash[0..8]), vo.path });
     }
     for (opts.projections.items) |pr| {
         const vals = try seedbed.project(&world, gpa, pr.bit, pr.axis, .{ -64, -16, -64 }, .{ 64, 112, 64 }, pr.res, pr.res);

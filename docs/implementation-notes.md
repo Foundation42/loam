@@ -2264,11 +2264,52 @@ would be seamless without it), and the archetype is a height field
 of a face, not the volume (a cut through the plates would show the
 slab, not the tree). 96 gates green.
 
+### The plates on the tree, and the marble (Christian's eye, then his idea; the same night)
+
+His screenshots of the plates: "fancy modern fractal stockings" — the
+whirlpools on a branch are the field frame's projection of world
+position folding back around a tube, and the lace on the trunk is the
+mirror tile reflected in plain view. Neither showed on the grain,
+which has no motif to fold or reflect. The finding: a statistically
+homogeneous texture needs only the field's frame; a STRUCTURED
+archetype on a surface needs a chart of that surface — the sweep's
+own (s, θ), kept as history — or it needs to be a VOLUME. "Different
+archetypes for different use cases" (Christian). The grain, which he
+read as walnut, stays the tree's default; the plates stay as the
+surface variant; and the volume is his:
+
+"Sampling the PBR field in the brick as if it were a 3D texture — a
+loam gradient field that is reasonably milky white with a black
+structure inside it, and the tree picks up the (wrapped/scaled)
+material field in world space." Built: the `marble` scene — a cube of
+base, 28 crack fronts freed from any plane carving veins through it
+(a TUNNELLING front: `inhibit` NEGATIVE means inhibited by air ahead
+rather than matter, so a vein stops where it meets a vein or a face —
+the sign carries it, no new field, G1 unmoved); `bark.Volume`, the
+cube's carrier baked to a dense grid inside the faces
+(`MARBLE_BAKE_HALF`: the bake that reached the faces wore a line of
+half-vein at every mirror), mirrored on every axis, trilinear,
+unit-tested; `loam-run --scene marble --volume 128:file.pgm` writes
+the middle slice. On the GPU the same buffer as the relief with a kind
+in its header (2: a volume, res³ of φ), the shader sampling it at the
+hit's world position scaled to the archetype's units, the colour a
+mix from the material entry's white to the vein's dark by the vein's
+soft edge, the normal left polished; the material entry for marble is
+white at roughness 0.15. `--loam-bark marble`. Rendered at 8 mm a
+unit: a polished pale stone, dark veins, no fold, no seam, and a cut
+through the trunk would show the same veins. The tree never knew.
+
+The veins are short: the fronts stop at the first vein or face they
+meet and wander little. Longer, sheet-like veins are the archetype's
+tuning, play.
+
 ### Open
 
-The archetype's mip chain; a volumetric archetype (depth through φ);
-a periodic slab. `who` and `segment` packed to one plane, and `own`
-where `other` is far, are the next two of the seven-plane cost. The one-sided mask's
+The archetype's mip chain; a periodic slab or cube; the veins'
+morphology; the chart path for structured surface archetypes if the
+plates are wanted on a tube. `who` and `segment` packed to one plane,
+and `own` where `other` is far, are the next two of the seven-plane
+cost. The one-sided mask's
 error inside a collar, if a chart read there ever matters. The
 amplitudes, PROPOSED. The silhouette ensemble, recorded with its
 trigger (shimmer at a silhouette under the footprint cut). From
