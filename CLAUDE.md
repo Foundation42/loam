@@ -67,12 +67,14 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   compares the bytes against a frozen reference.
 - **What runs in parallel** when a world has `jobs` (or `step` is handed
   a system): the operate phase, applying deltas, finalize (summary and
-  hash), blob authoring, and the seam pass's collect phase — all per
-  brick, order-free; the seam writes are then sorted and applied in key
-  order. The front pass is serial (id order is the determinism) and its
-  parallel form is recorded with a trigger. The G3 ensemble runs its
-  worlds one per core on plain threads, since each world is independent.
-  `loam-run --threads N` sets all of it, and the hash must not move.
+  hash), blob authoring, the seam pass's collect phase, and the front
+  pass into per-front sinks — all order-free; seam writes are sorted and
+  applied in key order, sinks are merged in id order (Age set-once: the
+  first in id order wins). The G3 ensemble runs its worlds one per core
+  on plain threads. `loam-run --threads N` sets all of it, and the hash
+  must not move — and "serial equals parallel" is not enough: G1's
+  frozen reference is what caught the front pass summing two birth
+  times while agreeing with itself at every thread count.
 - **Randomness is counter-based.** `rng.Stream` hashes (seed, who, epoch,
   counter); nothing draws sequentially, so parallel order cannot leak in.
 - **Snapshots are immutable and refcounted.** A published brick is never

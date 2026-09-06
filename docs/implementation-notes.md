@@ -472,11 +472,38 @@ with no new dependency, and substr is private where loam is public.
   count that does not depend on the schedule — and `seam_bricks` the
   clones. Rejected: counting attempted writes, which would have varied
   with the chunking.
-- **What is still serial**: the front pass (id order), phase B, the
-  frontier probe, the tree builds. Phase B is a sort plus a walk over a
-  few hundred writes; the tree builds are path copies. The front pass is
-  next if fronts ever number in the thousands: per-front stamp buffers
-  merged in id order, the same shape as this.
+- **What is still serial**: phase B, the frontier probe, the tree
+  builds. Phase B is a sort plus a walk over a few hundred writes; the
+  tree builds are path copies. The front pass went parallel next, while
+  it was hot — the entry below.
+
+## The front pass, sinks merged in id order (2026-09-06)
+
+- **Each front stamps into a SINK of its own** — deposits by brick, its
+  spawns, its counts — in parallel over the JobSystem; the sinks are
+  merged into the shared buffer in id order afterwards. Float addition
+  is not associative, so the merge adds each front's planes in the order
+  the serial pass added them, and only the samples the front wrote (a
+  zero it never touched must not turn a −0 into +0).
+- **The frozen reference caught a drift the serial-versus-parallel
+  comparison could not.** The first cut agreed with itself at 1 and 16
+  threads and did not match `74cc820b…`. Cause: Age is written ONCE per
+  sample per step (birth time), and the serial pass enforced "once" by
+  reading the shared entry's pending delta — the first front's write
+  stopped the second's. With per-front sinks the second front no longer
+  saw it and wrote again; the merge summed two birth times. The merge
+  now treats Age as set-once, first in id order wins (the same front the
+  serial pass let win), and the reference holds. Two runs of one binary
+  agreeing is necessary, not sufficient — the second time this phase
+  has said so.
+- **Reads during the pass** are the step-start snapshot, the active-key
+  list, the policy, and each front's own struct; the writes are the
+  front's struct and its sink. `coverCube` and the neighbourhood lists
+  allocate per job through the thread-safe allocator.
+- **Measured** (ReleaseFast, sapling, 220 steps, 10 fronts): `f6a18875…`
+  at 1 and 16 threads — Christian's own number from the previous commit;
+  0.69 ms per step against 1.95 serial. Ten fronts is too few to show
+  the pass's own scaling; it is there for when there are thousands.
 
 ## P1.7 — the seedbed (2026-09-06)
 
@@ -505,7 +532,6 @@ with no new dependency, and substr is private where loam is public.
 | Ring inheritance at a branch | `World.budSpawn` starts a fresh ring | a branch base that looks wrong in a capture |
 | Frontier into partly filled cubes | `materialiseFrontier` skips an inner node | a diffusion mass check across a gauge boundary that leaks |
 | A stack-allocated cursor | `ray.Cursor` takes a gpa for its queue | matryoshka's traversal wanting no allocator |
-| Parallel front pass | `World.frontPass`: per-front stamp buffers merged in id order, the seam pass's shape | fronts in the thousands |
 
 ## Measurements (regime stated)
 

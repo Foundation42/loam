@@ -336,8 +336,8 @@ pub const World = struct {
 
         self.stats.ns_operate = timer.lap();
 
-        // 4. Fronts, serial, id order, after the barrier.
-        if (dt > 0) try self.frontPass(base, dt);
+        // 4. Fronts, after the barrier: parallel into sinks, merged in id order.
+        if (dt > 0) try self.frontPass(base, dt, sys);
         self.stats.ns_fronts = timer.lap();
 
         // 5. Commit and publish.
@@ -436,36 +436,126 @@ pub const World = struct {
     }
 
     // ── The front pass (R1) ──────────────────────────────────────────────
+    //
+    // Fronts run in parallel, each into a SINK of its own — its deposits
+    // by brick, its spawns, its counts — and the sinks are merged into the
+    // shared buffer in id order afterwards. Float addition is not
+    // associative, so the merge adds each front's planes in the order the
+    // serial pass added them; the bytes are the same at any thread count
+    // and G1 says so.
 
-    fn frontPass(self: *World, base: *const Snapshot, dt: f64) !void {
-        const gpa = self.gpa;
-        var spawns = std.ArrayListUnmanaged(update.Spawn){};
-        defer spawns.deinit(gpa);
-        const n = self.fronts.items.len;
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
-            const f = &self.fronts.items[i];
-            if (!f.alive) continue;
-            if (f.dormant) {
-                // Re-check only when something changed under the front.
-                if (!keyInSorted(base.active, f.brick)) {
-                    self.stats.fronts_dormant += 1;
-                    continue;
-                }
-                if (!self.canGrow(base, f)) {
-                    self.stats.fronts_dormant += 1;
-                    continue;
-                }
-                f.dormant = false;
-            } else if (!self.canGrow(base, f)) {
-                f.dormant = true;
-                self.stats.fronts_dormant += 1;
-                continue;
+    /// One front's output for the step.
+    const Sink = struct {
+        alloc: std.mem.Allocator,
+        entries: std.ArrayListUnmanaged(*update.RegionUpdate) = .{},
+        by_key: std.AutoHashMapUnmanaged(u64, *update.RegionUpdate) = .{},
+        spawns: std.ArrayListUnmanaged(update.Spawn) = .{},
+        stepped: bool = false,
+        dormant: bool = false,
+        died: bool = false,
+        spawned: u64 = 0,
+
+        fn region(self: *Sink, key: Key) !*update.RegionUpdate {
+            const gop = try self.by_key.getOrPut(self.alloc, key.raw());
+            if (!gop.found_existing) {
+                const ru = try self.alloc.create(update.RegionUpdate);
+                ru.* = .{ .key = key };
+                gop.value_ptr.* = ru;
+                try self.entries.append(self.alloc, ru);
             }
-            try self.stepFront(base, f, dt, &spawns);
-            self.stats.front_steps += 1;
+            return gop.value_ptr.*;
         }
-        for (spawns.items) |s| try self.pending_spawns.append(gpa, s);
+    };
+
+    const FrontCtx = struct {
+        world: *World,
+        base: *const Snapshot,
+        dt: f64,
+        sinks: []Sink,
+        failed: std.atomic.Value(bool),
+    };
+
+    fn frontOne(ctx: *FrontCtx, i: usize) void {
+        frontStep(ctx, i) catch {
+            ctx.failed.store(true, .release);
+        };
+    }
+
+    fn frontStep(ctx: *FrontCtx, i: usize) !void {
+        const self = ctx.world;
+        const base = ctx.base;
+        const f = &self.fronts.items[i];
+        const sink = &ctx.sinks[i];
+        if (!f.alive) return;
+        if (f.dormant) {
+            // Re-check only when something changed under the front.
+            if (!keyInSorted(base.active, f.brick)) {
+                sink.dormant = true;
+                return;
+            }
+            if (!self.canGrow(base, f)) {
+                sink.dormant = true;
+                return;
+            }
+            f.dormant = false;
+        } else if (!self.canGrow(base, f)) {
+            f.dormant = true;
+            sink.dormant = true;
+            return;
+        }
+        try self.stepFront(base, f, ctx.dt, sink);
+        sink.stepped = true;
+    }
+
+    fn frontPass(self: *World, base: *const Snapshot, dt: f64, sys: ?*jobs.JobSystem) !void {
+        const gpa = self.gpa;
+        const n = self.fronts.items.len;
+        if (n == 0) return;
+        const sinks = try gpa.alloc(Sink, n);
+        defer gpa.free(sinks);
+        const alloc = self.buffer.planeAllocator();
+        for (sinks) |*sk| sk.* = .{ .alloc = alloc };
+        var ctx = FrontCtx{ .world = self, .base = base, .dt = dt, .sinks = sinks, .failed = std.atomic.Value(bool).init(false) };
+        parallelRange(sys, n, 2, FrontCtx, &ctx, frontOne);
+        if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
+        // Merge in id order — the serial pass's order — brick by brick,
+        // channel by channel, sample by sample, adding only what the front
+        // wrote (a zero it never touched must not turn a −0 into +0).
+        for (sinks) |*sk| {
+            if (sk.stepped) self.stats.front_steps += 1;
+            if (sk.dormant) self.stats.fronts_dormant += 1;
+            if (sk.died) self.stats.deaths += 1;
+            self.stats.spawns += sk.spawned;
+            std.mem.sort(*update.RegionUpdate, sk.entries.items, {}, struct {
+                fn lt(_: void, a: *update.RegionUpdate, b: *update.RegionUpdate) bool {
+                    return a.key.raw() < b.key.raw();
+                }
+            }.lt);
+            for (sk.entries.items) |local| {
+                const ru = try self.buffer.region(local.key);
+                var mask = local.mask;
+                while (mask != 0) {
+                    const bit: u6 = @intCast(@ctz(mask));
+                    mask &= mask - 1;
+                    const src = local.deltas[bit].?;
+                    const dst = try ru.delta(self.buffer.arena.allocator(), bit);
+                    if (bit == Channel.age.bit()) {
+                        // Birth time is written ONCE per sample per step: the
+                        // serial pass let the first front's pending write
+                        // stop the second's. Here the first in id order wins,
+                        // which is the same front.
+                        for (dst, src) |*d, v| {
+                            if (v != 0 and d.* == 0) d.* = v;
+                        }
+                    } else {
+                        for (dst, src) |*d, v| {
+                            if (v != 0) d.* += v;
+                        }
+                    }
+                }
+            }
+            for (sk.spawns.items) |sp| try self.pending_spawns.append(gpa, sp);
+        }
     }
 
     fn keyInSorted(keys: []const Key, k: Key) bool {
@@ -496,7 +586,7 @@ pub const World = struct {
         return m <= f.params.inhibit;
     }
 
-    fn stepFront(self: *World, base: *const Snapshot, f: *Front, dt: f64, spawns: *std.ArrayListUnmanaged(update.Spawn)) !void {
+    fn stepFront(self: *World, base: *const Snapshot, f: *Front, dt: f64, sink: *Sink) !void {
         const p = f.params;
         var stream = rng.Stream.front(self.seed, f.id, self.epoch);
 
@@ -530,7 +620,7 @@ pub const World = struct {
         }
         if (f.s >= p.length) f.alive = false;
         if (!f.alive) {
-            self.stats.deaths += 1;
+            sink.died = true;
             return;
         }
 
@@ -541,7 +631,7 @@ pub const World = struct {
 
         // Deposit the ring into the field; draw down the potential around it.
         const avail = base.sample(Channel.growth.bit(), aheadOf(f));
-        try self.stamp(base, f, dt, envelope, avail);
+        try self.stamp(base, f, dt, envelope, avail, sink);
 
         // Branch from a bud.
         if (f.age >= p.min_age and f.cooldown == 0 and f.generation < p.max_generation) {
@@ -554,10 +644,10 @@ pub const World = struct {
                 }
             }
             if (best) |si| {
-                try spawns.append(self.gpa, self.budSpawn(f, si, envelope));
+                try sink.spawns.append(sink.alloc, self.budSpawn(f, si, envelope));
                 f.ring[si] = .{};
                 f.cooldown = p.branch_cooldown;
-                self.stats.spawns += 1;
+                sink.spawned += 1;
             }
         }
 
@@ -660,7 +750,7 @@ pub const World = struct {
     /// was first laid, so the age of tissue is `now − Age` — derivable
     /// without an ageing operator touching dormant bricks, which is the
     /// only encoding of history G5 allows.
-    fn stamp(self: *World, base: *const Snapshot, f: *const Front, dt: f64, envelope: f32, avail: f32) !void {
+    fn stamp(self: *World, base: *const Snapshot, f: *const Front, dt: f64, envelope: f32, avail: f32, sink: *Sink) !void {
         const p = f.params;
         const now_s: f32 = @floatCast(@as(f64, @floatFromInt(self.time_ns)) / 1e9);
         var rmax: f32 = 0;
@@ -702,10 +792,10 @@ pub const World = struct {
         }
         for (keys.keys()) |raw| {
             const key = Key.fromRaw(raw);
-            const ru = try self.buffer.region(key);
+            const ru = try sink.region(key);
             const o = key.origin();
             const sp: i64 = key.spacing();
-            const alloc = self.buffer.arena.allocator();
+            const alloc = sink.alloc;
             const existing = base.brickAt(key);
             var k: u32 = 0;
             while (k < brick.N) : (k += 1) {
