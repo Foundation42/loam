@@ -2705,6 +2705,21 @@ its neighbours get analytic irradiance, their bloom gate opens, and
 that is the halo he was measuring against. Numbers PROPOSED (drive 4,
 gain 0.6). Recorded in matryoshka's architecture.md §7.8a.
 
+RADIANT PARTICLES, the other half of his ask ("it needs solving for
+radiant particles as well"): `sprites.frag` writes the record too — a
+card's emission (its colour above one) times the coverage the blend
+applies, max-merged into `g_env_diff.a`, with a fragment-write →
+compute-read barrier after the pass, which already runs immediately
+before the bloom. Overlapping cards race on the read-modify-write
+(there is no atomic max on a float image), so the record is a LOWER
+BOUND where cards pile up: every store is one of the frame's plausible
+values, none above the true maximum — an effect's buffer, stated at
+the write. NOT SEEN RUNNING: no spray can be lit from this repo's
+command line (they come from a rig), so the particle path is built and
+compiled but not watched; his session has embers live. A `light`
+spray has no aura by this path and does not need one — its rows are
+splats, real light.
+
 ### Open
 
 The sprites' emissive record (their aura); the palette on sheets (the ember's radiance first); pruning and an aspect bound for the RBF set; the
