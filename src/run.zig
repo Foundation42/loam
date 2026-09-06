@@ -49,6 +49,8 @@ const usage =
     \\  --budget-fraction F  the same as a fraction of each step's active set (G14 c)
     \\  --budget-order O     attention (default) | key | queue | no_lag — the three mutations
     \\  --budget-schedule F  replay the budgets recorded on trace F's `# step` lines (G14 d)
+    \\  --units U            step through work(U) calls of U units (R16, SPREAD): calls per step printed
+    \\  --cut F              CUT: the fronts, then F of the head, then finish (R16)
     \\  --tropism-sweep D,D,…  the G3 ensemble at each stimulus displacement D (dose-response), then exit
     \\  --seeds N            seeds in the ensemble (default 6)
     \\  --coeff A            stimulus coefficient for the sweep (default the G3 scene's)
@@ -85,6 +87,10 @@ const Opts = struct {
     /// replayed: the budget is on the transcript, and replay replays the
     /// record (G14 d).
     budget_schedule: ?[]const u8 = null,
+    /// R16: step through `work(units)` calls of this size; and cut the
+    /// operate phase at this fraction of the head (fronts first, whole).
+    units: ?u64 = null,
+    cut: ?f32 = null,
     trace: ?[]const u8 = null,
     avoid: ?f32 = null,
     inhibit: ?f32 = null,
@@ -225,6 +231,10 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             o.budget_order = std.meta.stringToEnum(loam.world.BudgetOrder, v) orelse return error.BadBudgetOrder;
         } else if (std.mem.eql(u8, a, "--budget-schedule")) {
             o.budget_schedule = try next(args, &i);
+        } else if (std.mem.eql(u8, a, "--units")) {
+            o.units = try std.fmt.parseInt(u64, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--cut")) {
+            o.cut = try std.fmt.parseFloat(f32, try next(args, &i));
         } else if (std.mem.eql(u8, a, "--tropism-sweep")) {
             var it = std.mem.splitScalar(u8, try next(args, &i), ',');
             while (it.next()) |part| try o.sweep.append(gpa, try std.fmt.parseFloat(f64, part));
@@ -353,14 +363,31 @@ pub fn main() !void {
         } else world.policy.budget = opts.budget;
         world.policy.budget_order = opts.budget_order;
         timer.reset();
-        try world.step(.{ .frame = step, .time_ns = step * opts.dt_ms * std.time.ns_per_ms }, js);
+        const now_step = loam.Now{ .frame = step, .time_ns = step * opts.dt_ms * std.time.ns_per_ms };
+        if (opts.units != null or opts.cut != null) {
+            try world.begin(now_step, js);
+            if (opts.cut) |f| {
+                if (world.plan()) |p| {
+                    const head_take: u64 = @intFromFloat(@ceil(@as(f32, @floatFromInt(p.head)) * f));
+                    _ = try world.work(@as(u64, p.fronts) + head_take);
+                    try world.cut();
+                }
+            }
+            if (opts.units) |u| {
+                while (!try world.work(u)) {}
+            }
+            try world.finish();
+        } else try world.step(now_step, js);
         const ms = @as(f64, @floatFromInt(timer.read())) / 1e6;
         total_ms += ms;
         if (trace_file) |f| {
             // The step's budget on the transcript (Christian's ruling):
             // an input like the seed, so a replay replays the record.
             // `diff_traces.py` skips the line.
-            if (world.policy.budget) |b| try f.writer().print("# step {d} budget {d} head {d} carried {d} faded {d} skipped {d} overrun {d} backlog {d}\n", .{ step, b, world.evaluated.len, world.stats.carried, world.stats.faded, world.stats.fronts_skipped, world.stats.overrun, world.stats.backlog });
+            if (world.policy.budget != null or opts.units != null or opts.cut != null) {
+                const sp = world.published();
+                try f.writer().print("# step {d} budget {d} head {d} carried {d} faded {d} skipped {d} overrun {d} backlog {d} units {d} calls {d} cut {d} finish {d}\n", .{ step, if (world.policy.budget) |b| @as(i64, b) else -1, world.evaluated.len, world.stats.carried, world.stats.faded, world.stats.fronts_skipped, world.stats.overrun, world.stats.backlog, sp.units, sp.calls, if (sp.cut_at) |c| @as(i64, c) else -1, world.stats.units_finish });
+            }
             // The front's state after the step, lattice units about the
             // scene origin: what a representation change must not move.
             const c: f64 = @floatFromInt(loam.lattice.CELLS / 2);
@@ -380,6 +407,7 @@ pub fn main() !void {
                 step, s.active_in, s.active_out, s.region_evals, live, dormant, s.bricks_changed, s.bricks_materialised, s.seam_bricks, s.seam_writes, s.halo_writes, s.spawns, ms,
             });
             if (world.policy.budget != null) try stdout.print("           budget {d}: {d} carried, {d} faded, {d} front-steps skipped, overrun {d}, backlog {d} ({d} steps over)\n", .{ world.policy.budget.?, s.carried, s.faded, s.fronts_skipped, s.overrun, s.backlog, world.overload_steps });
+            if (opts.units != null or opts.cut != null) try stdout.print("           units {d} in {d} calls, {d} in finish; cut at {d}\n", .{ world.published().units, world.published().calls, s.units_finish, if (world.published().cut_at) |c| @as(i64, c) else -1 });
             if (opts.phases) try stdout.print("           operate {d:.2}  fronts {d:.2}  apply {d:.2}  frontier {d:.2}  seams {d:.2}  finalize {d:.2}  build {d:.2}  publish {d:.2} ms\n", .{
                 @as(f64, @floatFromInt(s.ns_operate)) / 1e6, @as(f64, @floatFromInt(s.ns_fronts)) / 1e6, @as(f64, @floatFromInt(s.ns_apply)) / 1e6, @as(f64, @floatFromInt(s.ns_frontier)) / 1e6, @as(f64, @floatFromInt(s.ns_seams)) / 1e6, @as(f64, @floatFromInt(s.ns_finalize)) / 1e6, @as(f64, @floatFromInt(s.ns_build)) / 1e6, @as(f64, @floatFromInt(s.ns_publish)) / 1e6,
             });

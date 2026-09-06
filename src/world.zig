@@ -68,7 +68,7 @@ const Snapshot = tree.Snapshot;
 const Front = front.Front;
 const Channel = channel.Channel;
 
-pub const Error = error{ OutOfMemory, GaugeConflict, TimeRegression, TooManyReaders, UnknownChannel };
+pub const Error = error{ OutOfMemory, GaugeConflict, TimeRegression, TooManyReaders, UnknownChannel, StepInProgress, NoStep };
 
 /// Fed time. `frame` and `time_ns` both monotone; a regression is refused.
 pub const Now = struct { frame: u64, time_ns: u64 };
@@ -107,6 +107,15 @@ pub const Policy = struct {
     /// NOT guaranteed is that the world keeps up: more load than budget
     /// raises lag everywhere, visibly, on the transcript.
     budget: ?u32 = null,
+    /// The seam and halo apply passes chunked per target brick, so a
+    /// `work` call stops between bricks. False is G15 (b)'s mutation: a
+    /// pass applied whole, and a call exceeds its units.
+    chunk_applies: bool = true,
+    /// Fronts made deferrable: a `cut` during the front pass stops it,
+    /// and the fronts it did not reach do not move this step. G15 (c)
+    /// and (d)'s mutation — a skipped front step is the front's clock
+    /// silently halved, which is what the fronts-first rule forbids.
+    cut_fronts: bool = false,
     /// How the head is chosen under a budget. `.key` is G14 (c)'s
     /// mutation; `.queue` the tier ruling's — one obligation queue,
     /// fronts and backlog together in key order, cut at the budget;
@@ -151,6 +160,13 @@ pub const StepStats = struct {
     below_faithful: u64 = 0,
     diffusion_clamped: u64 = 0,
     active_out: u64 = 0,
+    /// R16: the step's work in units, the units of the last `work` call,
+    /// the calls it took, and the units `finish` had to perform beyond
+    /// the calls — the step's work past the host's budget, reported.
+    units: u64 = 0,
+    units_last_call: u64 = 0,
+    calls: u64 = 0,
+    units_finish: u64 = 0,
     // Wall-clock nanoseconds per phase: instrumentation only, printed
     // beside the counts, never read by the sim.
     ns_operate: u64 = 0,
@@ -219,6 +235,8 @@ pub const World = struct {
     /// attention order under a budget, Morton otherwise. Owned. G14 (a)
     /// recomputes this from the snapshot's summaries alone and compares.
     evaluated: []Key = &.{},
+    /// The step in progress between `begin` and `finish` (R16).
+    step_state: ?StepState = null,
     /// Consecutive steps whose backlog exceeded the budget: under a
     /// sustained cut the backlog grows, obligations fill the head, tier
     /// two gets nothing, and the world degrades to key-order round-robin
@@ -249,6 +267,7 @@ pub const World = struct {
         self.fronts.deinit(self.gpa);
         self.pending_spawns.deinit(self.gpa);
         self.gpa.free(self.evaluated);
+        self.abortStep();
         self.buffer.deinit();
     }
 
@@ -339,12 +358,136 @@ pub const World = struct {
     /// Commit whatever authoring has queued, as a step with no operators
     /// and no time. Publishes a new vid.
     pub fn apply(self: *World) Error!void {
-        try self.commit(.{ .frame = self.frame, .time_ns = self.time_ns }, self.head, false, &.{}, &.{}, null, self.jobs);
+        try self.beginAuthoring();
+        _ = try self.work(std.math.maxInt(u64));
+        try self.finish();
     }
 
-    // ── The step ─────────────────────────────────────────────────────────
+    // ── The step (R16): begin / work / cut / finish ──────────────────────
+    //
+    // A step's state lives on the world between calls — the update
+    // buffer, the changed set, the phase and its cursors. `work(units)`
+    // performs up to that many units in phase order and never more;
+    // `cut` stops the operate phase where it is; `finish` completes what
+    // remains — counted apart, the step's work beyond the host's calls —
+    // and publishes. `step` is the three in one, and publishes what the
+    // one-piece step published: the phases keep their order and their
+    // sorted applies, and the sinks are merged after the operators so
+    // every floating-point sum lands as it did.
 
-    pub fn step(self: *World, now: Now, js: ?*jobs.JobSystem) Error!void {
+    pub const Phase = enum(u8) { fronts, operate, merge, apply, frontier, scratch, seam1_collect, seam1_apply, seam2_collect, seam2_apply, halo_collect, halo_apply, finalize, build, ready };
+
+    const StepState = struct {
+        now: Now,
+        dt: f64,
+        evaluated: bool,
+        authoring: bool,
+        sys: ?*jobs.JobSystem,
+        base: *Snapshot,
+        budget: ?u32,
+        quiet: bool = false,
+        phase: Phase = .fronts,
+        units: u64 = 0,
+        calls: u32 = 0,
+        /// Units performed by the call in progress — counted, not
+        /// inferred from the budget, so a phase that overshoots is seen.
+        performed: u64 = 0,
+        timer: std.time.Timer,
+        // begin
+        all_keys: []Key = &.{},
+        head: []Key = &.{},
+        head_sorted: []Key = &.{},
+        /// The head as begun, sorted: what the front pass asks, uncut.
+        front_head: []Key = &.{},
+        carried: std.ArrayListUnmanaged(Key) = .{},
+        fronts: []Key = &.{},
+        updates: []*update.RegionUpdate = &.{},
+        // fronts
+        sinks: []Sink = &.{},
+        front_cursor: usize = 0,
+        front_end: usize = 0,
+        // operate
+        op_cursor: usize = 0,
+        op_end: usize = 0,
+        cut_at: ?u32 = null,
+        // apply
+        apply_started: bool = false,
+        entries: []*update.RegionUpdate = &.{},
+        results: []?Changed = &.{},
+        results_live: bool = false,
+        apply_cursor: usize = 0,
+        spawn_requests: std.ArrayListUnmanaged(update.Spawn) = .{},
+        changed: ChangedMap = .{},
+        order: std.ArrayListUnmanaged(u64) = .{},
+        bricks_owned: bool = false,
+        // frontier
+        overrides: std.ArrayListUnmanaged(tree.Override) = .{},
+        pre_root: ?*tree.Node = null,
+        frontier_stage: u8 = 0,
+        frontier_cursor: usize = 0,
+        requests: std.ArrayListUnmanaged(Key) = .{},
+        // seams and halos
+        scratch_root: ?*tree.Node = null,
+        n0: usize = 0,
+        lists: []WriteList = &.{},
+        all: WriteList = .{},
+        collect_cursor: usize = 0,
+        group_cursor: usize = 0,
+        seam_writes_before: u64 = 0,
+        // finalize, build
+        finalize_cursor: usize = 0,
+        dirty: std.ArrayListUnmanaged(Key) = .{},
+        active_out: std.ArrayListUnmanaged(Key) = .{},
+        root: ?*tree.Node = null,
+    };
+
+    fn deinitState(self: *World, st: *StepState) void {
+        const gpa = self.gpa;
+        if (st.all_keys.len > 0) gpa.free(st.all_keys);
+        if (st.head.len > 0) gpa.free(st.head);
+        if (st.head_sorted.len > 0) gpa.free(st.head_sorted);
+        if (st.front_head.len > 0) gpa.free(st.front_head);
+        st.carried.deinit(gpa);
+        if (st.fronts.len > 0) gpa.free(st.fronts);
+        if (st.updates.len > 0) gpa.free(st.updates);
+        if (st.sinks.len > 0) gpa.free(st.sinks); // their contents are the buffer's arena's
+        if (st.entries.len > 0) gpa.free(st.entries);
+        if (st.results_live) {
+            for (st.results) |r| if (r) |c| c.b.release(gpa);
+        }
+        if (st.results.len > 0) gpa.free(st.results);
+        st.spawn_requests.deinit(gpa);
+        if (st.bricks_owned) {
+            for (st.order.items) |raw| st.changed.get(raw).?.b.release(gpa);
+        }
+        st.changed.deinit(gpa);
+        st.order.deinit(gpa);
+        st.overrides.deinit(gpa);
+        if (st.pre_root) |r| r.release(gpa);
+        st.requests.deinit(gpa);
+        if (st.scratch_root) |r| r.release(gpa);
+        for (st.lists) |*l| l.deinit(gpa);
+        if (st.lists.len > 0) gpa.free(st.lists);
+        st.all.deinit(gpa);
+        st.dirty.deinit(gpa);
+        st.active_out.deinit(gpa);
+        if (st.root) |r| r.release(gpa);
+        st.base.release();
+    }
+
+    /// Drop a step in progress, publishing nothing.
+    pub fn abortStep(self: *World) void {
+        if (self.step_state) |*st| {
+            self.deinitState(st);
+            self.step_state = null;
+        }
+    }
+
+    /// Begin a step on fed time (R6, R16). Refuses a regression and a
+    /// step already in progress. After it: the active set and its head
+    /// are chosen, the region entries exist, and `work` may be called.
+    pub fn begin(self: *World, now: Now, js: ?*jobs.JobSystem) Error!void {
+        if (self.step_state != null) return Error.StepInProgress;
         if (self.started) {
             if (now.time_ns < self.time_ns or now.frame < self.frame) return Error.TimeRegression;
         } else {
@@ -361,6 +504,23 @@ pub const World = struct {
 
         const base = self.head;
         const gpa = self.gpa;
+        base.retain();
+        var st = StepState{
+            .now = now,
+            .dt = dt,
+            // Time passed: the head was looked at, whether or not any
+            // operator is mounted to look — a world with none has every
+            // brick settled, and must not carry its active set forward
+            // forever (the G4 mutation, healing unmounted, could never end
+            // its season once the sapling stopped mounting Decay).
+            .evaluated = dt > 0,
+            .authoring = false,
+            .sys = js orelse self.jobs,
+            .base = base,
+            .budget = self.policy.budget,
+            .timer = std.time.Timer.start() catch unreachable,
+        };
+        errdefer self.deinitState(&st);
 
         // A QUIET step: nothing active, no front that could move, nothing
         // queued. No operator would run and no front would deposit, so
@@ -369,85 +529,545 @@ pub const World = struct {
         // clock advances, the snapshot stands. (A dormant front wakes only
         // when its brick is active, which it is not.)
         if (self.isQuiet(base)) {
-            self.total.accumulate(self.stats);
+            st.quiet = true;
+            st.phase = .ready;
+            self.step_state = st;
             return;
         }
         self.buffer.reset();
 
         // 1. The active set — every brick, under the mutation.
-        var all_keys: []Key = &.{};
-        defer if (all_keys.len > 0) gpa.free(all_keys);
         const active: []const Key = if (self.policy.active_only) base.active else blk: {
             const bs = try base.bricks(gpa);
             defer gpa.free(bs);
-            all_keys = try gpa.alloc(Key, bs.len);
-            for (bs, 0..) |b, i| all_keys[i] = b.key;
-            break :blk all_keys;
+            st.all_keys = try gpa.alloc(Key, bs.len);
+            for (bs, 0..) |b, i| st.all_keys[i] = b.key;
+            break :blk st.all_keys;
         };
         self.stats.active_in = active.len;
 
-        // The budget (R15): the active set ordered by attention at `now`,
-        // its head evaluated, its tail carried. Without one, the head is
-        // the active set.
+        // 2. The head (R15, R17): the fronts' bricks, then the residual's
+        // score, cut at the budget; the tail carried.
         const chosen = try self.chooseHead(base, active, now);
-        defer if (chosen.fronts.len > 0) gpa.free(chosen.fronts);
-        gpa.free(self.evaluated);
-        self.evaluated = chosen.head;
-        const head: []const Key = chosen.head;
-        const carried: []const Key = chosen.carried;
-        defer if (carried.len > 0) gpa.free(carried);
-        self.stats.carried = carried.len;
-        // The head sorted by key: the commit's "evaluated this step", and
-        // the front pass's search when something was cut.
-        const head_sorted = try gpa.dupe(Key, head);
-        defer gpa.free(head_sorted);
-        std.mem.sort(Key, head_sorted, {}, Key.lessThan);
-
-        // 2. Entries, serially, one per evaluated brick.
-        var updates = try gpa.alloc(*update.RegionUpdate, head.len);
-        defer gpa.free(updates);
-        for (head, 0..) |k, i| updates[i] = try self.buffer.region(k);
-
-        // 3. Operate: region-local, order-free.
-        var timer = std.time.Timer.start() catch unreachable;
-        const sys = js orelse self.jobs;
-        // Time passed: the active set was looked at, whether or not any
-        // operator is mounted to look — a world with none has every brick
-        // settled, and must not carry its active set forward forever (the
-        // G4 mutation, healing unmounted, could never end its season once
-        // the sapling stopped mounting Decay).
-        const evaluated = dt > 0;
-        if (evaluated and self.operators.items.len > 0) {
-            var ctx = OperateCtx{
-                .world = self,
-                .base = base,
-                .dt = dt,
-                .active = head,
-                .updates = updates,
-                .alloc = self.buffer.planeAllocator(),
-                .evals = std.atomic.Value(u64).init(0),
-                .clamped = std.atomic.Value(u64).init(0),
-            };
-            if (sys) |system| {
-                var counter = jobs.Counter.init(0);
-                system.parallelFor(@intCast(head.len), self.policy.chunk, operateJob, &ctx, &counter);
-                system.waitFor(&counter);
-            } else {
-                operateRange(&ctx, 0, head.len);
-            }
-            self.stats.region_evals = ctx.evals.load(.monotonic);
-            self.stats.diffusion_clamped = ctx.clamped.load(.monotonic);
+        st.head = chosen.head;
+        st.fronts = chosen.fronts;
+        if (chosen.carried.len > 0) {
+            try st.carried.appendSlice(gpa, chosen.carried);
+            gpa.free(chosen.carried);
         }
+        self.stats.carried = st.carried.items.len;
+        st.head_sorted = try gpa.dupe(Key, st.head);
+        std.mem.sort(Key, st.head_sorted, {}, Key.lessThan);
+        st.front_head = try gpa.dupe(Key, st.head_sorted);
+        st.op_end = st.head.len;
 
-        self.stats.ns_operate = timer.lap();
+        // 3. Entries, serially, one per evaluated brick; the fronts' sinks.
+        st.updates = try gpa.alloc(*update.RegionUpdate, st.head.len);
+        for (st.head, 0..) |k, i| st.updates[i] = try self.buffer.region(k);
+        st.sinks = try gpa.alloc(Sink, self.fronts.items.len);
+        st.front_end = st.sinks.len;
+        const alloc = self.buffer.planeAllocator();
+        for (st.sinks) |*sk| sk.* = .{ .alloc = alloc };
+        self.step_state = st;
+    }
 
-        // 4. Fronts, after the barrier: parallel into sinks, merged in id order.
-        if (dt > 0) try self.frontPass(base, dt, if (carried.len > 0) head_sorted else null, sys);
-        self.stats.ns_fronts = timer.lap();
+    /// Begin an authoring commit: what the buffer holds, applied as a
+    /// step with no operators and no time; the active set carries.
+    fn beginAuthoring(self: *World) Error!void {
+        if (self.step_state != null) return Error.StepInProgress;
+        const base = self.head;
+        base.retain();
+        self.step_state = StepState{
+            .now = .{ .frame = self.frame, .time_ns = self.time_ns },
+            .dt = 0,
+            .evaluated = false,
+            .authoring = true,
+            .sys = self.jobs,
+            .base = base,
+            .budget = null,
+            .phase = .apply,
+            .timer = std.time.Timer.start() catch unreachable,
+        };
+    }
 
-        // 5. Commit and publish.
-        try self.commit(now, base, evaluated, head_sorted, carried, self.policy.budget, sys);
-        self.total.accumulate(self.stats);
+    /// Whether a step is between `begin` and `finish`.
+    pub fn inProgress(self: *const World) bool {
+        return self.step_state != null;
+    }
+
+    /// The head and the fronts this step will evaluate — for a host that
+    /// budgets by them.
+    pub const Plan = struct { fronts: usize, head: usize };
+    pub fn plan(self: *const World) ?Plan {
+        const st = if (self.step_state) |*s| s else return null;
+        return .{ .fronts = self.fronts.items.len, .head = st.head.len };
+    }
+
+    /// Perform up to `units` units of the step in progress, in phase
+    /// order, never more. True when only `finish` remains.
+    pub fn work(self: *World, units: u64) Error!bool {
+        const st: *StepState = if (self.step_state) |*s| s else return Error.NoStep;
+        st.calls += 1;
+        self.stats.calls += 1;
+        if (st.quiet or st.phase == .ready) return true;
+        errdefer self.abortStep();
+        var remaining = units;
+        st.performed = 0;
+        while (remaining > 0 and st.phase != .ready) {
+            if (try self.runPhase(st, &remaining)) st.phase = @enumFromInt(@intFromEnum(st.phase) + 1);
+        }
+        const spent = st.performed;
+        st.units += spent;
+        self.stats.units += spent;
+        self.stats.units_last_call = spent;
+        return st.phase == .ready;
+    }
+
+    /// Stop the operate phase where it is: what the head has not reached
+    /// carries forward with its since intact (a cut brick rides the
+    /// residual with lag ≥ one step by construction). No effect once the
+    /// operators have run; the fronts are never cut.
+    pub fn cut(self: *World) Error!void {
+        const st: *StepState = if (self.step_state) |*s| s else return Error.NoStep;
+        if (st.quiet or st.authoring or st.cut_at != null) return;
+        if (@intFromEnum(st.phase) > @intFromEnum(Phase.operate)) return;
+        const gpa = self.gpa;
+        // The mutation: fronts made deferrable — the ones the cut reaches
+        // before do not move this step (G15 c and d).
+        if (self.policy.cut_fronts and st.phase == .fronts) {
+            self.stats.fronts_skipped += st.front_end - st.front_cursor;
+            st.front_end = st.front_cursor;
+        }
+        const at = st.op_cursor;
+        st.cut_at = @intCast(at);
+        st.op_end = at;
+        try st.carried.appendSlice(gpa, st.head[at..]);
+        self.stats.carried = st.carried.items.len;
+        if (at < st.head.len) {
+            st.head = if (at == 0) blk: {
+                gpa.free(st.head);
+                break :blk &.{};
+            } else try gpa.realloc(st.head, at);
+            gpa.free(st.head_sorted);
+            st.head_sorted = try gpa.dupe(Key, st.head);
+            std.mem.sort(Key, st.head_sorted, {}, Key.lessThan);
+        }
+    }
+
+    /// Complete the step — whatever `work` left, counted apart as
+    /// `units_finish` — and publish.
+    pub fn finish(self: *World) Error!void {
+        const st: *StepState = if (self.step_state) |*s| s else return Error.NoStep;
+        errdefer self.abortStep();
+        if (!st.quiet and st.phase != .ready) {
+            var remaining: u64 = std.math.maxInt(u64);
+            st.performed = 0;
+            while (st.phase != .ready) {
+                if (try self.runPhase(st, &remaining)) st.phase = @enumFromInt(@intFromEnum(st.phase) + 1);
+            }
+            const spent = st.performed;
+            st.units += spent;
+            self.stats.units += spent;
+            self.stats.units_finish = spent;
+        }
+        if (!st.quiet) try self.publishStep(st);
+        if (!st.authoring) {
+            self.gpa.free(self.evaluated);
+            self.evaluated = st.head;
+            st.head = &.{};
+            self.total.accumulate(self.stats);
+        }
+        const quiet = st.quiet;
+        self.deinitState(st);
+        self.step_state = null;
+        // What was applied is applied: the buffer is consumed. A second
+        // `apply` with nothing new applies nothing (it re-applied
+        // everything until P2.1b — the seams scene's first blob was
+        // doubled since P1.2), and a world that settled is quiet at the
+        // next step, not one empty publish later (the stale entries made
+        // `isQuiet` say no once).
+        if (!quiet) self.buffer.reset();
+    }
+
+    /// One step on fed time: begin, work it whole, finish.
+    pub fn step(self: *World, now: Now, js: ?*jobs.JobSystem) Error!void {
+        try self.begin(now, js);
+        _ = try self.work(std.math.maxInt(u64));
+        try self.finish();
+    }
+
+    fn addNs(self: *World, phase: Phase, ns: u64) void {
+        switch (phase) {
+            .operate => self.stats.ns_operate += ns,
+            .fronts, .merge => self.stats.ns_fronts += ns,
+            .apply => self.stats.ns_apply += ns,
+            .frontier => self.stats.ns_frontier += ns,
+            .scratch, .seam1_collect, .seam1_apply, .seam2_collect, .seam2_apply, .halo_collect, .halo_apply => self.stats.ns_seams += ns,
+            .finalize => self.stats.ns_finalize += ns,
+            .build => self.stats.ns_build += ns,
+            .ready => self.stats.ns_publish += ns,
+        }
+    }
+
+    /// Run the current phase for up to `remaining` units. True when the
+    /// phase is complete.
+    fn runPhase(self: *World, st: *StepState, remaining: *u64) Error!bool {
+        _ = st.timer.lap();
+        const done = switch (st.phase) {
+            .fronts => try self.runFronts(st, remaining),
+            .operate => try self.runOperate(st, remaining),
+            .merge => try self.runMerge(st, remaining),
+            .apply => try self.runApply(st, remaining),
+            .frontier => try self.runFrontier(st, remaining),
+            .scratch => try self.runScratch(st, remaining),
+            .seam1_collect => try self.runCollect(st, remaining, 1),
+            .seam1_apply => try self.runApplyWrites(st, remaining, false),
+            .seam2_collect => try self.runCollect(st, remaining, 2),
+            .seam2_apply => try self.runApplyWrites(st, remaining, false),
+            .halo_collect => if (self.policy.halo) try self.runCollect(st, remaining, 0) else true,
+            .halo_apply => if (self.policy.halo) try self.runApplyWrites(st, remaining, true) else true,
+            .finalize => try self.runFinalize(st, remaining),
+            .build => try self.runBuild(st, remaining),
+            .ready => true,
+        };
+        self.addNs(st.phase, st.timer.lap());
+        return done;
+    }
+
+    fn takeOf(left: usize, remaining: u64) usize {
+        return @intCast(@min(@as(u64, left), remaining));
+    }
+
+    /// Account `n` units: performed, and off the call's remaining budget,
+    /// saturating — an indivisible phase may overshoot, and the overshoot
+    /// is then seen in `performed` (G15 b's mutation).
+    fn spend(st: *StepState, remaining: *u64, n: u64) void {
+        st.performed += n;
+        remaining.* -|= n;
+    }
+
+    // Fronts, parallel into their sinks, one unit each — charged first,
+    // never cut. Merged in id order in the phase after the operators.
+    fn runFronts(self: *World, st: *StepState, remaining: *u64) Error!bool {
+        if (st.authoring or !st.evaluated) return true;
+        if (st.front_cursor >= st.front_end) return true;
+        const take = takeOf(st.front_end - st.front_cursor, remaining.*);
+        var ctx = FrontCtx{
+            .world = self,
+            .base = st.base,
+            .dt = st.dt,
+            .evaluated = if (st.carried.items.len > 0) st.front_head else null,
+            .sinks = st.sinks,
+            .failed = std.atomic.Value(bool).init(false),
+        };
+        parallelRangeFrom(st.sys, st.front_cursor, st.front_cursor + take, 2, FrontCtx, &ctx, frontOne);
+        if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
+        st.front_cursor += take;
+        spend(st, remaining, take);
+        return st.front_cursor >= st.front_end;
+    }
+
+    // Operate: region-local, order-free, one unit per head brick — the
+    // only phase a cut stops.
+    fn runOperate(self: *World, st: *StepState, remaining: *u64) Error!bool {
+        if (st.authoring or !st.evaluated or self.operators.items.len == 0) return true;
+        if (st.op_cursor >= st.op_end) return true;
+        const take = takeOf(st.op_end - st.op_cursor, remaining.*);
+        var ctx = OperateCtx{
+            .world = self,
+            .base = st.base,
+            .dt = st.dt,
+            .active = st.head,
+            .updates = st.updates,
+            .alloc = self.buffer.planeAllocator(),
+            .evals = std.atomic.Value(u64).init(0),
+            .clamped = std.atomic.Value(u64).init(0),
+        };
+        parallelRangeFrom(st.sys, st.op_cursor, st.op_cursor + take, self.policy.chunk, OperateCtx, &ctx, operateOne);
+        self.stats.region_evals += ctx.evals.load(.monotonic);
+        self.stats.diffusion_clamped += ctx.clamped.load(.monotonic);
+        st.op_cursor += take;
+        spend(st, remaining, take);
+        return st.op_cursor >= st.op_end;
+    }
+
+    fn operateOne(ctx: *OperateCtx, i: usize) void {
+        operateRange(ctx, i, i + 1);
+    }
+
+    // The sinks merged in id order — the serial pass's order — one unit.
+    fn runMerge(self: *World, st: *StepState, remaining: *u64) Error!bool {
+        if (st.authoring or !st.evaluated) return true;
+        for (st.sinks) |*sk| try self.mergeSink(sk);
+        spend(st, remaining, 1);
+        return true;
+    }
+
+    // Apply deltas: per entry independently (clone, add, clamp), one unit
+    // each; then recorded in key order, serially, which is what fixes the
+    // order of everything downstream.
+    fn runApply(self: *World, st: *StepState, remaining: *u64) Error!bool {
+        const gpa = self.gpa;
+        if (!st.apply_started) {
+            st.entries = try self.buffer.sorted(gpa);
+            st.results = try gpa.alloc(?Changed, st.entries.len);
+            for (st.results) |*r| r.* = null;
+            st.results_live = true;
+            st.apply_started = true;
+        }
+        if (st.apply_cursor < st.entries.len) {
+            const take = takeOf(st.entries.len - st.apply_cursor, remaining.*);
+            var actx = ApplyCtx{ .world = self, .base = st.base, .entries = st.entries, .results = st.results, .failed = std.atomic.Value(bool).init(false) };
+            parallelRangeFrom(st.sys, st.apply_cursor, st.apply_cursor + take, 16, ApplyCtx, &actx, applyEntry);
+            if (actx.failed.load(.acquire)) return Error.OutOfMemory;
+            st.apply_cursor += take;
+            spend(st, remaining, take);
+            if (st.apply_cursor < st.entries.len) return false;
+        }
+        for (st.entries, st.results) |ru, r| {
+            for (ru.spawns.items) |sp| try st.spawn_requests.append(gpa, sp);
+            const c = r orelse continue;
+            try st.changed.put(gpa, ru.key.raw(), c);
+            try st.order.append(gpa, ru.key.raw());
+        }
+        st.results_live = false;
+        st.bricks_owned = true;
+        return true;
+    }
+
+    fn overridesOf(self: *World, st: *StepState) !void {
+        st.overrides.clearRetainingCapacity();
+        for (st.order.items) |raw| try st.overrides.append(self.gpa, .{ .key = Key.fromRaw(raw), .brick = st.changed.get(raw).?.b });
+        std.mem.sort(tree.Override, st.overrides.items, {}, tree.Override.lessThan);
+    }
+
+    // Frontier: a changed brick whose face carries a value above the
+    // floor materialises the absent neighbour across it. Probed against a
+    // scratch tree that already holds this commit's bricks (one unit), a
+    // unit per changed brick for its requests, then resolved finest first
+    // (one unit) so a coarse request over a cube that finer requests are
+    // filling completes it at the finer gauge instead of colliding with
+    // it (a GaugeConflict at the tree build, P2.1).
+    fn runFrontier(self: *World, st: *StepState, remaining: *u64) Error!bool {
+        const gpa = self.gpa;
+        while (remaining.* > 0) {
+            switch (st.frontier_stage) {
+                0 => {
+                    try self.overridesOf(st);
+                    st.pre_root = try tree.build(gpa, st.base.root, st.overrides.items);
+                    spend(st, remaining, 1);
+                    st.frontier_stage = 1;
+                },
+                1 => {
+                    const pre = Snapshot{ .gpa = gpa, .vid = 0, .epoch = 0, .time_ns = 0, .seed = 0, .root = st.pre_root };
+                    while (st.frontier_cursor < st.order.items.len and remaining.* > 0) {
+                        try self.frontierRequests(&pre, st.changed.get(st.order.items[st.frontier_cursor]).?.b, &st.requests);
+                        st.frontier_cursor += 1;
+                        spend(st, remaining, 1);
+                    }
+                    if (st.frontier_cursor < st.order.items.len) return false;
+                    st.frontier_stage = 2;
+                },
+                2 => {
+                    const pre = Snapshot{ .gpa = gpa, .vid = 0, .epoch = 0, .time_ns = 0, .seed = 0, .root = st.pre_root };
+                    try self.materialiseRequests(st.base, &pre, st.requests.items, &st.changed, &st.order);
+                    if (st.pre_root) |r| r.release(gpa);
+                    st.pre_root = null;
+                    spend(st, remaining, 1);
+                    st.frontier_stage = 3;
+                    return true;
+                },
+                else => return true,
+            }
+        }
+        return st.frontier_stage == 3;
+    }
+
+    // A scratch tree with every changed brick, for the seam pass: one unit.
+    fn runScratch(self: *World, st: *StepState, remaining: *u64) Error!bool {
+        try self.overridesOf(st);
+        st.scratch_root = try tree.build(self.gpa, st.base.root, st.overrides.items);
+        spend(st, remaining, 1);
+        return true;
+    }
+
+    // Seams (pass 1 and 2) and halos (pass 0): collect writes in parallel,
+    // one unit per changed brick, into a list per brick; then gather and
+    // sort them for the apply. Only the bricks changed before the pass
+    // began are walked — neighbours the pass clones join `order` but
+    // their only new values are copies made here.
+    fn runCollect(self: *World, st: *StepState, remaining: *u64, pass: u8) Error!bool {
+        const gpa = self.gpa;
+        if (st.lists.len == 0 and st.collect_cursor == 0) {
+            if (pass != 2) st.n0 = st.order.items.len;
+            if (st.n0 == 0) return true;
+            st.lists = try gpa.alloc(WriteList, st.n0);
+            for (st.lists) |*l| l.* = .{};
+        }
+        if (st.n0 == 0) return true;
+        const view = Snapshot{ .gpa = gpa, .vid = 0, .epoch = 0, .time_ns = 0, .seed = 0, .root = st.scratch_root };
+        const take = takeOf(st.n0 - st.collect_cursor, remaining.*);
+        if (pass == 0) {
+            var ctx = HaloCtx{ .world = self, .view = &view, .changed = &st.changed, .order = st.order.items[0..st.n0], .chunk = 1, .lists = st.lists, .failed = std.atomic.Value(bool).init(false) };
+            parallelRangeFrom(st.sys, st.collect_cursor, st.collect_cursor + take, 4, HaloCtx, &ctx, haloCollectOne);
+            if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
+        } else {
+            var ctx = CollectCtx{ .world = self, .view = &view, .changed = &st.changed, .order = st.order.items[0..st.n0], .pass = pass, .chunk = 1, .lists = st.lists, .failed = std.atomic.Value(bool).init(false) };
+            parallelRangeFrom(st.sys, st.collect_cursor, st.collect_cursor + take, 4, CollectCtx, &ctx, collectOne);
+            if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
+        }
+        st.collect_cursor += take;
+        spend(st, remaining, take);
+        if (st.collect_cursor < st.n0) return false;
+        st.all.clearRetainingCapacity();
+        for (st.lists) |*l| {
+            try st.all.appendSlice(gpa, l.items);
+            l.deinit(gpa);
+        }
+        gpa.free(st.lists);
+        st.lists = &.{};
+        st.collect_cursor = 0;
+        std.mem.sort(SeamWrite, st.all.items, {}, SeamWrite.lessThan);
+        st.group_cursor = 0;
+        return true;
+    }
+
+    // The sorted writes applied per target brick, one unit each (the
+    // whole pass in one unit under the mutation). Halo writes are counted
+    // apart.
+    fn runApplyWrites(self: *World, st: *StepState, remaining: *u64, halo: bool) Error!bool {
+        if (st.all.items.len == 0) return true;
+        if (halo and st.group_cursor == 0) st.seam_writes_before = self.stats.seam_writes;
+        const view = Snapshot{ .gpa = self.gpa, .vid = 0, .epoch = 0, .time_ns = 0, .seed = 0, .root = st.scratch_root };
+        const max: u64 = if (self.policy.chunk_applies) remaining.* else std.math.maxInt(u64);
+        const done = try self.applyWriteGroups(&view, &st.changed, &st.order, st.all.items, &st.group_cursor, max);
+        spend(st, remaining, done);
+        if (st.group_cursor < st.all.items.len) return false;
+        if (halo) {
+            self.stats.halo_writes += self.stats.seam_writes - st.seam_writes_before;
+            self.stats.seam_writes = st.seam_writes_before;
+        }
+        st.all.clearRetainingCapacity();
+        st.group_cursor = 0;
+        return true;
+    }
+
+    // Finalize every changed brick, one unit each; then the lists the
+    // build and the snapshot need, serially.
+    fn runFinalize(self: *World, st: *StepState, remaining: *u64) Error!bool {
+        const gpa = self.gpa;
+        const eps = thresholds.EPSILON;
+        if (st.finalize_cursor < st.order.items.len) {
+            const take = takeOf(st.order.items.len - st.finalize_cursor, remaining.*);
+            var fctx = FinalizeCtx{ .world = self, .base = st.base, .changed = &st.changed, .order = st.order.items, .now_ns = st.now.time_ns, .head = st.head_sorted };
+            parallelRangeFrom(st.sys, st.finalize_cursor, st.finalize_cursor + take, 8, FinalizeCtx, &fctx, finalizeOne);
+            st.finalize_cursor += take;
+            spend(st, remaining, take);
+            if (st.finalize_cursor < st.order.items.len) return false;
+        }
+        try self.overridesOf(st);
+        for (st.order.items) |raw| {
+            const c = st.changed.getPtr(raw).?;
+            try st.dirty.append(gpa, Key.fromRaw(raw));
+            if (c.max_delta > eps or c.materialised) try st.active_out.append(gpa, Key.fromRaw(raw));
+            if (c.materialised) self.stats.bricks_materialised += 1;
+        }
+        self.stats.bricks_changed = st.order.items.len;
+        return true;
+    }
+
+    // The real tree: one unit. The overrides' bricks are retained by
+    // their leaves; ours are dropped.
+    fn runBuild(self: *World, st: *StepState, remaining: *u64) Error!bool {
+        const gpa = self.gpa;
+        st.root = try tree.build(gpa, st.base.root, st.overrides.items);
+        for (st.order.items) |raw| st.changed.get(raw).?.b.release(gpa);
+        st.bricks_owned = false;
+        if (st.scratch_root) |r| r.release(gpa);
+        st.scratch_root = null;
+        spend(st, remaining, 1);
+        return true;
+    }
+
+    // Spawn what was requested, assign ids in order; the active set for
+    // the next step; the snapshot; publish.
+    fn publishStep(self: *World, st: *StepState) Error!void {
+        const gpa = self.gpa;
+        const base = st.base;
+        const now = st.now;
+        for (self.pending_spawns.items) |s| try st.spawn_requests.append(gpa, s);
+        self.pending_spawns.clearRetainingCapacity();
+        for (st.spawn_requests.items) |s| {
+            const id: u32 = @intCast(self.fronts.items.len);
+            var f = Front{
+                .id = id,
+                .parent = s.parent,
+                .generation = s.generation,
+                .pos = s.pos,
+                .dir = s.dir,
+                .normal = s.normal,
+                .params = s.params,
+                .morphogens = s.morphogens,
+                .born_epoch = self.epoch,
+                .brick = Key.ofBrick(0, .{ 0, 0, 0 }),
+                .prev_pos = s.pos,
+                .prev_dir = s.dir,
+                .prev_normal = s.normal,
+                .prev_envelope = s.params.radius,
+            };
+            f.brick = self.brickUnder(base, f.pos);
+            try self.fronts.append(gpa, f);
+        }
+        var active = &st.active_out;
+        for (self.fronts.items) |*f| {
+            if (f.alive and !f.dormant) try active.append(gpa, f.brick);
+        }
+        if (!st.evaluated) {
+            for (base.active) |k| try active.append(gpa, k);
+        }
+        for (st.carried.items) |k| try active.append(gpa, k);
+
+        std.mem.sort(Key, active.items, {}, Key.lessThan);
+        std.mem.sort(Key, st.dirty.items, {}, Key.lessThan);
+        const snap = try gpa.create(Snapshot);
+        errdefer gpa.destroy(snap);
+        const fronts_copy = try gpa.dupe(Front, self.fronts.items);
+        errdefer gpa.free(fronts_copy);
+        const active_owned = try dedupKeys(gpa, active.items);
+        errdefer gpa.free(active_owned);
+        const dirty_owned = try dedupKeys(gpa, st.dirty.items);
+        errdefer gpa.free(dirty_owned);
+        // Since when each active brick is owed (R17): now if evaluated this
+        // step, else what it was, else now.
+        const since_owned = try gpa.alloc(u64, active_owned.len);
+        errdefer gpa.free(since_owned);
+        for (active_owned, 0..) |k, i| {
+            since_owned[i] = if (keyInSorted(st.head_sorted, k)) now.time_ns else (base.sinceOf(k) orelse now.time_ns);
+        }
+        snap.* = .{
+            .gpa = gpa,
+            .vid = self.vid + 1,
+            .epoch = self.epoch,
+            .time_ns = now.time_ns,
+            .seed = self.seed,
+            .root = st.root,
+            .fronts = fronts_copy,
+            .active = active_owned,
+            .dirty = dirty_owned,
+            .active_since = since_owned,
+            .budget = st.budget,
+            .cut_at = st.cut_at,
+            .units = st.units,
+            .calls = st.calls,
+        };
+        st.root = null; // the snapshot's now
+        const counts = snap.countNodes();
+        snap.brick_count = counts.bricks;
+        snap.node_count = counts.nodes;
+        self.stats.active_out = active_owned.len;
+        _ = st.timer.lap();
+        try self.publish(snap);
+        self.stats.ns_publish += st.timer.lap();
     }
 
     const Head = struct { head: []Key, carried: []Key, fronts: []Key };
@@ -480,7 +1100,10 @@ pub const World = struct {
         if (self.policy.budget) |b| {
             if (backlog > b) self.overload_steps += 1 else self.overload_steps = 0;
         } else self.overload_steps = 0;
-        if (active.len <= budget) return .{ .head = try gpa.dupe(Key, active), .carried = &.{}, .fronts = fronts };
+        // The head is ORDERED whether or not the budget cuts it: a `cut`
+        // (R16) stops the operate phase at its cursor, and the prefix it
+        // keeps must be the fronts and then the highest by score. (Under
+        // `.key` the order is Morton — the mutation.)
         // tier 0: hosts a live front (never cut); 1: the rest, by score.
         // Under `.queue` the backlog joins tier 0 — the tier ruling's
         // mutation, one key-ordered queue cut at the budget.
@@ -518,7 +1141,10 @@ pub const World = struct {
         // The fronts' tier is never cut: the head grows past the budget by
         // what they exceed it, and the step reports the overrun. (The
         // `.key` and `.queue` mutations cut at the budget, fronts and all.)
-        const take: usize = if (order == .attention or order == .no_lag) @max(budget, n0) else budget;
+        // (Never past the active set: a budget of one over an empty active
+        // set — the step after a world settles, reached through the
+        // previous step's stale buffer — indexed an empty head once.)
+        const take: usize = @min(if (order == .attention or order == .no_lag) @max(budget, n0) else budget, active.len);
         self.stats.overrun = take - budget;
         const head = try gpa.alloc(Key, take);
         errdefer gpa.free(head);
@@ -595,7 +1221,7 @@ pub const World = struct {
                 .seed = ctx.world.seed,
                 .alloc = ctx.alloc,
                 .registry = &ctx.world.registry,
-                .fronts_here = ctx.world.frontsNear(key),
+                .fronts_here = frontsNear(ctx.base.fronts, key),
             };
             for (ctx.world.operators.items) |op| {
                 op.evaluate(&rc, ctx.updates[i]) catch |err| {
@@ -611,22 +1237,30 @@ pub const World = struct {
     /// when there is one, else here. `f` must be order-free — every
     /// parallel phase is gated by G1 running with and without a system.
     fn parallelRange(sys: ?*jobs.JobSystem, count: usize, chunk: u32, comptime Ctx: type, ctx: *Ctx, comptime f: fn (*Ctx, usize) void) void {
-        if (count == 0) return;
+        parallelRangeFrom(sys, 0, count, chunk, Ctx, ctx, f);
+    }
+
+    /// `f(ctx, i)` for i in [start, end), over the job system in batches
+    /// of `chunk` when there is one — a phase's cursor window (R16).
+    fn parallelRangeFrom(sys: ?*jobs.JobSystem, start: usize, end: usize, chunk: u32, comptime Ctx: type, ctx: *Ctx, comptime f: fn (*Ctx, usize) void) void {
+        if (end <= start) return;
         if (sys) |js| {
+            const Off = struct { ctx: *Ctx, start: usize };
             const Wrap = struct {
                 fn job(j: *jobs.Job) void {
                     const range = j.getData(jobs.BatchRange);
-                    const c: *Ctx = @ptrCast(@alignCast(@constCast(range.context)));
+                    const o: *Off = @ptrCast(@alignCast(@constCast(range.context)));
                     var i: usize = range.start;
-                    while (i < range.end) : (i += 1) f(c, i);
+                    while (i < range.end) : (i += 1) f(o.ctx, o.start + i);
                 }
             };
+            var off = Off{ .ctx = ctx, .start = start };
             var counter = jobs.Counter.init(0);
-            js.parallelFor(@intCast(count), chunk, Wrap.job, ctx, &counter);
+            js.parallelFor(@intCast(end - start), chunk, Wrap.job, &off, &counter);
             js.waitFor(&counter);
         } else {
-            var i: usize = 0;
-            while (i < count) : (i += 1) f(ctx, i);
+            var i: usize = start;
+            while (i < end) : (i += 1) f(ctx, i);
         }
     }
 
@@ -638,12 +1272,18 @@ pub const World = struct {
     /// (Counting only the brick itself let a wound edge spawn a repair
     /// front every few steps as each one moved on: 285 fronts for one
     /// wound.)
-    fn frontsNear(self: *const World, key: Key) u32 {
+    /// Reads the fronts AS PUBLISHED (`base.fronts`), never the world's
+    /// live list: the front pass runs before the operators now (R16,
+    /// fronts charged first) and moves them, and an operator that read
+    /// the moved positions spawned two more repair fronts (9 for 7) —
+    /// a step's operators read the snapshot they step from, fronts
+    /// included.
+    fn frontsNear(fronts: []const Front, key: Key) u32 {
         const o = key.origin();
         const side: f64 = @floatFromInt(key.side());
         const reach = side * 1.5;
         var n: u32 = 0;
-        for (self.fronts.items) |*f| {
+        for (fronts) |*f| {
             if (!f.alive or f.dormant) continue;
             var near = true;
             inline for (0..3) |a| {
@@ -737,68 +1377,56 @@ pub const World = struct {
         sink.stepped = true;
     }
 
-    /// `evaluated`: under a budget that cut, the head sorted by key; a
-    /// front whose brick is not in it does not move this step.
-    fn frontPass(self: *World, base: *const Snapshot, dt: f64, evaluated: ?[]const Key, sys: ?*jobs.JobSystem) !void {
+    /// Merge one front's sink into the update buffer — in id order, the
+    /// serial pass's order — brick by brick, channel by channel, sample by
+    /// sample, adding only what the front wrote (a zero it never touched
+    /// must not turn a −0 into +0).
+    fn mergeSink(self: *World, sk: *Sink) !void {
         const gpa = self.gpa;
-        const n = self.fronts.items.len;
-        if (n == 0) return;
-        const sinks = try gpa.alloc(Sink, n);
-        defer gpa.free(sinks);
-        const alloc = self.buffer.planeAllocator();
-        for (sinks) |*sk| sk.* = .{ .alloc = alloc };
-        var ctx = FrontCtx{ .world = self, .base = base, .dt = dt, .evaluated = evaluated, .sinks = sinks, .failed = std.atomic.Value(bool).init(false) };
-        parallelRange(sys, n, 2, FrontCtx, &ctx, frontOne);
-        if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
-        // Merge in id order — the serial pass's order — brick by brick,
-        // channel by channel, sample by sample, adding only what the front
-        // wrote (a zero it never touched must not turn a −0 into +0).
-        for (sinks) |*sk| {
-            if (sk.stepped) self.stats.front_steps += 1;
-            if (sk.dormant) self.stats.fronts_dormant += 1;
-            if (sk.skipped) self.stats.fronts_skipped += 1;
-            if (sk.died) self.stats.deaths += 1;
-            if (sk.below_faithful) self.stats.below_faithful += 1;
-            self.stats.spawns += sk.spawned;
-            std.mem.sort(*update.RegionUpdate, sk.entries.items, {}, struct {
-                fn lt(_: void, a: *update.RegionUpdate, b: *update.RegionUpdate) bool {
-                    return a.key.raw() < b.key.raw();
-                }
-            }.lt);
-            for (sk.entries.items) |local| {
-                const ru = try self.buffer.region(local.key);
-                // The carrier's ops ride across whole: composed at commit,
-                // in id order, never summed (R10).
-                for (local.surface_ops.items) |op| try ru.surface_ops.append(self.buffer.arena.allocator(), op);
-                if (local.surface_ops.items.len > 0) ru.mask |= Channel.surface.mask();
-                var mask = local.mask & ~Channel.surface.mask();
-                while (mask != 0) {
-                    const bit: u6 = @intCast(@ctz(mask));
-                    mask &= mask - 1;
-                    const src = local.deltas[bit].?;
-                    const dst = try ru.delta(self.buffer.arena.allocator(), bit);
-                    switch (channel.rule(bit)) {
-                        // Birth time is written ONCE per sample per step: the
-                        // serial pass let the first front's pending write
-                        // stop the second's. Here the first in id order wins,
-                        // which is the same front.
-                        .set_once => for (dst, src) |*d, v| {
-                            if (v != 0 and d.* == 0) d.* = v;
-                        },
-                        // A touch time: every front this step writes the same
-                        // second, so the last in id order is the first.
-                        .touch => for (dst, src) |*d, v| {
-                            if (v != 0) d.* = v;
-                        },
-                        .add => for (dst, src) |*d, v| {
-                            if (v != 0) d.* += v;
-                        },
-                        .smin => unreachable, // ops, above
-                    }
+        if (sk.stepped) self.stats.front_steps += 1;
+        if (sk.dormant) self.stats.fronts_dormant += 1;
+        if (sk.skipped) self.stats.fronts_skipped += 1;
+        if (sk.died) self.stats.deaths += 1;
+        if (sk.below_faithful) self.stats.below_faithful += 1;
+        self.stats.spawns += sk.spawned;
+        std.mem.sort(*update.RegionUpdate, sk.entries.items, {}, struct {
+            fn lt(_: void, a: *update.RegionUpdate, b: *update.RegionUpdate) bool {
+                return a.key.raw() < b.key.raw();
+            }
+        }.lt);
+        for (sk.entries.items) |local| {
+            const ru = try self.buffer.region(local.key);
+            // The carrier's ops ride across whole: composed at commit,
+            // in id order, never summed (R10).
+            for (local.surface_ops.items) |op| try ru.surface_ops.append(self.buffer.arena.allocator(), op);
+            if (local.surface_ops.items.len > 0) ru.mask |= Channel.surface.mask();
+            var mask = local.mask & ~Channel.surface.mask();
+            while (mask != 0) {
+                const bit: u6 = @intCast(@ctz(mask));
+                mask &= mask - 1;
+                const src = local.deltas[bit].?;
+                const dst = try ru.delta(self.buffer.arena.allocator(), bit);
+                switch (channel.rule(bit)) {
+                    // Birth time is written ONCE per sample per step: the
+                    // serial pass let the first front's pending write
+                    // stop the second's. Here the first in id order wins,
+                    // which is the same front.
+                    .set_once => for (dst, src) |*d, v| {
+                        if (v != 0 and d.* == 0) d.* = v;
+                    },
+                    // A touch time: every front this step writes the same
+                    // second, so the last in id order is the first.
+                    .touch => for (dst, src) |*d, v| {
+                        if (v != 0) d.* = v;
+                    },
+                    .add => for (dst, src) |*d, v| {
+                        if (v != 0) d.* += v;
+                    },
+                    .smin => unreachable, // ops, above
                 }
             }
-            for (sk.spawns.items) |sp| try self.pending_spawns.append(gpa, sp);
         }
+        for (sk.spawns.items) |sp| try self.pending_spawns.append(gpa, sp);
     }
 
     fn keyInSorted(keys: []const Key, k: Key) bool {
@@ -1245,188 +1873,6 @@ pub const World = struct {
         /// meant to receive.
         rank: u8 = 1,
     };
-
-    /// `evaluated`: the operate phase ran over the active set's head, so a
-    /// brick of the head that did not change has settled. When it did not
-    /// run — the epoch tick, an authoring apply — the active set carries
-    /// forward; `carried` is the budget's tail, which carries either way.
-    /// `head`, sorted: the bricks evaluated this step — their pending
-    /// attention is reset and their since is now (R17).
-    fn commit(self: *World, now: Now, base: *const Snapshot, evaluated: bool, head: []const Key, carried: []const Key, budget: ?u32, sys: ?*jobs.JobSystem) Error!void {
-        const gpa = self.gpa;
-        const eps = thresholds.EPSILON;
-        var timer = std.time.Timer.start() catch unreachable;
-        var changed = std.AutoHashMapUnmanaged(u64, Changed){};
-        defer changed.deinit(gpa);
-        var order = std.ArrayListUnmanaged(u64){};
-        defer order.deinit(gpa);
-        // Until the real tree owns them, the changed bricks are ours.
-        var bricks_owned = true;
-        errdefer if (bricks_owned) {
-            for (order.items) |raw| changed.get(raw).?.b.release(gpa);
-        };
-
-        // 1. Apply deltas: per entry independently (clone, add, clamp) over
-        // the job system; then record them in key order, serially, which
-        // is what fixes the order of everything downstream.
-        const entries = try self.buffer.sorted(gpa);
-        defer gpa.free(entries);
-        var spawn_requests = std.ArrayListUnmanaged(update.Spawn){};
-        defer spawn_requests.deinit(gpa);
-        const results = try gpa.alloc(?Changed, entries.len);
-        defer gpa.free(results);
-        var actx = ApplyCtx{ .world = self, .base = base, .entries = entries, .results = results, .failed = std.atomic.Value(bool).init(false) };
-        parallelRange(sys, entries.len, 16, ApplyCtx, &actx, applyEntry);
-        if (actx.failed.load(.acquire)) {
-            for (results) |r| if (r) |c| c.b.release(gpa);
-            return Error.OutOfMemory;
-        }
-        for (entries, results) |ru, r| {
-            for (ru.spawns.items) |sp| try spawn_requests.append(gpa, sp);
-            const c = r orelse continue;
-            try changed.put(gpa, ru.key.raw(), c);
-            try order.append(gpa, ru.key.raw());
-        }
-        self.stats.ns_apply = timer.lap();
-
-        // 2. Frontier: a changed brick whose face carries a value above
-        // the floor materialises the absent neighbour across it. Probed
-        // against a scratch tree that already holds this commit's bricks,
-        // so a neighbour is never placed inside a brick being created.
-        var overrides = std.ArrayListUnmanaged(tree.Override){};
-        defer overrides.deinit(gpa);
-        {
-            for (order.items) |raw| try overrides.append(gpa, .{ .key = Key.fromRaw(raw), .brick = changed.get(raw).?.b });
-            std.mem.sort(tree.Override, overrides.items, {}, tree.Override.lessThan);
-            const pre_root = try tree.build(gpa, base.root, overrides.items);
-            defer if (pre_root) |r| r.release(gpa);
-            const pre = Snapshot{ .gpa = gpa, .vid = 0, .epoch = 0, .time_ns = 0, .seed = 0, .root = pre_root };
-            // Every neighbour cube a changed brick asks for, at its own
-            // gauge; then resolved finest first, so a coarse request over
-            // a cube that finer requests are filling completes it at the
-            // finer gauge instead of colliding with it (a fine brick and a
-            // coarse neighbour materialised into one void in one commit
-            // was a GaugeConflict at the tree build, P2.1).
-            var requests = std.ArrayListUnmanaged(Key){};
-            defer requests.deinit(gpa);
-            for (order.items) |raw| try self.frontierRequests(&pre, changed.get(raw).?.b, &requests);
-            try self.materialiseRequests(base, &pre, requests.items, &changed, &order);
-        }
-
-        self.stats.ns_frontier = timer.lap();
-
-        // 3. A scratch tree with every changed brick, for the seam pass.
-        overrides.clearRetainingCapacity();
-        for (order.items) |raw| {
-            const c = changed.get(raw).?;
-            try overrides.append(gpa, .{ .key = Key.fromRaw(raw), .brick = c.b });
-        }
-        std.mem.sort(tree.Override, overrides.items, {}, tree.Override.lessThan);
-        const scratch_root = try tree.build(gpa, base.root, overrides.items);
-        var scratch = Snapshot{ .gpa = gpa, .vid = 0, .epoch = 0, .time_ns = 0, .seed = 0, .root = scratch_root };
-        defer if (scratch_root) |r| r.release(gpa);
-
-        // 4. Seams, then halos: the halo copies layer 1 of whoever holds
-        // the point, so it runs once the seams have settled the faces.
-        try self.reconcile(&scratch, &changed, &order, sys);
-        if (self.policy.halo) try self.reconcileHalos(&scratch, &changed, &order, sys);
-        self.stats.ns_seams = timer.lap();
-
-        // 5. Finalize every changed brick, build the real tree.
-        overrides.clearRetainingCapacity();
-        var dirty = std.ArrayListUnmanaged(Key){};
-        defer dirty.deinit(gpa);
-        var active = std.ArrayListUnmanaged(Key){};
-        defer active.deinit(gpa);
-        var fctx = FinalizeCtx{ .world = self, .base = base, .changed = &changed, .order = order.items, .now_ns = now.time_ns, .head = head };
-        parallelRange(sys, order.items.len, 8, FinalizeCtx, &fctx, finalizeOne);
-        for (order.items) |raw| {
-            const c = changed.getPtr(raw).?;
-            try overrides.append(gpa, .{ .key = Key.fromRaw(raw), .brick = c.b });
-            try dirty.append(gpa, Key.fromRaw(raw));
-            if (c.max_delta > eps or c.materialised) try active.append(gpa, Key.fromRaw(raw));
-            if (c.materialised) self.stats.bricks_materialised += 1;
-        }
-        self.stats.bricks_changed = order.items.len;
-        self.stats.ns_finalize = timer.lap();
-        std.mem.sort(tree.Override, overrides.items, {}, tree.Override.lessThan);
-        const root = try tree.build(gpa, base.root, overrides.items);
-        errdefer if (root) |r| r.release(gpa);
-        self.stats.ns_build = timer.lap();
-        // The overrides' bricks were retained by their leaves; drop ours.
-        for (order.items) |raw| changed.get(raw).?.b.release(gpa);
-        bricks_owned = false;
-
-        // 6. Fronts: spawn what was requested, assign ids in order.
-        for (self.pending_spawns.items) |s| try spawn_requests.append(gpa, s);
-        self.pending_spawns.clearRetainingCapacity();
-        for (spawn_requests.items) |s| {
-            const id: u32 = @intCast(self.fronts.items.len);
-            var f = Front{
-                .id = id,
-                .parent = s.parent,
-                .generation = s.generation,
-                .pos = s.pos,
-                .dir = s.dir,
-                .normal = s.normal,
-                .params = s.params,
-                .morphogens = s.morphogens,
-                .born_epoch = self.epoch,
-                .brick = Key.ofBrick(0, .{ 0, 0, 0 }),
-                .prev_pos = s.pos,
-                .prev_dir = s.dir,
-                .prev_normal = s.normal,
-                .prev_envelope = s.params.radius,
-            };
-            f.brick = self.brickUnder(base, f.pos);
-            try self.fronts.append(gpa, f);
-        }
-        for (self.fronts.items) |*f| {
-            if (f.alive and !f.dormant) try active.append(gpa, f.brick);
-        }
-        if (!evaluated) {
-            for (base.active) |k| try active.append(gpa, k);
-        }
-        for (carried) |k| try active.append(gpa, k);
-
-        // 7. The snapshot.
-        std.mem.sort(Key, active.items, {}, Key.lessThan);
-        std.mem.sort(Key, dirty.items, {}, Key.lessThan);
-        const snap = try gpa.create(Snapshot);
-        errdefer gpa.destroy(snap);
-        const fronts_copy = try gpa.dupe(Front, self.fronts.items);
-        errdefer gpa.free(fronts_copy);
-        const active_owned = try dedupKeys(gpa, active.items);
-        errdefer gpa.free(active_owned);
-        const dirty_owned = try dedupKeys(gpa, dirty.items);
-        errdefer gpa.free(dirty_owned);
-        // Since when each active brick is owed (R17): now if evaluated this
-        // step, else what it was, else now.
-        const since_owned = try gpa.alloc(u64, active_owned.len);
-        errdefer gpa.free(since_owned);
-        for (active_owned, 0..) |k, i| {
-            since_owned[i] = if (keyInSorted(head, k)) now.time_ns else (base.sinceOf(k) orelse now.time_ns);
-        }
-        snap.* = .{
-            .gpa = gpa,
-            .vid = self.vid + 1,
-            .epoch = self.epoch,
-            .time_ns = now.time_ns,
-            .seed = self.seed,
-            .root = root,
-            .fronts = fronts_copy,
-            .active = active_owned,
-            .dirty = dirty_owned,
-            .active_since = since_owned,
-            .budget = budget,
-        };
-        const counts = snap.countNodes();
-        snap.brick_count = counts.bricks;
-        snap.node_count = counts.nodes;
-        self.stats.active_out = active_owned.len;
-        try self.publish(snap);
-        self.stats.ns_publish = timer.lap();
-    }
 
     const ApplyCtx = struct {
         world: *World,
@@ -1954,11 +2400,14 @@ pub const World = struct {
 
     /// Phase B: the writes, in key order, deduplicated, applied through
     /// clone-on-write. Serial: this is where `changed` and `order` grow.
-    fn applySeamWrites(self: *World, view: *const Snapshot, changed: *ChangedMap, order: *std.ArrayListUnmanaged(u64), all: []SeamWrite) !void {
+    /// Apply sorted writes to their target bricks — cloning a target the
+    /// commit has not touched — from `cursor`, at most `max` targets. A
+    /// unit is a target brick (R16). Returns how many were applied.
+    fn applyWriteGroups(self: *World, view: *const Snapshot, changed: *ChangedMap, order: *std.ArrayListUnmanaged(u64), all: []const SeamWrite, cursor: *usize, max: u64) !u64 {
         const gpa = self.gpa;
-        std.mem.sort(SeamWrite, all, {}, SeamWrite.lessThan);
-        var i: usize = 0;
-        while (i < all.len) {
+        var done: u64 = 0;
+        var i: usize = cursor.*;
+        while (i < all.len and done < max) {
             const key = all[i].key;
             const b0: *const Brick = if (changed.get(key)) |c| c.b else (view.brickAt(Key.fromRaw(key)) orelse unreachable);
             const mb: *Brick = blk: {
@@ -1996,75 +2445,10 @@ pub const World = struct {
             const cptr = changed.getPtr(key).?;
             cptr.max_delta = @max(cptr.max_delta, max_delta);
             cptr.attention = @max(cptr.attention, att);
+            done += 1;
         }
-    }
-
-    fn reconcileHalos(self: *World, view: *const Snapshot, changed: *ChangedMap, order: *std.ArrayListUnmanaged(u64), sys: ?*jobs.JobSystem) !void {
-        const gpa = self.gpa;
-        const n0 = order.items.len;
-        if (n0 == 0) return;
-        const chunk: u32 = 4;
-        const nlists = (n0 + chunk - 1) / chunk;
-        const lists = try gpa.alloc(WriteList, nlists);
-        defer gpa.free(lists);
-        for (lists) |*l| l.* = .{};
-        defer for (lists) |*l| l.deinit(gpa);
-        var ctx = HaloCtx{
-            .world = self,
-            .view = view,
-            .changed = changed,
-            .order = order.items[0..n0],
-            .chunk = chunk,
-            .lists = lists,
-            .failed = std.atomic.Value(bool).init(false),
-        };
-        parallelRange(sys, n0, chunk, HaloCtx, &ctx, haloCollectOne);
-        if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
-        var all = std.ArrayListUnmanaged(SeamWrite){};
-        defer all.deinit(gpa);
-        for (lists) |l| try all.appendSlice(gpa, l.items);
-        const before = self.stats.seam_writes;
-        try self.applySeamWrites(view, changed, order, all.items);
-        self.stats.halo_writes += self.stats.seam_writes - before;
-        self.stats.seam_writes = before;
-    }
-
-    fn reconcile(self: *World, view: *const Snapshot, changed: *ChangedMap, order: *std.ArrayListUnmanaged(u64), sys: ?*jobs.JobSystem) !void {
-        const gpa = self.gpa;
-        // Only points on a CHANGED brick's surface can have fallen out of
-        // agreement: its own boundary samples, and the hanging samples of
-        // any finer neighbour that lie on its faces. Neighbours the pass
-        // clones join `order` but are not re-walked — their only new
-        // values are copies made here.
-        const n0 = order.items.len;
-        if (n0 == 0) return;
-        const chunk: u32 = 4;
-        const nlists = (n0 + chunk - 1) / chunk;
-        const lists = try gpa.alloc(WriteList, nlists);
-        defer gpa.free(lists);
-        for (lists) |*l| l.* = .{};
-        defer for (lists) |*l| l.deinit(gpa);
-        var all = std.ArrayListUnmanaged(SeamWrite){};
-        defer all.deinit(gpa);
-        var pass: u8 = 1;
-        while (pass <= 2) : (pass += 1) {
-            for (lists) |*l| l.clearRetainingCapacity();
-            var ctx = CollectCtx{
-                .world = self,
-                .view = view,
-                .changed = changed,
-                .order = order.items[0..n0],
-                .pass = pass,
-                .chunk = chunk,
-                .lists = lists,
-                .failed = std.atomic.Value(bool).init(false),
-            };
-            parallelRange(sys, n0, chunk, CollectCtx, &ctx, collectOne);
-            if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
-            all.clearRetainingCapacity();
-            for (lists) |l| try all.appendSlice(gpa, l.items);
-            try self.applySeamWrites(view, changed, order, all.items);
-        }
+        cursor.* = i;
+        return done;
     }
 };
 

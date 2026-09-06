@@ -169,7 +169,7 @@ pub fn g14ePredictedSteps(dt_s: f32, ratio: f32, n_cold: usize, slots: usize) u3
     return @intFromFloat(@ceil(catch_up) + batch);
 }
 
-/// G15 (Phase 2, P2.1b — pre-registered, not built): the budget is fed in
+/// G15 (Phase 2, P2.1b, built Sunday 2026-09-06): the budget is fed in
 /// WORK UNITS (R16), never milliseconds. (a) steps spread over calls of
 /// G15_UNITS publish the frozen reference exactly; (c) CUT at
 /// G15_CUT_FRACTION of a step's units ends within G15_MAX_DEVIATION of
@@ -211,5 +211,16 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// in the content hash — the budget is an input like the seed). The
 /// residual `019f9e0a…` (R17: since when each active brick is owed rides
 /// the active set in the content hash, and a brick still owed accumulates
-/// its pending by max — the obligations list it replaces is gone).
-pub const G1_REFERENCE: []const u8 = "019f9e0a799614325854b9e2630c47e99492e050c119f04f39d64a8df5285ddf";
+/// its pending by max — the obligations list it replaces is gone). The
+/// resumable step `9fb0a200…` (P2.1b: where a step was cut, `cut_at`,
+/// entered the content hash — an input like the budget; the root hash,
+/// the fronts and the active set did not move, checked against the
+/// previous commit's binary on the wound fixture). The buffer consumed
+/// `ef8ab912…` (P2.1b: `finish` resets the update buffer after every
+/// commit; until then the wound's `apply` at step 20 authored into a
+/// buffer still holding step 19's region entries and re-applied step
+/// 19's deltas on the wound's bricks — every reference since the wound
+/// fixture was born carried that. The plain sapling's root hash is
+/// unchanged, `631a8a64…`, and the wound's seven fronts trace
+/// identically; only the wound's field values moved).
+pub const G1_REFERENCE: []const u8 = "ef8ab912342d66258c38490ea26001a1c103b0dd18692718c72169bf4d58b8d6";

@@ -34,7 +34,7 @@ w.run(60)
 print(w.root_hash().hex(), w.stats()["fronts"])
 ```
 
-## Status — Phase 2.1 and 2.1a: the continuous carrier, and attention
+## Status — Phase 2.1, 2.1a and 2.1b: the continuous carrier, attention, and the budget
 
 Matter is the zero set of a continuous signed implicit, `surface`,
 stored in 11³ blocks (the brick's 9³ samples and one halo layer from the
@@ -86,6 +86,7 @@ floor").
 | G10 bound | the summary's Lipschitz bound is conservative | 19,800 random pairs, 0 exceed it; the old axis-only bound is exceeded 45 times |
 | G11 sphere trace | a march stepped by \|φ\|/L never lands inside or tunnels | 4096 rays against a dense march: 0 disagreements, 0 late, 0 overshoots; stepping 2\|φ\|/L overshoots 167 times in 1024 |
 | G1 again | replay with the new carrier | one frozen reference, from Zig, from Python, across processes, with any thread count; the sim owns its sin, cos and exp so no libm can move it |
+| G15 budget | a step spread over frames is the same step, and a call never exceeds its budget | 40 steps in 2282 calls of 8 units publish the frozen reference, serial, over 4 threads and in calls of 37; the largest call performed 8 of 8 (unchunked applies: 53); cut at half the head every step, the sapling is the same tree and no front step is skipped; fronts made deferrable loses 9.9% |
 | G14 attention | the step's work follows where things are changing, and a reader sees it from the summaries | the evaluated set is the head of the active set — obligations in key order, then by attention — recomputed from the snapshot at every step; a walk on the summaries finds exactly the attentive bricks (91 of 3652 at step 80, 264 leaves examined); the sapling under a budget of half its active set is the same tree from 14% fewer evaluations (invariance), and a run replayed from its recorded budgets is the same hash (reproducibility); no front step is ever skipped, the overrun is reported; deferral costs, so under a region ten times hotter every cold brick is served within the 20 steps predicted from τ, and never without the lag term; the head in key order loses 36%, one queue of fronts and backlog gains 35% |
 
 ### Phase 1, all eight gates
@@ -120,6 +121,8 @@ zig build run -- --steps 160 --budget-fraction 0.5 --trace run.txt   # half the 
 zig build run -- --steps 160 --budget-schedule run.txt              # replayed from the record: the same hash
 zig build run -- --scene wound --damage -10,8,-10,10,16,10@20 --steps 60 --budget 12   # a sustained cut: the backlog, and the overload count
 zig build run -- --steps 160 --budget-fraction 0.5 --budget-order no_lag   # G14 (e)'s mutation, as a number
+zig build run -- --steps 40 --units 8           # the step through work(8) calls: the plain step's hash
+zig build run -- --steps 40 --cut 0.5 --trace run.txt   # CUT after the fronts and half the head; the cut point on every `# step` line
 python3 -m unittest discover -s py/tests    # after zig build
 zig build test                              # the gates
 ```
@@ -128,7 +131,12 @@ Fixed dt is the only clock: `--dt-ms 1000` is one fed second per step,
 and two runs with the same flags print the same hash — with any thread
 count. The budget is the other input, and it is on the transcript: a
 run replayed from its recorded per-step budgets prints the same hash,
-and a different schedule is a different world that says so.
+and a different schedule is a different world that says so. A step is
+also resumable: `begin`, `work(units)`, `cut`, `finish`, and a host that
+spreads one step over as many frames as it likes publishes the same
+hash as a host that takes it in one (`--units 8`); a host that cuts
+keeps the fronts and the best of the rest, and where it cut is on the
+transcript (`--cut 0.5`).
 
 ## Layout
 

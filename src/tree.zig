@@ -194,6 +194,14 @@ pub const Snapshot = struct {
     /// is a different world: an input like the seed, in the content hash,
     /// logged by `loam-run --trace`, never derived from a clock at replay.
     budget: ?u32 = null,
+    /// Where the step's operate phase was cut (R16, `World.cut`): the
+    /// head's prefix that ran; null when it ran whole. In the content
+    /// hash — an input like the budget.
+    cut_at: ?u32 = null,
+    /// The step's work in units, and the `work` calls it took: recorded,
+    /// not hashed (SPREAD is exact whatever the call sizes).
+    units: u64 = 0,
+    calls: u32 = 0,
 
     pub fn retain(self: *Snapshot) void {
         _ = self.refs.fetchAdd(1, .monotonic);
@@ -233,6 +241,8 @@ pub const Snapshot = struct {
         for (self.active_since) |t| h.update(std.mem.asBytes(&t));
         const budget: u32 = self.budget orelse std.math.maxInt(u32);
         h.update(std.mem.asBytes(&budget));
+        const cut_at: u32 = self.cut_at orelse std.math.maxInt(u32);
+        h.update(std.mem.asBytes(&cut_at));
         var out: [32]u8 = undefined;
         h.final(&out);
         return out;

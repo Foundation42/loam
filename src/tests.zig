@@ -723,7 +723,6 @@ fn scoreOf(snap: *const loam.Snapshot, k: loam.lattice.Key, now_ns: u64) f64 {
 fn attentionHead(gpa: std.mem.Allocator, snap: *const loam.Snapshot, now_ns: u64, budget: ?usize) !HeadAndTail {
     const K = loam.lattice.Key;
     const b = budget orelse snap.active.len;
-    if (snap.active.len <= b) return .{ .head = try gpa.dupe(K, snap.active), .carried = 0 };
     const Scored = struct { key: K, a: f64, score: f64, tier: u8 };
     const scored = try gpa.alloc(Scored, snap.active.len);
     defer gpa.free(scored);
@@ -988,7 +987,7 @@ test "G14 (e) mutation: the lag term zeroed → the cold region is never served"
     try testing.expectEqual(@as(u64, 0), r.cold_served);
 }
 
-const BudgetedRun = struct { inside: u64, carried: u64, faded: u64, skipped: u64, evals: u64 };
+const BudgetedRun = struct { inside: u64, carried: u64, faded: u64, skipped: u64, evals: u64, front_steps: u64 };
 
 /// The sapling, G2's 160 steps, under a budget of `fraction` of each
 /// step's active set — or none — the head chosen by `order`.
@@ -1003,7 +1002,7 @@ fn budgetedRun(gpa: std.mem.Allocator, fraction: ?f32, order: loam.world.BudgetO
         try g.world.step(now(i), null);
     }
     try guards.check(g.published());
-    return .{ .inside = seedbed.insideCount(&g.world), .carried = g.world.total.carried, .faded = g.world.total.faded, .skipped = g.world.total.fronts_skipped, .evals = g.world.total.region_evals };
+    return .{ .inside = seedbed.insideCount(&g.world), .carried = g.world.total.carried, .faded = g.world.total.faded, .skipped = g.world.total.fronts_skipped, .evals = g.world.total.region_evals, .front_steps = g.world.total.front_steps };
 }
 
 fn deviation(full: u64, under: u64) f64 {
@@ -1106,6 +1105,175 @@ test "G14 (d) reproducibility: the budget is on the transcript — a run replaye
     try testing.expect(!std.mem.eql(u8, &a.hash, &e.hash));
     try testing.expectEqualSlices(u8, thresholds.G1_REFERENCE, &loam.dump.hex(e.hash));
     std.debug.print("\nG14 (d) reproducibility: the wounded sapling under the half budget {s}… replayed from its record serial and over 4 threads; steps 21–23 at a budget of 1 instead of {d}, {d}, {d}: {s}…; unbudgeted the frozen reference\n", .{ loam.dump.hex(a.hash)[0..8], a.record[21].?, a.record[22].?, a.record[23].?, loam.dump.hex(d.hash)[0..8] });
+}
+
+// ── P2.1b: the budget in work units — begin / work / cut / finish ────────
+
+test "apply twice: a second apply with nothing new authored applies nothing" {
+    // Found building P2.1b: the buffer was reset only by `step`, so a
+    // second `apply` re-applied everything queued before the first —
+    // 10894 of light became 21788, and the seams scene's first blob was
+    // doubled since P1.2. An authoring finish resets the buffer now.
+    const gpa = testing.allocator;
+    var w = try World.init(gpa, .{ .seed = 1 });
+    defer w.deinit();
+    try seedbed.blobLattice(&w, Channel.light.bit(), .{ 512, 512, 512 }, 20, 1.0, 0);
+    try w.apply();
+    const t1 = seedbed.total(&w, Channel.light.bit());
+    try w.apply();
+    const t2 = seedbed.total(&w, Channel.light.bit());
+    std.debug.print("\napply twice: total {d:.3} then {d:.3}\n", .{ t1, t2 });
+    try testing.expectApproxEqRel(t1, t2, 1e-9);
+}
+
+const UnitsRun = struct { hash: [32]u8, calls: u64, units: u64, max_call: u64, finish_units: u64, inside: u64, fronts_skipped: u64 };
+
+/// The wounded sapling (G1's fixture) stepped through `work(units)` calls
+/// — SPREAD — serial or over `js`. Every call's units are checked
+/// against `units` (G15 b).
+fn woundedThroughUnits(gpa: std.mem.Allocator, units: u64, js: ?*jobs.JobSystem, chunk_applies: bool) !UnitsRun {
+    var g: GrownWorld = undefined;
+    g.world = try World.init(gpa, .{ .seed = 7 });
+    g.world.jobs = js;
+    g.world.policy.chunk_applies = chunk_applies;
+    g.scene = .{};
+    errdefer g.world.deinit();
+    try g.scene.build(&g.world, .sapling);
+    defer g.deinit();
+    var r = UnitsRun{ .hash = undefined, .calls = 0, .units = 0, .max_call = 0, .finish_units = 0, .inside = 0, .fronts_skipped = 0 };
+    var i: u64 = 0;
+    while (i <= 40) : (i += 1) {
+        if (i == 20) {
+            try seedbed.damage(&g.world, .{ -10, 8, -10 }, .{ 10, 16, 10 });
+            try g.world.apply();
+        }
+        try g.world.begin(now(i), js);
+        while (!try g.world.work(units)) {
+            r.calls += 1;
+            r.max_call = @max(r.max_call, g.world.stats.units_last_call);
+        }
+        r.calls += 1;
+        r.max_call = @max(r.max_call, g.world.stats.units_last_call);
+        try g.world.finish();
+        r.units += g.published().units;
+        r.finish_units += g.world.stats.units_finish;
+        r.fronts_skipped += g.world.stats.fronts_skipped;
+    }
+    r.hash = g.published().contentHash();
+    r.inside = seedbed.insideCount(&g.world);
+    return r;
+}
+
+test "G15 (a) SPREAD is exact: the wounded sapling through work(8) publishes the frozen reference, serial and over the job system" {
+    const gpa = testing.allocator;
+    const a = try woundedThroughUnits(gpa, thresholds.G15_UNITS, null, true);
+    try testing.expectEqualSlices(u8, thresholds.G1_REFERENCE, &loam.dump.hex(a.hash));
+    var js = try jobs.JobSystem.init(gpa, 4);
+    defer js.deinit();
+    const b = try woundedThroughUnits(gpa, thresholds.G15_UNITS, js, true);
+    try testing.expectEqualSlices(u8, thresholds.G1_REFERENCE, &loam.dump.hex(b.hash));
+    // And through a different call size: the same world.
+    const c = try woundedThroughUnits(gpa, 37, null, true);
+    try testing.expectEqualSlices(u8, thresholds.G1_REFERENCE, &loam.dump.hex(c.hash));
+    std.debug.print("\nG15 (a): 40 steps in {d} calls of {d} units ({d} units, none in finish); over 4 threads {d} calls; in calls of 37, {d} calls: all the frozen reference\n", .{ a.calls, thresholds.G15_UNITS, a.units, b.calls, c.calls });
+    try testing.expectEqual(@as(u64, 0), a.finish_units);
+    try testing.expect(a.calls > 40 * 10);
+}
+
+test "G15 (b) no work call performs more than its units, any phase" {
+    const gpa = testing.allocator;
+    const a = try woundedThroughUnits(gpa, thresholds.G15_UNITS, null, true);
+    std.debug.print("\nG15 (b): the largest call performed {d} of {d} units over {d} calls\n", .{ a.max_call, thresholds.G15_UNITS, a.calls });
+    try testing.expect(a.max_call <= thresholds.G15_UNITS);
+}
+
+test "G15 (b) mutation: the seam and halo apply passes unchunked → a call exceeds its units" {
+    const gpa = testing.allocator;
+    const a = try woundedThroughUnits(gpa, thresholds.G15_UNITS, null, false);
+    std.debug.print("\nG15 (b) mutation: the largest call performed {d} of {d} units\n", .{ a.max_call, thresholds.G15_UNITS });
+    try testing.expect(a.max_call > thresholds.G15_UNITS);
+    // And the world is the same: chunking is accounting, not semantics.
+    try testing.expectEqualSlices(u8, thresholds.G1_REFERENCE, &loam.dump.hex(a.hash));
+}
+
+const CutRun = struct { inside: u64, cut_steps: u64, fronts_skipped: u64, finish_units: u64, live_steps: u64, front_steps: u64 };
+
+/// The sapling, G2's 160 steps, each CUT after the fronts and `fraction`
+/// of the head: the evaluated set checked against the head order's
+/// prefix recomputed from the snapshot alone (G15 c), no front step
+/// skipped (G15 d). Under the mutation the fronts are deferrable and the
+/// cut lands after `fraction` of THEM.
+fn saplingCut(gpa: std.mem.Allocator, fraction: f32, cut_fronts: bool) !CutRun {
+    var g: GrownWorld = undefined;
+    try g.grow(gpa, 7, 0, null);
+    defer g.deinit();
+    g.world.policy.cut_fronts = cut_fronts;
+    var r = CutRun{ .inside = 0, .cut_steps = 0, .fronts_skipped = 0, .finish_units = 0, .live_steps = 0, .front_steps = 0 };
+    var i: u64 = 1;
+    while (i <= thresholds.G2_STEPS) : (i += 1) {
+        const before = g.world.head;
+        before.retain();
+        defer before.release();
+        var live: u64 = 0;
+        for (before.fronts) |f| if (f.alive and !f.dormant) {
+            live += 1;
+        };
+        try g.world.begin(now(i), null);
+        const p = g.world.plan().?;
+        const head_take: u64 = @intFromFloat(@ceil(@as(f32, @floatFromInt(p.head)) * fraction));
+        const front_take: u64 = if (cut_fronts) @intFromFloat(@ceil(@as(f32, @floatFromInt(p.fronts)) * fraction)) else @as(u64, p.fronts) + head_take;
+        _ = try g.world.work(front_take);
+        try g.world.cut();
+        try g.world.finish();
+        if (g.published().cut_at) |c| {
+            r.cut_steps += 1;
+            if (!cut_fronts) {
+                const ht = try attentionHead(gpa, before, now(i).time_ns, null);
+                defer gpa.free(ht.head);
+                try expectSameKeys(ht.head[0..c], g.world.evaluated);
+            }
+        }
+        r.fronts_skipped += g.world.stats.fronts_skipped;
+        r.finish_units += g.world.stats.units_finish;
+        r.live_steps += live;
+        r.front_steps += g.world.stats.front_steps;
+    }
+    r.inside = seedbed.insideCount(&g.world);
+    return r;
+}
+
+test "G15 (c) CUT at half the head: the evaluated set is the head order's prefix, and the sapling ends within the floor of SPREAD's tissue (invariance)" {
+    const gpa = testing.allocator;
+    const full = try budgetedRun(gpa, null, .attention);
+    const c = try saplingCut(gpa, thresholds.G15_CUT_FRACTION, false);
+    const dev = deviation(full.inside, c.inside);
+    std.debug.print("\nG15 (c) invariance: inside {d} SPREAD vs {d} CUT at {d:.0}% of the head (deviation {d:.2}%; {d} steps cut; {d} units in finish over the run)\n", .{ full.inside, c.inside, thresholds.G15_CUT_FRACTION * 100, dev * 100, c.cut_steps, c.finish_units });
+    try testing.expect(c.cut_steps > 0);
+    try testing.expect(dev <= thresholds.G15_MAX_DEVIATION);
+}
+
+test "G15 (c) mutation: the fronts made deferrable and the cut landing among them → the tips lag and the tissue deviates past the floor" {
+    // (The brief named the cut in key order. Under a cut the fronts are
+    // outside the cut by construction and the sapling's only operator is
+    // inert, so key order changes which inert evaluations run — nothing.
+    // The axis the gate varies on is the fronts' non-deferrability.)
+    const gpa = testing.allocator;
+    const full = try budgetedRun(gpa, null, .attention);
+    const c = try saplingCut(gpa, thresholds.G15_CUT_FRACTION, true);
+    const dev = deviation(full.inside, c.inside);
+    std.debug.print("\nG15 (c) mutation, fronts deferrable: inside {d} vs {d} (deviation {d:.2}%; {d} front-steps skipped)\n", .{ full.inside, c.inside, dev * 100, c.fronts_skipped });
+    try testing.expect(c.fronts_skipped > 0);
+    try testing.expect(dev > thresholds.G15_MAX_DEVIATION);
+}
+
+test "G15 (d) no front step is skipped under any cut — the same front steps as SPREAD — and the step's work past the calls is reported" {
+    const gpa = testing.allocator;
+    const full = try budgetedRun(gpa, null, .attention);
+    const c = try saplingCut(gpa, thresholds.G15_CUT_FRACTION, false);
+    std.debug.print("\nG15 (d): {d} front steps over 160 cut steps against SPREAD's {d}, {d} skipped; {d} units in finish\n", .{ c.front_steps, full.front_steps, c.fronts_skipped, c.finish_units });
+    try testing.expectEqual(@as(u64, 0), c.fronts_skipped);
+    try testing.expectEqual(full.front_steps, c.front_steps);
+    try testing.expect(c.finish_units > 0);
 }
 
 // ── P1.6: snapshots ──────────────────────────────────────────────────────

@@ -7,7 +7,10 @@ step under a budget; G14 green and bitten, G1 re-baselined ("P2.1a —
 attention" below); RULED the same afternoon — "Attention and obligation
 are different things" (the entry of that name); then R17, the
 residual, built the same afternoon: deferral costs, G14 (e) read its
-prediction exactly ("R17 — the residual, built").
+prediction exactly ("R17 — the residual, built"). **P2.1b built the
+same afternoon** — the step as begin / work / cut / finish, SPREAD
+exact to the frozen reference, G15 green and bitten ("P2.1b — the
+budget in work units").
 Phase 2 opened the same evening: the first loam-grown thing on screen
 (matryoshka branch `loam`, "Renderer integration, beat 1" below).
 **P2.1 built Sunday 2026-09-06** — the continuous carrier: R7 and G13
@@ -1425,6 +1428,124 @@ cached run would save two). Worth it when the suite passes five
 minutes in ReleaseSafe. Runtime gate selection through an environment
 variable, to compile once and run several gates, is moot while a Debug
 compile is 2 s.
+
+## P2.1b — the budget in work units (Sunday 2026-09-06, afternoon; G15 green and bitten, G1 again)
+
+Christian: "Commit it and push, then on to P2.1b." Built from the brief's
+design paragraph, written first ("The design, settled before the spade").
+
+**The step, resumable.** `begin(now)`, `work(units) → done?`, `cut()`,
+`finish()`, with the step's state on the world between calls
+(`StepState`: the update buffer, the changed set, the phase and its
+cursors, everything the one-piece step held as locals). Phases in
+order, one unit per item: the fronts stepped into their sinks (charged
+first, never cut); the operators over the head (the only phase a cut
+stops); the sinks merged in id order — after the operators, one serial
+unit, so every floating-point sum lands as it did; apply per entry;
+the frontier's requests per changed brick; the seam pass's two
+collects and two sorted applies, per brick and per target brick; the
+halo's the same; finalize per brick. The serial remainders — the
+frontier's pre-tree, the materialise, the scratch tree, the real tree
+— one unit each, performed whole. `work` never performs more than its
+units (a phase's cursor stops where they run out; a serial remainder
+waits for the next call); `finish` completes what remains and counts
+it apart (`units_finish`), then spawns, the snapshot, publish.
+`step(now)` is the three in one. `apply()` is the same machine entered
+at the apply phase. `Snapshot.cut_at` is in the content hash — where a
+step was cut is an input like the budget — and the units performed
+and calls taken ride on the snapshot and the trace's `# step` line.
+
+**Three things the refactor found.** First, stepping the fronts before
+the operators moved them under the operators' feet: healing's
+`frontsNear` read the world's live list, saw this step's positions,
+and spawned two repair fronts more (9 for 7). The operators read the
+fronts AS PUBLISHED now, `base.fronts` — a step's operators read the
+snapshot they step from, fronts included — and the hash came back.
+Second, a latent bug from P1.2: the buffer was reset only by `step`,
+so a second `apply` re-applied everything queued before the first —
+10,894 of light became 21,788 in the experiment written to check it,
+and the seams scene's first blob had been doubled since P1.2 (its
+gates check continuity and hold either way). An authoring finish
+resets the buffer now; the experiment stays as a gate. Third, and
+found only when `finish` was made to reset the buffer after EVERY
+commit (so a settled world is quiet at the next step, not one empty
+publish later — the stale entries made `isQuiet` say no once): the
+same bug was inside the G1 fixture. The wound's `apply` at step 20
+authored into a buffer still holding step 19's region entries — the
+fronts' deposits and the operators' deltas on the bricks it cut into
+— and re-applied step 19 on the wound's bricks along with the cut.
+Every frozen reference since the wound fixture was born (P1.6, the
+review's "G1 watches the commit order" fixture) carried it. Shown:
+the plain sapling, with nothing authored mid-run, hashes identically
+on the committed binary and this one (`631a8a64…`); the wound's seven
+fronts trace identically to the thousandth; only the wound's field
+values moved. G1 re-baselined once more, `9fb0a200…` → `ef8ab912…`,
+and that is the second re-baseline of this entry: the first for the
+cut point entering the content hash, this one for a bug the fixture
+had carried for a day.
+
+**Kept exact, and shown.** The committed binary (`ff010e7`) and the
+resumable one on the wound fixture: the same root hash `e6b18d7f…`,
+every front's trace identical to the thousandth
+(`tools/diff_traces.py`, the habit check's instrument); the content
+hash moved by the new field alone. G1 re-baselined `019f9e0a…` →
+`9fb0a200…`. And live: `loam-run --units 8` for thirty steps publishes
+the plain step's hash.
+
+**G15, as pre-registered, with (d) added.** (a) SPREAD exact: the
+wounded sapling through `work(8)` — 40 steps in 2,282 calls, 18,100
+units, none in finish — publishes the frozen reference; the same over
+four threads; the same in calls of 37 (505 calls). Mutation, by hand:
+the step's dt re-read from the world clock at each call instead of
+held on the state — the second chunk's operators see dt = 0 and the
+hash moves. (b) No call performs more than its units: the largest of
+2,282 calls performed 8 of 8. Mutation, executable: the seam and halo
+apply passes unchunked (`Policy.chunk_applies = false`) — the largest
+call performed 53, and the world was the same: chunking is
+accounting, not semantics. (The mutation did not bite at first: the
+call's spent units were computed from the budget, so a pass applied
+whole was capped at 8 in the accounting; units performed are counted
+now, not inferred.) (c) CUT at half the head, every step of G2's 160:
+the evaluated set is the head order's prefix, recomputed from the
+snapshot alone, 159 steps cut, 31,105 units in finish over the run;
+4,999 = 4,999 against SPREAD — invariance. The brief's mutation, the
+cut in key order, cannot bite here and the ledger says why: under a
+cut the fronts are outside the cut by construction and the sapling's
+only operator is inert, so key order changes which inert evaluations
+run. The axis the gate varies on is the fronts' non-deferrability:
+`Policy.cut_fronts` lets a cut stop the front pass, and the cut landing
+among the fronts reads 4,503 against 4,999, 9.9% off, 389 front-steps
+skipped. (d) No front step skipped under any cut: 410 front steps
+against SPREAD's 410 (the same world, so the same steps — the honest
+form; "stepped == live" miscounted fronts that went dormant that
+step), 0 skipped, the step's work past the calls reported.
+
+**One decision against the code.** The head is ordered — the fronts'
+bricks, then the residual's score — whether or not a bricks-a-step
+budget cuts it. Without a budget the one-piece step took the active
+set in key order, which was fine when nothing could cut it; a `cut`
+must keep the best prefix. The sort is a few dozen entries a step.
+
+**The bridge, feeding a count per frame** (matryoshka branch `loam`,
+`--loam-units N`, `Mount.units_per_frame`). Each frame spends its
+units on the step in progress first, then on the next step fed time
+owes, and so on while units remain; a step spreads over as many frames
+as it takes, exact; the overlay prints the units spent, the measured
+cost per unit (wall-clock, for the print only — nothing of it reaches
+the sim) and how many steps the world is behind fed time. The bridge's
+gate: forty units a frame for sixty frames — a fraction of the
+sapling's first steps, which touch every brick — completes two loam
+seconds, reports itself 59 behind, 7,440 units at 4.1 µs each
+(ReleaseSafe), and the two completed steps are the same root hash as
+two whole steps. The lag is the honest response to more load than
+budget, on a number, where P2.1a's bricks-a-step budget would have cut.
+
+**Not done.** A replay of the calls' record in units (the transcript
+carries units and calls, the cut point is in the hash, and
+`--budget-schedule` replays the bricks-a-step budget — the units
+schedule's replay is the same shape, unwritten); the D5 signal on
+lag-weighted pending; `World.inProgress` is the one addition after the
+suite that closed this entry ran, and the suite ran again for it.
 
 ## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
 

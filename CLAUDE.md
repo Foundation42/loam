@@ -12,6 +12,8 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-optimize=ReleaseFast              # the delta, when Christian asks for it
     zig build verify-dump                     # loam-run writes a dump, the struple PYTHON port reads it
     zig build py-test                         # the ctypes binding, and G1 across two PROCESSES
+    zig build run -- --units 8 --steps 40     # the step through work(8) calls: the same hash
+    zig build run -- --cut 0.5 --steps 40     # CUT: fronts, half the head, finish; the cut on the trace
     zig build run -- --help                   # loam-run, the seedbed
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
@@ -59,6 +61,19 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   is the fed delta; no wall clock reaches the sim. A regression is
   `error.TimeRegression`, never a clamp. The first tick is the epoch and
   moves nothing.
+- **The budget is fed too, in work units (R16).** A step is `begin(now)`,
+  `work(units) → done?`, `cut()`, `finish()`, its state on the world
+  between calls; `step(now)` is the three in one. `work` performs at
+  most its units, in phase order — fronts (charged first, never cut),
+  operators (the only phase a cut stops), the sinks merged, apply,
+  frontier, seams, halos, finalize, build — with the serial remainders
+  one unit each; `finish` does what remains and counts it apart
+  (`units_finish`). SPREAD is exact: any call sizes publish the one-piece
+  step's hash (G15 a). `Snapshot.cut_at` is in the content hash; the
+  units and calls ride on the snapshot and the trace. Operators read the
+  fronts AS PUBLISHED (`base.fronts`): the front pass has moved the live
+  ones by the time they run. An authoring `finish` resets the buffer: a
+  second `apply` applies nothing.
 - **Addresses are integers; values are f32; movers are f64.** Lattice
   points and Morton keys are integers on the 20-bit lattice (R2). Channel
   values are f32 with a fixed evaluation order. Front positions are f64

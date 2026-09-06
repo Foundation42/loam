@@ -167,7 +167,7 @@ that must bite.
 | G13 Thin feature (STRUCK) | sub-gauge structure survives the B-spline | a straight capsule across a radius sweep ⟨0.5 … 6⟩ r/h, nine axis offsets in the cell, three orientations: whether the zero set survives, and r_rec/r worst and best | (a) the instrument reads the prediction: survival matches, r_rec/r within ⟨1%⟩ of `tools/g13_predict.py`; (b) survives at r/h ≥ ⟨1.0⟩; (c) \|r_rec − r\|/r ≤ ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and thinner is refinement's problem | gauge doubled without refinement → vanishes at 1.0, thins 30% at 2.0 (bites b, c); control values half a cell off → ±40% at 2.0 (bites a, c); trilinear → survives lower, thins less (bites a only: the instrument's variation, recorded) |
 | G14 Attention (built Sunday afternoon; (a) restated at build, the head in two tiers by the ruling, (c) named invariance and (d) reproducibility added by the ruling, see the ledger) | the step's work follows where things are changing, and a reader can see it without touching a brick | (a) the evaluated set is the head of the active set — the fronts' bricks never cut, then the backlog, both in key order, then by attention — recomputable from the published snapshot alone, evaluations == ops × its size, and no front step skipped under any budget with the overrun reported, every step (G5 made graded); (d) the budget is on the transcript: a run replayed from its recorded per-step budgets publishes the same content hash, serial and over the job system, and a record altered where it bites does not; (b) a walk rejecting attention-zero subtrees from summaries alone visits exactly the bricks changed within τ·ln(a₀/floor) of now; (c) under a budget of ⟨50%⟩ of the step's active bricks, the ones evaluated are the highest-attention ones, and the sapling grown under budget ends within ⟨5%⟩ of the unbudgeted run's inside count | exact; exact; ⟨5%⟩ | (a) attention ignored → evaluations scale with the brick count; (b) attention not merged → the walk visits every brick; (c) budget taken in key order instead of attention order → the tips lag and the deviation exceeds the floor |
 | G14 (e) The residual (pre-registered Sunday afternoon, then built: lags 19–20 against a bound of 20, the cold region never served without the lag term) | deferral costs, so no brick with real pending change starves under a hot region | two diffusing regions, one at ⟨10⟩× the other's attention, under a budget the hot region alone fills: the longest lag at which any cold brick is evaluated, against the prediction from τ | ≤ k = ⌈(R − 1)·τ/dt + R⌉ + ⌈n_cold / slots⌉, from `g14ePredictedSteps` before the run; and the cold region IS deferred (its least lag > one step) | the lag term zeroed → the cold region is never served in the run |
-| G15 Budget | a step spread over frames is the same step, and a call never exceeds its budget | (a) the wounded sapling stepped through `work(B)` in calls of ⟨B = 8⟩ units publishes the frozen reference — exactly; (b) no call performs more than B units, any phase; (c) under CUT at ⟨50%⟩ of each step's units the evaluated set is the attention-ordered head, and the run ends within ⟨5%⟩ of SPREAD's inside count | exact; exact; ⟨5%⟩ | (a) a chunk reading a brick another chunk already changed → the hash moves; (b) the seam and halo apply passes left unchunked → a call exceeds B; (c) the cut taken in key order → the deviation exceeds the floor |
+| G15 Budget (built Sunday afternoon; (d) added by Christian's word; (c)'s mutation restated at build, see the ledger) | a step spread over frames is the same step, and a call never exceeds its budget | (a) the wounded sapling stepped through `work(B)` in calls of ⟨B = 8⟩ units publishes the frozen reference — exactly, serial and over the job system and in another call size; (b) no call performs more than B units, any phase; (c) under CUT at ⟨50%⟩ of the head the evaluated set is the head order's prefix, and the run ends within ⟨5%⟩ of SPREAD's inside count (invariance); (d) no front step skipped under any cut — the same front steps as SPREAD — with the work past the calls reported | exact; exact; ⟨5%⟩; exact | (a) the step's dt re-read from the world clock per call instead of held on the state → the hash moves (by hand); (b) the seam and halo apply passes left unchunked → a call performs 53 of 8; (c, d) the fronts made deferrable and the cut landing among them → 9.9% off, 389 front-steps skipped (the cut in key order cannot bite: fronts are outside the cut by construction and the sapling's operator is inert) |
 | G1 again | replay, end to end, with the new carrier | frozen reference, re-baselined as a reviewed event with old and new in the ledger | identical | commit order reversed |
 | The look | the trunk with no facets | the close-up at `--loam-scale 0.06` | Christian's eyes | — |
 
@@ -252,7 +252,10 @@ has been zero for a season), the render budget (samples where attention
 is high, temporal accumulation where it is zero), and a score a front
 or a controller can read.
 
-**P2.1b — the budget** (pre-registered the same evening; R16, G15). The
+**P2.1b — the budget** (pre-registered the same evening; R16, G15; BUILT
+Sunday 2026-09-06 afternoon — the ledger, "P2.1b — the budget in work
+units": SPREAD exact to the frozen reference, G15 green and bitten,
+the bridge spending `--loam-units N` a frame with its lag printed). The
 step as `begin` / `work(units)` / `finish` with its state on the world;
 units defined per phase and counted (`StepStats.units`); the commit's
 per-brick phases behind a cursor; SPREAD and CUT; `loam-run --budget B`
@@ -261,6 +264,47 @@ the bridge feeding a count per frame from a measured cost per unit,
 with its lag against fed time printed. Gate: G15 with its three
 mutations. G1 re-baselined only if the hash moves under SPREAD — it must
 not, and that is (a).
+
+*The design, settled before the spade (Sunday afternoon).* Four calls:
+`begin(now)` — fed time, the quiet check, the active set and its head
+(P2.1a's, fronts first and never cut, then the residual's score), the
+region entries; `work(units) → done?` — performs up to `units` units in
+phase order and never more; `cut()` — stops the operate phase at its
+cursor, the rest of the head carried with its since intact (a cut
+brick rides the residual with lag ≥ one step by construction);
+`finish()` — completes whatever remains, counted apart as
+`StepStats.units_finish` (the honest number: the step's work beyond
+the host's calls), then spawns, the snapshot, publish. `step(now)` is
+the three in one and publishes what it publishes today. Phases, each
+behind a cursor on the world, one unit per item: the fronts stepped
+into their sinks (charged first, never cut); the operators over the
+head (the only phase a cut stops); the sinks merged in id order (after
+the operators, so every floating-point sum lands in today's order and
+SPREAD is exact to the bit — one serial unit); apply, one per entry;
+the frontier's requests, one per changed brick; the seam pass's two
+collects and two sorted applies, one per brick collected and one per
+target brick applied; the halo collect and apply the same; finalize,
+one per brick. The serial remainders — the pre-tree for the frontier,
+the materialise, the scratch tree, the real tree, the publish — are
+one unit each, performed whole (R16 named them as the serial
+remainder; G15 (b)'s mutation is the apply passes unchunked). On the
+transcript: `Snapshot.cut_at` (in the content hash — where a step was
+cut is an input like the budget), and the units performed and calls
+taken, recorded on the snapshot and the trace's `# step` line.
+Instruments: `loam-run --units U` (steps through `work(U)`, calls and
+units per step printed) and `--cut F` (the operate phase cut at F of
+the head). Gate G15 as pre-registered, (d) added: (a) SPREAD exact —
+the wounded sapling through `work(8)` publishes the frozen reference,
+serial and over the job system; (b) no `work` call performs more than
+its units, every call of the run; (c) CUT at half the head: the
+evaluated set is the head order's prefix, and the sapling ends within
+⟨5%⟩ of SPREAD's tissue (an invariance claim); (d) no front step
+skipped under any cut, `units_finish` on the trace line. Mutations:
+(a) the step's dt re-read from the world clock at each call instead of
+held on the state (the second chunk's operators see dt = 0) — by hand;
+(b) the seam and halo apply passes unchunked (`Policy.chunk_applies =
+false`) — a call exceeds its units; (c) the cut in key order
+(`BudgetOrder.key`); (d) follows from (c)'s mutation, which cuts fronts.
 
 *Christian's word, Sunday afternoon, before the spade.* **A front step
 counts as a unit** — "otherwise the budget isn't one" — and fronts are

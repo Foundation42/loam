@@ -199,6 +199,9 @@ pub fn write(gpa: std.mem.Allocator, w: *const world_mod.World) ![]u8 {
     for (snap.active_since) |t| try since.append(try uint(a, t));
     try top.append(.{ try key(a, "active_since"), try array(a, since.items) });
     try top.append(.{ try key(a, "budget"), try int(a, if (snap.budget) |b| @as(i64, b) else -1) });
+    try top.append(.{ try key(a, "cut_at"), try int(a, if (snap.cut_at) |c| @as(i64, c) else -1) });
+    try top.append(.{ try key(a, "units"), try uint(a, snap.units) });
+    try top.append(.{ try key(a, "calls"), try uint(a, snap.calls) });
 
     var out = struple.Packer.init(gpa);
     errdefer out.deinit();
