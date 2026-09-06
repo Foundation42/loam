@@ -2104,10 +2104,34 @@ the sweep's scaffold. The bark's bands 1–2 were the scaffold standing
 in for an archetype that does not exist yet. "An isolated material
 seedbed would be a cracking experiment once P2 has settled."
 
+### Struck: the field is the bark's frame (Christian, the same night)
+
+"That looks a lot better! More importantly I much prefer the
+loam-first approach that is more in line with my vision for it. And
+yes, I'd definitely say the living material takes a back seat to the
+cheap version." So: the grain's frame is the level set's own, from
+the Hessian at the hit; the chart is for what only history can say.
+Matryoshka's mount defaults to `field`. Of the three levels in his
+document, the developed archetype — grown once, frozen, hashed,
+sampled by footprint — comes first, and the living material waits.
+
+The consequence for the cost beat, which is now the fact P2.3 was
+for: in the bark's mode a read touches NO provenance plane — the
+carrier's 64 coefficients, twice. `chart_s` and `chart_theta` have no
+reader left but the collar's recency window (`chart_s`) and G12 (b)'s
+exactness gate. That reopens Christian's original count of segments
+for the window — the ring table holds the arc of every segment, so
+"own front, within the reach" can be asked through `segment` alone,
+dt-safe, and the two chart planes could go — and it leaves `who` and
+`segment` for the events (a scar, a cut) and `own`, `other`, `collar`
+for the collar. Five planes where there are seven, and the GPU stride
+back toward 1336 with a ring table beside it. Candidates, none taken
+tonight; the regression line stands at 5.21.
+
 ### Open
 
-The stride against the struck number (the bake). Which grain mode is
-the bark's, his eyes. The material seedbed. The one-sided mask's
+The stride against the struck number (the bake). The chart planes'
+last readers. The material seedbed, the developed archetype first. The one-sided mask's
 error inside a collar, if a chart read there ever matters. The
 amplitudes, PROPOSED. The silhouette ensemble, recorded with its
 trigger (shimmer at a silhouette under the footprint cut). From

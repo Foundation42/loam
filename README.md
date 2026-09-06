@@ -71,7 +71,13 @@ carrier and nothing else. At a branch collar the grain goes bare where
 the two fronts' fields cross, so the ridge in the grooves is the
 bark's and no crack is the grain's. `--loam-no-bark` is the carrier
 alone; the bark's octaves are in metres (three centimetres and half
-that), because bark does not get finer when the brick does.
+that), because bark does not get finer when the brick does. The
+grain's frame is the field's own — the level set's principal
+directions from the Hessian at the hit, the tube's axis its direction
+of least curvature — and reads nothing but the carrier; `--loam-bark-
+mode chart` is the other way, the sweep's provenance chart, kept for
+what only history can say. `--loam-bark-scale` is one knob over the
+depth of it.
 
 Every brick knows how much it last changed and when — attention, derived
 where it is read, never stepped, scored per channel over its range — so
