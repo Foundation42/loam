@@ -7,7 +7,7 @@ feel reassured. Chris has asked for this in every sibling repo; a suite
 run per edit makes the harness the activity rather than the work.
 
     zig build test -Dtest-filter=straddling   # one gate: 17 s to compile ReleaseSafe, then seconds
-    zig build test                            # 103 gates, ~3 min ReleaseSafe — before a commit
+    zig build test                            # 104 gates, ~3 min ReleaseSafe — before a commit
     zig build test -Dtest-optimize=Debug -Dtest-filter=…   # the other regime: 2 s to compile, slower to run
     zig build test -Dtest-optimize=ReleaseFast              # the delta, when Christian asks for it
     zig build verify-dump                     # loam-run writes a dump, the struple PYTHON port reads it

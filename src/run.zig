@@ -38,6 +38,7 @@ const usage =
     \\  --relief RES:FILE     bake the plates' face as a relief (the material seedbed) and write it as a PGM, deepest groove white
     \\  --volume RES:FILE     bake the marble's cube as a material field and write its middle slice as a PPM through a white entry
     \\  --rbf N:FILE          fit N Gaussians to the marble's material field (baked at 64³) and write the set to FILE, its slice to FILE.ppm
+    \\  --rbf-isotropic       hold the kernels spherical (the comparison; anisotropic is the default)
     \\  --project CH:AXIS:RES:FILE        write a PGM max-projection along AXIS at the end
     \\  --dump FILE          write the snapshot as a struple map at the end
     \\  --ray ox,oy,oz,dx,dy,dz           count leaves a ray samples vs crosses at the end
@@ -82,6 +83,7 @@ const Opts = struct {
     relief: ?struct { res: u32, path: []const u8 } = null,
     volume: ?struct { res: u32, path: []const u8 } = null,
     rbf: ?struct { kernels: u32, path: []const u8 } = null,
+    rbf_isotropic: bool = false,
     projections: std.ArrayListUnmanaged(Slice) = .{},
     dump: ?[]const u8 = null,
     ray: ?[6]f64 = null,
@@ -193,6 +195,8 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             const v = try next(args, &i);
             const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadRelief;
             o.relief = .{ .res = try std.fmt.parseInt(u32, v[0..colon], 10), .path = v[colon + 1 ..] };
+        } else if (std.mem.eql(u8, a, "--rbf-isotropic")) {
+            o.rbf_isotropic = true;
         } else if (std.mem.eql(u8, a, "--rbf")) {
             const v = try next(args, &i);
             const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadRbf;
@@ -545,12 +549,12 @@ pub fn main() !void {
         var vol = try loam.bark.Volume.bake(gpa, &world, c, seedbed.MARBLE_BAKE_HALF, res, seedbed.marbleExpression(), seedbed.marbleMargin(res));
         defer vol.deinit(gpa);
         var fit_timer = try std.time.Timer.start();
-        var fitted = try loam.rbf.fit(gpa, &vol, seedbed.MARBLE_VEIN, .{ .kernels = rb.kernels, .seed = opts.seed });
+        var fitted = try loam.rbf.fit(gpa, &vol, seedbed.MARBLE_VEIN, .{ .kernels = rb.kernels, .seed = opts.seed, .isotropic = opts.rbf_isotropic });
         defer fitted.set.deinit(gpa);
         const fit_ms = @as(f64, @floatFromInt(fit_timer.read())) / 1e6;
         try fitted.set.write(rb.path);
         const rp = fitted.report;
-        try stdout.print("rbf {d} kernels fitted to the {d}³ field in {d} iterations, {d:.1} s ({s}): held-out RMS {d:.4} → {d:.4} (gain {d:.2}); per channel A {d:.3}, albedo {d:.3}/{d:.3}/{d:.3}, roughness {d:.3}, metallic {d:.3}, emissive {d:.3}/{d:.3}/{d:.3}; {d} bytes against the volume's {d}; {d} vein voxels in the pool → {s}\n", .{ rb.kernels, res, rp.iterations, fit_ms / 1000, @tagName(builtin.mode), rp.rms_init, rp.rms_final, rp.rms_init / rp.rms_final, rp.rms_channel[0], rp.rms_channel[1], rp.rms_channel[2], rp.rms_channel[3], rp.rms_channel[4], rp.rms_channel[5], rp.rms_channel[6], rp.rms_channel[7], rp.rms_channel[8], fitted.set.bytes(), vol.data.len * 4, rp.pool_vein, rb.path });
+        try stdout.print("rbf {d} {s} kernels fitted to the {d}³ field in {d} iterations, {d:.1} s ({s}): held-out RMS {d:.4} → {d:.4} (gain {d:.2}); per channel A {d:.3}, albedo {d:.3}/{d:.3}/{d:.3}, roughness {d:.3}, metallic {d:.3}, emissive {d:.3}/{d:.3}/{d:.3}; aspect median {d:.2}, max {d:.2}; {d} bytes against the volume's {d}; {d} vein voxels in the pool → {s}\n", .{ rb.kernels, if (opts.rbf_isotropic) "spherical" else "anisotropic", res, rp.iterations, fit_ms / 1000, @tagName(builtin.mode), rp.rms_init, rp.rms_final, rp.rms_init / rp.rms_final, rp.rms_channel[0], rp.rms_channel[1], rp.rms_channel[2], rp.rms_channel[3], rp.rms_channel[4], rp.rms_channel[5], rp.rms_channel[6], rp.rms_channel[7], rp.rms_channel[8], rp.aspect_median, rp.aspect_max, fitted.set.bytes(), vol.data.len * 4, rp.pool_vein, rb.path });
         const ppm_path = try std.fmt.allocPrint(gpa, "{s}.ppm", .{rb.path});
         defer gpa.free(ppm_path);
         const rgb = try gpa.alloc(f32, @as(usize, res) * res * 3);

@@ -9,8 +9,14 @@
 //! in the matrix, 1 inside a vein) and B = A·(the structure's material)
 //! — linear in the field, so a sum of kernels can carry it, and the
 //! entry is the BIAS: the matrix costs nothing, only the structure
-//! costs kernels. A SET is N isotropic Gaussians, each a centre, a
-//! width and a weight per channel of (A, B): KERNEL_FLOATS floats. It
+//! costs kernels. A SET is N Gaussians, each a centre, a SHAPE and a
+//! weight per channel of (A, B): KERNEL_FLOATS floats. The shape is
+//! ANISOTROPIC (Christian: "let's try the anisotropic kernels next"):
+//! the lower-triangular factor L of the kernel's precision, so the
+//! Mahalanobis distance is |Lᵀ(q − μ)|, an isotropic kernel of width σ
+//! is L = I/σ, and an ellipsoid — a vein is a tube, one ellipsoid
+//! where a chain of spheres stood — is whatever the descent makes of
+//! the six numbers, positive-definite by construction. It
 //! is fitted by gradient descent (Adam) to the baked volume's own read
 //! at random points, half of them drawn from the veins — uniform
 //! sampling of a cube that is 6% vein would fit the matrix — from
@@ -35,13 +41,85 @@ const Material = bark.Material;
 /// metallic, emissive (3). Always nine; the set's columns say which B
 /// a read uses.
 pub const CHANNELS: usize = 9;
-pub const KERNEL_FLOATS: usize = 3 + 1 + CHANNELS;
+/// A kernel: the centre, the six of L (l00, l10, l11, l20, l21, l22),
+/// the nine weights.
+pub const KERNEL_FLOATS: usize = 3 + 6 + CHANNELS;
 
 pub const Kernel = struct {
     mu: [3]f32,
-    sigma: f32,
+    /// The lower-triangular factor of the precision, row by row:
+    /// l00, l10, l11, l20, l21, l22. Σ⁻¹ = L Lᵀ.
+    l: [6]f32,
     w: [CHANNELS]f32,
+
+    /// The isotropic kernel of width `sigma`.
+    pub fn isotropic(mu: [3]f32, sigma: f32, w: [CHANNELS]f32) Kernel {
+        const inv = 1 / sigma;
+        return .{ .mu = mu, .l = .{ inv, 0, inv, 0, 0, inv }, .w = w };
+    }
+
+    /// The widths along the kernel's principal axes, longest first,
+    /// from the precision's eigenvalues (1/√λ).
+    pub fn widths(self: Kernel) [3]f32 {
+        const l = self.l;
+        // P = L Lᵀ, symmetric.
+        const p00 = l[0] * l[0];
+        const p10 = l[1] * l[0];
+        const p11 = l[1] * l[1] + l[2] * l[2];
+        const p20 = l[3] * l[0];
+        const p21 = l[3] * l[1] + l[4] * l[2];
+        const p22 = l[3] * l[3] + l[4] * l[4] + l[5] * l[5];
+        const ev = eigen3(.{ p00, p10, p11, p20, p21, p22 });
+        var out: [3]f32 = undefined;
+        inline for (0..3) |i| out[i] = 1 / @sqrt(@max(ev[i], 1e-12));
+        // Ascending eigenvalues are descending widths.
+        return out;
+    }
+
+    /// The longest width over the shortest.
+    pub fn aspect(self: Kernel) f32 {
+        const wd = self.widths();
+        return wd[0] / wd[2];
+    }
 };
+
+/// Eigenvalues of a symmetric 3×3 (p00, p10, p11, p20, p21, p22),
+/// ascending, by Jacobi rotations.
+fn eigen3(p: [6]f32) [3]f32 {
+    var a = [3][3]f64{ .{ p[0], p[1], p[3] }, .{ p[1], p[2], p[4] }, .{ p[3], p[4], p[5] } };
+    var sweep: usize = 0;
+    while (sweep < 32) : (sweep += 1) {
+        var off: f64 = 0;
+        for (0..3) |i| for (0..3) |j| {
+            if (i != j) off += a[i][j] * a[i][j];
+        };
+        if (off < 1e-24) break;
+        for (0..3) |pp| {
+            var q: usize = pp + 1;
+            while (q < 3) : (q += 1) {
+                if (@abs(a[pp][q]) < 1e-18) continue;
+                const theta = (a[q][q] - a[pp][pp]) / (2 * a[pp][q]);
+                const t = std.math.sign(theta) / (@abs(theta) + @sqrt(theta * theta + 1));
+                const c = 1 / @sqrt(t * t + 1);
+                const sn = t * c;
+                var r: [3][3]f64 = a;
+                for (0..3) |k| {
+                    r[k][pp] = c * a[k][pp] - sn * a[k][q];
+                    r[k][q] = sn * a[k][pp] + c * a[k][q];
+                }
+                var r2: [3][3]f64 = r;
+                for (0..3) |k| {
+                    r2[pp][k] = c * r[pp][k] - sn * r[q][k];
+                    r2[q][k] = sn * r[pp][k] + c * r[q][k];
+                }
+                a = r2;
+            }
+        }
+    }
+    var ev = [3]f32{ @floatCast(a[0][0]), @floatCast(a[1][1]), @floatCast(a[2][2]) };
+    std.mem.sort(f32, &ev, {}, std.sort.asc(f32));
+    return ev;
+}
 
 /// The nine channels of a read, or of a target.
 pub const Channels = [CHANNELS]f32;
@@ -93,7 +171,7 @@ pub const Set = struct {
         return compose(self.columns, y, entry);
     }
 
-    /// The set to a file: "LRBF", the version, the extent, the columns,
+    /// The set to a file: "LRBF", the version (2), the extent, the columns,
     /// the count, the hash, then the kernels, little-endian f32s.
     pub fn write(self: *const Set, path: []const u8) !void {
         var f = try std.fs.cwd().createFile(path, .{});
@@ -101,14 +179,14 @@ pub const Set = struct {
         var bw = std.io.bufferedWriter(f.writer());
         const w = bw.writer();
         try w.writeAll("LRBF");
-        try w.writeInt(u32, 1, .little);
+        try w.writeInt(u32, 2, .little);
         try w.writeInt(u32, @bitCast(self.extent), .little);
         try w.writeByte(self.columns);
         try w.writeInt(u32, @intCast(self.kernels.len), .little);
         try w.writeAll(&self.hash);
         for (self.kernels) |k| {
             for (k.mu) |v| try w.writeInt(u32, @bitCast(v), .little);
-            try w.writeInt(u32, @bitCast(k.sigma), .little);
+            for (k.l) |v| try w.writeInt(u32, @bitCast(v), .little);
             for (k.w) |v| try w.writeInt(u32, @bitCast(v), .little);
         }
         try bw.flush();
@@ -122,7 +200,8 @@ pub const Set = struct {
         var magic: [4]u8 = undefined;
         try r.readNoEof(&magic);
         if (!std.mem.eql(u8, &magic, "LRBF")) return error.NotAnRbfSet;
-        if (try r.readInt(u32, .little) != 1) return error.RbfVersion;
+        // Version 1 was the isotropic set of the same night; nothing kept it.
+        if (try r.readInt(u32, .little) != 2) return error.RbfVersion;
         var out: Set = undefined;
         out.extent = @bitCast(try r.readInt(u32, .little));
         out.columns = try r.readByte();
@@ -132,27 +211,34 @@ pub const Set = struct {
         errdefer gpa.free(out.kernels);
         for (out.kernels) |*k| {
             for (&k.mu) |*v| v.* = @bitCast(try r.readInt(u32, .little));
-            k.sigma = @bitCast(try r.readInt(u32, .little));
+            for (&k.l) |*v| v.* = @bitCast(try r.readInt(u32, .little));
             for (&k.w) |*v| v.* = @bitCast(try r.readInt(u32, .little));
         }
         return out;
     }
 };
 
-/// A kernel is nothing beyond this many widths squared: exp(−16), a
+/// A kernel is nothing beyond this Mahalanobis distance squared (widths
+/// squared, along whichever axis): exp(−16), a
 /// tenth of a millionth — so far away a read is the entry EXACTLY (a
 /// denormal exp once left 1e-42 of gold on the matrix) and the GPU
 /// skips the kernel by the same rule (matryoshka's `loamRbf`).
 pub const CUTOFF: f32 = 32;
 
+/// The Mahalanobis form at q: v = Lᵀ(q − μ) and |v|².
+const Mahal = struct { d: [3]f32, v: [3]f32, r2: f32 };
+
+fn mahal(k: Kernel, q: [3]f32) Mahal {
+    const d = [3]f32{ q[0] - k.mu[0], q[1] - k.mu[1], q[2] - k.mu[2] };
+    const l = k.l;
+    const v = [3]f32{ l[0] * d[0] + l[1] * d[1] + l[3] * d[2], l[2] * d[1] + l[4] * d[2], l[5] * d[2] };
+    return .{ .d = d, .v = v, .r2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2] };
+}
+
 fn gaussian(k: Kernel, q: [3]f32) f32 {
-    const dx = q[0] - k.mu[0];
-    const dy = q[1] - k.mu[1];
-    const dz = q[2] - k.mu[2];
-    const r2 = dx * dx + dy * dy + dz * dz;
-    const s2 = k.sigma * k.sigma;
-    if (r2 > CUTOFF * s2) return 0;
-    return fmath.expf(-r2 / (2 * s2));
+    const m = mahal(k, q);
+    if (m.r2 > CUTOFF) return 0;
+    return fmath.expf(-0.5 * m.r2);
 }
 
 /// The nine channels to a material through an entry: A is clamped to
@@ -191,6 +277,10 @@ pub const FitOptions = struct {
     /// Adam's step; NEGATIVE climbs, the gate's mutation.
     rate: f32 = 0.02,
     seed: u64 = 0,
+    /// The kernels held spherical: after every step the shape is
+    /// projected back to one width (the mean log-width, no off-
+    /// diagonal) — the tube gate's mutation, and the comparison.
+    isotropic: bool = false,
 };
 
 pub const Report = struct {
@@ -202,11 +292,17 @@ pub const Report = struct {
     rms_channel: Channels,
     iterations: u32,
     pool_vein: u32,
+    /// The kernels' longest width over their shortest: the median and
+    /// the largest — what the descent made of the shape.
+    aspect_median: f32,
+    aspect_max: f32,
 };
 
 pub const Fitted = struct { set: Set, report: Report };
 
-/// A parameter vector: the kernels' centres, log-widths and weights.
+/// A parameter vector: per kernel the centre (3), the LOG of L's
+/// diagonal (3, so it stays positive), L's off-diagonal (3: l10, l20,
+/// l21) and the weights (9).
 const Params = struct {
     const PER: usize = KERNEL_FLOATS;
     data: []f32,
@@ -214,11 +310,19 @@ const Params = struct {
     fn mu(self: Params, i: usize) *[3]f32 {
         return self.data[i * PER ..][0..3];
     }
-    fn logSigma(self: Params, i: usize) *f32 {
-        return &self.data[i * PER + 3];
+    fn logDiag(self: Params, i: usize) *[3]f32 {
+        return self.data[i * PER + 3 ..][0..3];
+    }
+    fn off(self: Params, i: usize) *[3]f32 {
+        return self.data[i * PER + 6 ..][0..3];
     }
     fn w(self: Params, i: usize) *[CHANNELS]f32 {
-        return self.data[i * PER + 4 ..][0..CHANNELS];
+        return self.data[i * PER + 9 ..][0..CHANNELS];
+    }
+    fn kernel(self: Params, i: usize) Kernel {
+        const a = self.logDiag(i).*;
+        const o = self.off(i).*;
+        return .{ .mu = self.mu(i).*, .l = .{ fmath.expf(a[0]), o[0], fmath.expf(a[1]), o[1], o[2], fmath.expf(a[2]) }, .w = self.w(i).* };
     }
 };
 
@@ -234,7 +338,7 @@ pub fn lossAndGrad(params: Params, n: usize, points: []const [3]f32, targets: []
         var yhat: Channels = [_]f32{0} ** CHANNELS;
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            const k = Kernel{ .mu = params.mu(i).*, .sigma = fmath.expf(params.logSigma(i).*), .w = params.w(i).* };
+            const k = params.kernel(i);
             const g = gaussian(k, p);
             inline for (0..CHANNELS) |c| yhat[c] += k.w[c] * g;
         }
@@ -245,22 +349,31 @@ pub fn lossAndGrad(params: Params, n: usize, points: []const [3]f32, targets: []
         }
         i = 0;
         while (i < n) : (i += 1) {
-            const sigma = fmath.expf(params.logSigma(i).*);
-            const k = Kernel{ .mu = params.mu(i).*, .sigma = sigma, .w = params.w(i).* };
-            const g = gaussian(k, p);
+            const k = params.kernel(i);
+            const m = mahal(k, p);
+            if (m.r2 > CUTOFF) continue;
+            const g = fmath.expf(-0.5 * m.r2);
             if (g < 1e-7) continue;
-            const d = [3]f32{ p[0] - k.mu[0], p[1] - k.mu[1], p[2] - k.mu[2] };
-            const r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
             var ew: f32 = 0; // Σ_c e_c w_c
-            const gw = grad[i * Params.PER + 4 ..][0..CHANNELS];
+            const gw = grad[i * Params.PER + 9 ..][0..CHANNELS];
             inline for (0..CHANNELS) |c| {
                 gw[c] += 2 * e[c] * g * inv;
                 ew += e[c] * k.w[c];
             }
-            const s2 = sigma * sigma;
+            // ∂g/∂μ = g·(L v); ∂g/∂L_ij = −g·v_j·d_i, the diagonal through
+            // its log (times L_ii).
+            const l = k.l;
+            const lv = [3]f32{ l[0] * m.v[0], l[1] * m.v[0] + l[2] * m.v[1], l[3] * m.v[0] + l[4] * m.v[1] + l[5] * m.v[2] };
             const gm = grad[i * Params.PER ..][0..3];
-            inline for (0..3) |a| gm[a] += 2 * ew * g * d[a] / s2 * inv;
-            grad[i * Params.PER + 3] += 2 * ew * g * r2 / s2 * inv;
+            inline for (0..3) |a| gm[a] += 2 * ew * g * lv[a] * inv;
+            const gd = grad[i * Params.PER + 3 ..][0..3];
+            gd[0] += -2 * ew * g * m.v[0] * m.d[0] * l[0] * inv;
+            gd[1] += -2 * ew * g * m.v[1] * m.d[1] * l[2] * inv;
+            gd[2] += -2 * ew * g * m.v[2] * m.d[2] * l[5] * inv;
+            const go = grad[i * Params.PER + 6 ..][0..3];
+            go[0] += -2 * ew * g * m.v[0] * m.d[1] * inv; // l10
+            go[1] += -2 * ew * g * m.v[0] * m.d[2] * inv; // l20
+            go[2] += -2 * ew * g * m.v[1] * m.d[2] * inv; // l21
         }
     }
     return loss * inv;
@@ -272,7 +385,7 @@ fn rmsOf(params: Params, n: usize, points: []const [3]f32, targets: []const Chan
         var yhat: Channels = [_]f32{0} ** CHANNELS;
         var i: usize = 0;
         while (i < n) : (i += 1) {
-            const k = Kernel{ .mu = params.mu(i).*, .sigma = fmath.expf(params.logSigma(i).*), .w = params.w(i).* };
+            const k = params.kernel(i);
             const g = gaussian(k, p);
             inline for (0..CHANNELS) |c| yhat[c] += k.w[c] * g;
         }
@@ -375,7 +488,8 @@ pub fn fit(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, opts: Fit
             }
             if (!apart) continue;
             params.mu(placed).* = c;
-            params.logSigma(placed).* = @log(vein);
+            params.logDiag(placed).* = .{ -@log(vein), -@log(vein), -@log(vein) };
+            params.off(placed).* = .{ 0, 0, 0 };
             var y = target(vol, vein, c);
             inline for (0..CHANNELS) |ch| y[ch] = y[ch] / scale[ch] * 0.7;
             params.w(placed).* = y;
@@ -383,7 +497,7 @@ pub fn fit(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, opts: Fit
         }
     }
 
-    var report = Report{ .rms_init = rmsOf(params, n, held, held_y, scale, null), .rms_final = 0, .rms_channel = undefined, .iterations = opts.iterations, .pool_vein = @intCast(vein_voxels.items.len) };
+    var report = Report{ .rms_init = rmsOf(params, n, held, held_y, scale, null), .rms_final = 0, .rms_channel = undefined, .iterations = opts.iterations, .pool_vein = @intCast(vein_voxels.items.len), .aspect_median = 1, .aspect_max = 1 };
 
     // Adam.
     const grad = try gpa.alloc(f32, params.data.len);
@@ -416,18 +530,40 @@ pub fn fit(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, opts: Fit
             b.* = b2 * b.* + (1 - b2) * g * g;
             x.* -= opts.rate * (a.* / c1) / (@sqrt(b.* / c2) + 1e-8);
         }
-        // A width never collapses below a cell nor grows past the cube.
+        // A width never collapses below half a cell nor grows past the
+        // cube: L's diagonal between 1/extent and 2/cell, its off-
+        // diagonal within the same reach. Held isotropic, the shape
+        // is projected back to one width.
+        const lo_a = -@log(e);
+        const hi_a = @log(2 / cell);
         var i: usize = 0;
-        while (i < n) : (i += 1) params.logSigma(i).* = @min(@log(e), @max(@log(0.5 * cell), params.logSigma(i).*));
+        while (i < n) : (i += 1) {
+            const a = params.logDiag(i);
+            const o = params.off(i);
+            if (opts.isotropic) {
+                const mean = (a[0] + a[1] + a[2]) / 3;
+                a.* = .{ mean, mean, mean };
+                o.* = .{ 0, 0, 0 };
+            }
+            inline for (0..3) |c| {
+                a[c] = @min(hi_a, @max(lo_a, a[c]));
+                o[c] = @min(2 / cell, @max(-2 / cell, o[c]));
+            }
+        }
     }
     report.rms_final = rmsOf(params, n, held, held_y, scale, &report.rms_channel);
 
     const set = Set{ .extent = e, .columns = vol.columns, .kernels = try gpa.alloc(Kernel, n), .hash = vol.hash };
+    const aspects = try gpa.alloc(f32, n);
+    defer gpa.free(aspects);
     for (set.kernels, 0..) |*k, i| {
-        k.mu = params.mu(i).*;
-        k.sigma = fmath.expf(params.logSigma(i).*);
+        k.* = params.kernel(i);
         inline for (0..CHANNELS) |c| k.w[c] = params.w(i).*[c] * scale[c];
+        aspects[i] = k.aspect();
+        report.aspect_max = @max(report.aspect_max, aspects[i]);
     }
+    std.mem.sort(f32, aspects, {}, std.sort.asc(f32));
+    report.aspect_median = aspects[n / 2];
     return .{ .set = set, .report = report };
 }
 
@@ -437,7 +573,8 @@ test "a set of one kernel reads its weights back at its centre through the entry
     const gpa = std.testing.allocator;
     var set = Set{ .extent = 8, .columns = bark.ALL_COLUMNS, .kernels = try gpa.alloc(Kernel, 1), .hash = undefined };
     defer set.deinit(gpa);
-    set.kernels[0] = .{ .mu = .{ 2, 2, 2 }, .sigma = 0.5, .w = .{ 1, 0.5, 0, 0, 0.9, 1, 0, 0, 0 } };
+    set.kernels[0] = Kernel.isotropic(.{ 2, 2, 2 }, 0.5, .{ 1, 0.5, 0, 0, 0.9, 1, 0, 0, 0 });
+    try std.testing.expectApproxEqAbs(@as(f32, 1), set.kernels[0].aspect(), 1e-5);
     const entry = Material{ .albedo = .{ 0, 0, 1 }, .roughness = 0.1, .metallic = 0, .emissive = .{ 0, 2, 0 } };
     const at = set.materialAt(.{ 2, 2, 2 }, 1, entry);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), at.albedo[0], 1e-6);
@@ -458,7 +595,7 @@ test "a set of one kernel reads its weights back at its centre through the entry
     try std.testing.expectEqual(entry.metallic, only.metallic);
 }
 
-test "the fit's gradient is the finite difference's, for every kind of parameter" {
+test "the fit's gradient is the finite difference's, for every kind of parameter: a centre, a log-diagonal, the three off-diagonals, a weight" {
     const gpa = std.testing.allocator;
     const n: usize = 3;
     const params = Params{ .data = try gpa.alloc(f32, n * Params.PER) };
@@ -466,7 +603,10 @@ test "the fit's gradient is the finite difference's, for every kind of parameter
     var st = rng.Stream.region(7, 1, 0);
     for (params.data) |*x| x.* = st.unit() - 0.5;
     var i: usize = 0;
-    while (i < n) : (i += 1) params.logSigma(i).* = 0.2 * st.unit();
+    while (i < n) : (i += 1) {
+        params.logDiag(i).* = .{ 0.2 * st.unit(), 0.2 * st.unit(), 0.2 * st.unit() };
+        params.off(i).* = .{ 0.3 * st.unit(), -0.2 * st.unit(), 0.1 * st.unit() };
+    }
     var points: [16][3]f32 = undefined;
     var targets: [16]Channels = undefined;
     for (&points, &targets) |*p, *y| {
@@ -478,8 +618,9 @@ test "the fit's gradient is the finite difference's, for every kind of parameter
     const scratch = try gpa.alloc(f32, params.data.len);
     defer gpa.free(scratch);
     _ = lossAndGrad(params, n, &points, &targets, grad);
-    // One of each: a centre coordinate, a log-width, a weight.
-    const probes = [_]usize{ 1 * Params.PER + 0, 2 * Params.PER + 3, 0 * Params.PER + 4 + 5 };
+    // One of each: a centre coordinate, a log-diagonal, each off-
+    // diagonal, a weight.
+    const probes = [_]usize{ 1 * Params.PER + 0, 2 * Params.PER + 3, 2 * Params.PER + 5, 0 * Params.PER + 6, 1 * Params.PER + 7, 2 * Params.PER + 8, 0 * Params.PER + 9 + 5 };
     for (probes) |j| {
         const h: f32 = 1e-3;
         const x0 = params.data[j];
@@ -559,4 +700,57 @@ test "the fit lowers the held-out error on two balls by the predicted gain, clim
     try std.testing.expectEqual(fitted.set.kernels.len, back.kernels.len);
     try std.testing.expectEqual(fitted.set.kernels[2], back.kernels[2]);
     try std.testing.expectEqual(fitted.set.columns, back.columns);
+}
+
+/// One straight tube of gold along x through a cube: the fixture an
+/// ellipsoid should fit and a sphere cannot.
+fn oneTube(gpa: std.mem.Allocator) !bark.Volume {
+    const res: u32 = 16;
+    const cols = bark.ALL_COLUMNS;
+    var v = bark.Volume{ .res = res, .extent = 16, .columns = cols, .stride = bark.strideOf(cols), .data = try gpa.alloc(f32, res * res * res * bark.strideOf(cols)), .hash = [_]u8{0} ** 32, .min = -2, .max = 2 };
+    const gold = Material{ .albedo = .{ 1, 0.7, 0.3 }, .roughness = 0.25, .metallic = 1, .emissive = .{ 0, 0, 0 } };
+    var k: u32 = 0;
+    while (k < res) : (k += 1) {
+        var j: u32 = 0;
+        while (j < res) : (j += 1) {
+            var i: u32 = 0;
+            while (i < res) : (i += 1) {
+                const p = [3]f32{ @as(f32, @floatFromInt(i)) + 0.5, @as(f32, @floatFromInt(j)) + 0.5, @as(f32, @floatFromInt(k)) + 0.5 };
+                const rec = v.data[v.index(i, j, k)..][0..v.stride];
+                // A capsule from (2, 8, 8) to (14, 8, 8), radius 1.5.
+                const sx = @min(14, @max(2, p[0]));
+                const d = @sqrt((p[0] - sx) * (p[0] - sx) + (p[1] - 8) * (p[1] - 8) + (p[2] - 8) * (p[2] - 8));
+                rec[0] = @max(-2, 1.5 - d);
+                rec[1..4].* = gold.albedo;
+                rec[4] = gold.roughness;
+                rec[5] = gold.metallic;
+                rec[6..9].* = gold.emissive;
+            }
+        }
+    }
+    return v;
+}
+
+test "a tube is an ellipsoid: two anisotropic kernels fit one straight vein by the predicted gain over two held spherical, and stretch along it" {
+    const gpa = std.testing.allocator;
+    var vol = try oneTube(gpa);
+    defer vol.deinit(gpa);
+    const opts = FitOptions{ .kernels = 2, .iterations = 400, .batch = 256, .pool = 4096, .held_out = 1024, .seed = 5 };
+    var free = try fit(gpa, &vol, 0.9, opts);
+    defer free.set.deinit(gpa);
+    var iso_opts = opts;
+    iso_opts.isotropic = true;
+    var held = try fit(gpa, &vol, 0.9, iso_opts);
+    defer held.set.deinit(gpa);
+    std.debug.print("\nrbf: one tube, two kernels: anisotropic held-out RMS {d:.4} (aspect median {d:.2}, max {d:.2}), spherical {d:.4} (aspect {d:.2}); gain {d:.2} against {d:.1} predicted\n", .{ free.report.rms_final, free.report.aspect_median, free.report.aspect_max, held.report.rms_final, held.report.aspect_max, held.report.rms_final / free.report.rms_final, thresholds.RBF_ANISO_GAIN });
+    try std.testing.expect(held.report.rms_final / free.report.rms_final >= thresholds.RBF_ANISO_GAIN);
+    // Spherical is spherical; free is stretched, and along x: the
+    // kernel is wider three units along the tube than across it.
+    try std.testing.expect(held.report.aspect_max < 1.001);
+    try std.testing.expect(free.report.aspect_median > 1.5);
+    for (free.set.kernels) |k| {
+        const along = gaussian(k, .{ k.mu[0] + 3, k.mu[1], k.mu[2] });
+        const across = gaussian(k, .{ k.mu[0], k.mu[1] + 3, k.mu[2] });
+        try std.testing.expect(along > across);
+    }
 }

@@ -466,5 +466,16 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 // the least the descent should buy. The first result never becomes
 // the threshold.
 pub const RBF_FIT_GAIN: f32 = 2;
+/// Two ANISOTROPIC kernels against two held spherical on one straight
+/// vein (a capsule twelve long, radius one and a half): the free fit
+/// must lower the held-out RMS by this factor. PROPOSED, from this
+/// much theory: a sphere covering a third of the tube's length is
+/// wider than the tube by the same factor and leaks into the matrix
+/// on every side, so two spheres leave the tube's ends and the
+/// matrix's neighbourhood wrong together; two ellipsoids of the
+/// tube's own width, six long, cover it with a residual only at the
+/// caps — a halving is the least of it. The first result never
+/// becomes the threshold.
+pub const RBF_ANISO_GAIN: f32 = 2;
 
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

@@ -95,9 +95,10 @@ soft edge. The tree never knows; a cut through it shows the same
 veins. `loam-run --scene marble --volume 64:slice.ppm` writes the
 field's middle slice as a hit would read it. The same field packs
 into a set of radial basis functions fitted by gradient descent
-(`loam-run --scene marble --rbf 256:marble.lrbf`, a five-second tool
-run): the entry is the bias, only the veins cost kernels, and 256 of
-them (13 KB) render as the 9 MB volume does — `--loam-rbf
+(`loam-run --scene marble --rbf 256:marble.lrbf`, a fifteen-second
+tool run): the entry is the bias, only the veins cost kernels, each
+kernel an ellipsoid the descent stretches along its vein, and 256 of
+them (18 KB) render as the 9 MB volume does — `--loam-rbf
 marble.lrbf` loads the set in place of growing anything.
 
 Every brick knows how much it last changed and when — attention, derived
@@ -225,7 +226,7 @@ transcript (`--cut 0.5`).
 | `src/guards.zig` | every invariant, checkable; corrupted one by one in the self-test |
 | `src/dump.zig` | the snapshot as one canonical struple map |
 | `src/seedbed.zig` | the authoring verbs and the named scenes |
-| `src/rbf.zig` | the material field as a packed set of radial basis functions: the fit, the file, the shader's twin |
+| `src/rbf.zig` | the material field as a packed set of anisotropic Gaussians: the fit, the file, the shader's twin |
 | `src/bark.zig` | what a hit reads beyond the carrier: the grain in the field's own frame, the chart as history, the bands by footprint, the archetypes (a relief; a volume as a material field, its columns named from the ring history) — the shader's CPU reference, its bytes counted |
 | `src/run.zig` | `loam-run` |
 | `src/capi.zig` | the C seam (`libloam.so`) |

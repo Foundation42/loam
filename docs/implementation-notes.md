@@ -2510,9 +2510,73 @@ where a chain of spheres stands now), pruning by weight (the packed
 set packs itself), and the living archetype re-fitted from a warm
 start. The palette stays PROPOSED; `RBF_FIT_GAIN` PROPOSED.
 
+## Anisotropic kernels (Sunday 2026-09-06, late — Christian: "Oh great idea, yes, let's try the anisotropic kernels next")
+
+A vein is a tube; a chain of spheres is the wrong shape for it. The
+kernel's width became the lower-triangular factor L of its PRECISION
+(Σ⁻¹ = L Lᵀ, six numbers), the Mahalanobis distance |Lᵀ(q − μ)| in
+place of |q − μ|/σ — an isotropic kernel of width σ is L = I/σ, an
+ellipsoid is whatever the descent makes of the six, and the form is
+positive-definite by construction (the diagonal through its log, the
+off-diagonal free). `KERNEL_FLOATS` 13 → 18; the file is version 2
+(version 1, the spherical set of the same night, kept by nothing);
+`rbf.mahal`, `Kernel.isotropic`, `Kernel.widths` (the precision's
+eigenvalues by Jacobi, 1/√λ) and `Kernel.aspect` (longest over
+shortest); the descent's gradients ∂g/∂μ = g·(L v) and ∂g/∂L_ij =
+−g·v_j·d_i; widths clamped between half a cell and the cube on the
+diagonal; `FitOptions.isotropic` projects the shape back to one width
+after every step — the gate's mutation and the like-for-like
+comparison, on one code path. The cutoff is the same 32, in
+Mahalanobis units now. The shader (`loamBark`'s kind 3) reads the six
+and forms v the same way; `LOAM_RBF_MAX_KERNELS` unchanged.
+
+The gate, written before the run: "a tube is an ellipsoid" — one
+straight vein of gold (a capsule twelve long, radius one and a half,
+in a 16³ cube), two kernels, free against held spherical, the free
+fit's held-out RMS lower by `RBF_ANISO_GAIN` = 2 PROPOSED (the theory
+beside it: two spheres over a tube leak into the matrix on every side
+and miss the ends together; two ellipsoids of the tube's width cover
+it to the caps). Measured: free 0.063, spherical 0.218, GAIN 3.44;
+the held set's aspect exactly 1, the free set's 36.8 — every free
+kernel wider three units along the tube than across it. The descent
+stretched the kernel to the cube's length: the tube runs nearly the
+whole cube, so nothing in the data bounds the long axis but the caps.
+The gradient gate probes each off-diagonal and a log-diagonal now
+(1e-3 against the finite difference, all seven kinds). The two-ball
+gate unchanged: 4.82.
+
+The marble, like for like (2,000 iterations of 1,024, ReleaseSafe):
+
+| kernels | shape | seconds | held-out RMS | A | emissive r | aspect median / max | bytes |
+|---|---|---|---|---|---|---|---|
+| 256 | spherical (held) | 14.1 | 0.0534 | 0.070 | 0.055 | 1.00 / 1.00 | 18,432 |
+| 256 | anisotropic | 14.2 | 0.0264 | 0.034 | 0.040 | 2.67 / 110 | 18,432 |
+| 128 | anisotropic | 7.2 | 0.0512 | 0.064 | 0.053 | 3.38 / 298 | 9,216 |
+| 1024 | anisotropic | 54.4 | 0.0183 | 0.023 | 0.041 | 2.43 / 18 | 73,728 |
+
+THE FINDING: anisotropy HALVES the error at the same count (0.053 →
+0.026 at 256), or halves the count at the same error (128 free
+kernels, 9 KB, match 256 spherical). The median kernel is two and a
+half to three times longer than it is wide — the veins' own shape,
+found by the descent from spherical seeds with no direction given —
+and the longest are stretched along whole veins (110 at 256) or
+across the cube (298 at 128: a faint streak in the 128 slice, a
+kernel that found a line through the matrix cheaper than a vein — the
+place pruning or a bound on the aspect would act). The emissive's
+residual stays at 0.04, the bake's blur, as before. The tree through
+the 256 free kernels against the volume's shot: RMSE 0.0031 of full
+scale, half the spherical set's 0.0062. The evaluation costs a
+kernel six multiplies more than a sphere's three; the fit 14 s where
+the sphere's was 5, the same 2,000 iterations.
+
+Open: a bound on the aspect (or a penalty), pruning by weight so the
+packed set packs itself, seeding the long axis from the ring history
+(the bake knows every vein's direction; the descent found it anyway),
+the warm-start refit.
+
 ### Open
 
-Anisotropic kernels and pruning for the RBF set; the
+Pruning and an aspect bound for the RBF set; the
 veins' morphology (sheets, so the along-vein transitions read on a
 tube); the archetype's mip chain; a periodic slab or cube; the palette,
 PROPOSED; the evaluated archetype (a second loam bank) with its
