@@ -1,6 +1,8 @@
 # Implementation notes — the ledger
 
 **Status:** Phase 1 built, 2026-09-06: P1.1–P1.7, G1–G8 green and bitten.
+Phase 2 opened the same evening: the first loam-grown thing on screen
+(matryoshka branch `loam`, "Renderer integration, beat 1" below).
 Reviewed the same day (Claude Chat against `3ecbb37`, forwarded by
 Christian); the review's three recommendations adopted, see "Review
 2026-09-06" below. Every threshold PROPOSED (brief §2,
@@ -504,6 +506,62 @@ with no new dependency, and substr is private where loam is public.
   at 1 and 16 threads — Christian's own number from the previous commit;
   0.69 ms per step against 1.95 serial. Ten fronts is too few to show
   the pass's own scaling; it is there for when there are thousands.
+
+## Renderer integration, beat 1 (2026-09-06, D1's paying customer)
+
+Christian: "integrate it into Matryoshka while you have it all in your
+head." Built on matryoshka's `loam` branch against loam `67f22c2`+, the
+smallest end-to-end path, and it rendered: a tree on the grass beside
+Suzanne in `test_scene`, ray-traced with its own shadow.
+
+- **The shape.** loam is a path dependency, imported wherever spindrift
+  is. `src/loam_bridge.zig` is the tenant's engine half in
+  `spray_bridge.zig`'s shape: one `World` mounted at a place and a scale
+  in metres, stepped on the engine's fed time, its snapshot handed to
+  the per-frame DYNAMIC tree as one object per brick that holds material
+  — the brick's tight summary bounds as the leaf's AABB, so the SAH tree
+  does the empty-space skipping the summaries were built for, and no
+  second tree goes to the GPU. The static world BVH never hears of a
+  tree. Leaf type `loam = 10`; the bricks in one flat float SSBO at
+  binding 50 with a fixed stride (origin, spacing, 729 samples);
+  `dynamic_trace.glsl` marches the leaf's AABB at half a cell to the
+  first crossing of `iso`, bisects it, and takes the normal from the
+  gradient — in both walks, so the tree shades the ground and itself.
+  The hit shades like a prim (inline albedo, kind 1), which is the path
+  a static `.solid` leaf takes: a grown thing must look like a placed
+  thing.
+- **Cadence (spec §14).** The ring CA is one ring per STEP, so a step
+  per frame would grow a different tree than the seedbed. The bridge
+  steps once per loam second and `time_scale` is the clock ratio at the
+  seam (`--loam-speed 20`: a 240-step tree in twelve fed seconds). Same
+  seed, same scene, same dt: the bridge's gate lays the seedbed's tree
+  hash for hash, and `[loam]` prints the content hash at exit.
+- **The OOM killer was the first gate to fire.** The seedbed's scenes
+  authored through `toLattice` in the domain's world units; with the
+  domain in metres the growth blob's radius 56 became 1120 lattice
+  units, tens of millions of bricks, and the kernel killed both the
+  bridge test and the engine (signal 9, twice). Ruling taken: **a scene
+  is authored in lattice units about the lattice centre** — the scene
+  frame, `seedbed.sceneToLattice`, whatever the domain; only a mount is
+  in metres. In the default domain it is `toLattice` to the bit, so the
+  frozen reference did not move (checked).
+- **The signed place.** `--loam -4,0,6` parsed the minus as a flag and
+  planted at the default; the `[loam]` diagnostic line (steps, vid,
+  bricks packed, objects offered, hash) is what showed it, and is what
+  every beat here should print first.
+- **Measured** (Debug engine, RTX 3090, 720 frames of test_scene, 239
+  loam steps): 54 material bricks packed, 54 objects in the pool, GPU
+  5.9 ms a frame, traversal 1.9 ms — the tree costs what a prim costs at
+  this size. Suite: the bridge's two gates green; refs and the engine's
+  suite run before the branch commits.
+- **Recorded, not built, with triggers:** density/extinction as a
+  VOLUME with the summaries' majorants (the second capture with smoke
+  or foliage); a loam leaf in the STATIC tree for a tree that has gone
+  dormant (a scene with a hundred trees); brick upload by dirty set
+  rather than whole (a snapshot changing under a large forest — today
+  the pack re-sends every material brick when the vid moves, 160 KB for
+  this tree); the tree's colour from a channel (Albedo is a channel the
+  spec already names).
 
 ## P1.7 — the seedbed (2026-09-06)
 

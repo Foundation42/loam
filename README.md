@@ -37,7 +37,18 @@ w.run(60)
 print(w.root_hash().hex(), w.stats()["fronts"])
 ```
 
-## Status — Phase 1, all eight gates green and bitten
+## Status — Phase 1 green and bitten; the first loam-grown thing is on screen
+
+Matryoshka's `loam` branch mounts a world through `src/loam_bridge.zig`
+and renders its material bricks as a leaf of the dynamic tree, marched
+to an iso-surface from the field's own 9³ samples: a tree on the grass
+beside Suzanne, ray-traced with its shadow, no triangle anywhere in it.
+
+```
+matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --cam -16,2.2,10,0.40,-0.05
+```
+
+### Phase 1, all eight gates
 
 | gate | claim | as measured (Debug, serial, seed 7) |
 |---|---|---|

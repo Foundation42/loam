@@ -118,10 +118,26 @@ fn blobFill(ctx: *BlobCtx, i: usize) void {
 /// Spawn a front at a world position with a heading. Queued; `apply` or
 /// the next step assigns its id.
 pub fn plant(w: *World, pos_world: [3]f64, dir: [3]f64, params: front.Params) !void {
+    try plantLattice(w, w.domain.toLattice(pos_world), dir, params);
+}
+
+pub fn plantLattice(w: *World, pos: [3]f64, dir: [3]f64, params: front.Params) !void {
     const d = world_mod.normalize(dir);
     const t: [3]f64 = if (@abs(d[0]) < 0.9) .{ 1, 0, 0 } else .{ 0, 1, 0 };
     const n = world_mod.normalize(world_mod.cross(d, t));
-    try w.spawnFront(.{ .pos = w.domain.toLattice(pos_world), .dir = d, .normal = n, .params = params });
+    try w.spawnFront(.{ .pos = pos, .dir = d, .normal = n, .params = params });
+}
+
+/// The scene frame: lattice units about the lattice's centre. A scene is
+/// authored here whatever the domain — a host mounting loam at five
+/// centimetres a unit gets the seedbed's tree, not one 1120 units across.
+/// (The first mount authored through `toLattice` in metres and the growth
+/// blob asked for tens of millions of bricks; the kernel's OOM killer was
+/// the gate that fired.) In the default domain this is `toLattice` to
+/// the bit, so the frozen reference does not move.
+pub fn sceneToLattice(p: [3]f64) [3]f64 {
+    const c: f64 = @floatFromInt(lattice.CELLS / 2);
+    return .{ c + p[0], c + p[1], c + p[2] };
 }
 
 /// A wall of damage: inside the world box, Material goes to zero and
@@ -605,21 +621,21 @@ pub const Scene = struct {
             .blob => {
                 // A hand-placed density blob in a world of light-only
                 // bricks: G6's empty-majority scene.
-                try blob(w, Channel.light.bit(), .{ 0, 0, 0 }, 64, 1.0, 0);
-                try blob(w, Channel.density.bit(), .{ 20, 0, 0 }, 6, 1.0, 0);
+                try blobLattice(w, Channel.light.bit(), sceneToLattice(.{ 0, 0, 0 }), 64, 1.0, 0);
+                try blobLattice(w, Channel.density.bit(), sceneToLattice(.{ 20, 0, 0 }), 6, 1.0, 0);
                 try w.apply();
             },
             .seams => {
                 // Two gauges sharing a face: the P1.2 gate's scene. The
                 // fine blob first, applied, so the coarse one completes
                 // the cubes it shares at the fine gauge.
-                try blob(w, Channel.light.bit(), .{ -12, 0, 0 }, 20, 1.0, 0);
+                try blobLattice(w, Channel.light.bit(), sceneToLattice(.{ -12, 0, 0 }), 20, 1.0, 0);
                 try w.apply();
-                try blob(w, Channel.light.bit(), .{ 20, 0, 0 }, 20, 1.0, 1);
+                try blobLattice(w, Channel.light.bit(), sceneToLattice(.{ 20, 0, 0 }), 20, 1.0, 1);
                 try w.apply();
             },
             .diffusion => {
-                try blob(w, Channel.growth.bit(), .{ 0, 0, 0 }, 3, 1.0, 0);
+                try blobLattice(w, Channel.growth.bit(), sceneToLattice(.{ 0, 0, 0 }), 3, 1.0, 0);
                 try w.apply();
                 self.diffusion[0] = .{ .bit = Channel.growth.bit(), .rate = 0.15 };
                 try w.addOperator(operators.operatorOf(operators.Diffusion, &self.diffusion[0]));
@@ -627,12 +643,12 @@ pub const Scene = struct {
                 try w.addOperator(operators.operatorOf(operators.Decay, &self.decay[0]));
             },
             .sapling, .wound => {
-                try blob(w, Channel.growth.bit(), .{ 0, 24, 0 }, 56, 1.0, 0);
-                try blob(w, Channel.light.bit(), self.light, 64, 1.0, 0);
+                try blobLattice(w, Channel.growth.bit(), sceneToLattice(.{ 0, 24, 0 }), 56, 1.0, 0);
+                try blobLattice(w, Channel.light.bit(), sceneToLattice(self.light), 64, 1.0, 0);
                 // The stimulus covers the whole growth region: a blob that
                 // excludes the seed steers nothing (G3 once sat at 1 unit
                 // of drift for exactly that reason).
-                if (self.stimulus) |s| try blob(w, Channel.stimulus.bit(), s, 96, 1.0, 0);
+                if (self.stimulus) |s| try blobLattice(w, Channel.stimulus.bit(), sceneToLattice(s), 96, 1.0, 0);
                 var params = front.Params{};
                 params.tropism_light = self.tropism_light;
                 params.tropism_stimulus = self.tropism_stimulus;
@@ -640,7 +656,7 @@ pub const Scene = struct {
                 params.consume = self.consume;
                 params.max_generation = self.max_generation;
                 params.length = 72;
-                try plant(w, .{ 0, 0, 0 }, .{ 0, 1, 0 }, params);
+                try plantLattice(w, sceneToLattice(.{ 0, 0, 0 }), .{ 0, 1, 0 }, params);
                 try w.apply();
                 self.decay[0] = .{ .bit = Channel.activity.bit(), .tau = 3 };
                 try w.addOperator(operators.operatorOf(operators.Decay, &self.decay[0]));
