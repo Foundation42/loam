@@ -2193,6 +2193,23 @@ G1 `60b27f31…` → `6b7f4a8f…`, the two planes alone. 95 gates, 240 s
 ReleaseSafe; `verify-dump` and `py-test` pass; the bridge's three
 tests pass; the close-up rendered headless and sent.
 
+### Unified to PBR (Christian, the same night)
+
+"It would be nice if the shader could be unified to PBR, and the
+material brick can simply hand back defaults for things it doesn't
+model." Done on matryoshka's side: the loam leaf's instance names an
+entry in the renderer's PBR material table like a mesh's, and shades
+through the same branch a PBR box does — albedo, roughness, metallic
+and emissive from the entry — with the brick's own bark on top: the
+normal bent by the grain, the grooves' darkening applied only to the
+hit that set it (the hit's distance is the guard). The mount appends
+a bark entry (the mount's albedo, roughness 0.85, no textures) before
+the renderer's first upload; a negative index is the old inline path.
+With the entry's defaults equal to the inline path's the close-up
+rendered pixel-identical, which is the check that the seam moved and
+nothing else did. Marble is now a different entry and a different
+grain; the tree never knows.
+
 ### Open
 
 The material seedbed, the developed archetype first. `who` and
