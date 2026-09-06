@@ -45,8 +45,13 @@ to an iso-surface from the field's own 9³ samples: a tree on the grass
 beside Suzanne, ray-traced with its shadow, no triangle anywhere in it.
 
 ```
-matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --cam -16,2.2,10,0.40,-0.05
+matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --cam -13.77,3,5.31,0.78,-0.42
 ```
+
+Christian's pose, from the P key. The ridges on the bark are the ring's
+residuals — loop-loft's heat map, made solid — and the collars are where
+buds left; the shadow is the sun's, and the tree stands in the green
+sphere's reflection because the reflection walk found the leaf unasked.
 
 ### Phase 1, all eight gates
 

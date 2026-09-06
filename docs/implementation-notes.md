@@ -552,8 +552,17 @@ Suzanne in `test_scene`, ray-traced with its own shadow.
 - **Measured** (Debug engine, RTX 3090, 720 frames of test_scene, 239
   loam steps): 54 material bricks packed, 54 objects in the pool, GPU
   5.9 ms a frame, traversal 1.9 ms — the tree costs what a prim costs at
-  this size. Suite: the bridge's two gates green; refs and the engine's
-  suite run before the branch commits.
+  this size. The bridge's gates green; the engine's suite 2579/2579 with
+  one red step that predates the branch (main's `23efb70`, a control root
+  reaching `../physics_probe.zig`). refs not run — Christian's rule, and
+  the frozen frame is not the instrument for a scene with a tree in it.
+- **What the picture showed** (Christian's pose, `--cam
+  -13.77,3,5.31,0.78,-0.42`): the ring's residuals as ridges on the bark
+  — the loop-loft heat view, solid; branch collars where buds left; the
+  sun's shadow of the whole crown on the grass; and the tree in the green
+  sphere's reflection, which the reflection walk found through
+  `dynTraceClosest` without a line written for it. Christian watched it
+  grow. The seedbed said it would.
 - **Recorded, not built, with triggers:** density/extinction as a
   VOLUME with the summaries' majorants (the second capture with smoke
   or foliage); a loam leaf in the STATIC tree for a tree that has gone
