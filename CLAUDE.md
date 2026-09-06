@@ -7,7 +7,7 @@ feel reassured. Chris has asked for this in every sibling repo; a suite
 run per edit makes the harness the activity rather than the work.
 
     zig build test -Dtest-filter=straddling   # one gate, seconds
-    zig build test                            # 46 gates, ~2 min Debug — before a commit
+    zig build test                            # 47 gates, ~2 min Debug — before a commit
     zig build test -Doptimize=ReleaseFast     # the same in ~20 s; know the delta, don't lean on it
     zig build verify-dump                     # loam-run writes a dump, the struple PYTHON port reads it
     zig build py-test                         # the ctypes binding, and G1 across two PROCESSES
