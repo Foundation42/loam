@@ -397,8 +397,41 @@ exactly what provenance at the nodes (front id, segment) makes possible,
 and P2.2 is where provenance arrives. The capsule chain may still win
 on simplicity for now; the choice is made in P2.2's brief, not here.
 
-*P2.2's brief — PROPOSED Sunday 2026-09-06 evening, for Christian's
-strike before the spade; nothing of it built.*
+*P2.2's brief — proposed Sunday 2026-09-06 evening; STRUCK by Christian
+the same evening, with one amendment and one number to record; nothing
+of it built — "open with fresh heads for P2.2".*
+
+*The amendment: hard only into own RECENT deposit.* "'Own front' is the
+wrong predicate; 'own front, within the last m segments' is the right
+one, and `segment` is already stored, so it costs nothing. A front that
+curls back onto its own older tube (the ammonite, a creeper doubling
+back along a fence, a root crossing itself) would otherwise hard-union
+into itself and get a crease with no collar, which is exactly the case
+the collar exists for. Self-touch after m rings is another front for
+collar purposes. Choose m from the ring spacing so that consecutive
+capsules sharing an end-sphere are inside it and nothing else is."
+(`COLLAR_RECENT_SEGMENTS`, to be chosen from the sweep's geometry at
+build time and recorded, not tuned.)
+
+*The number: the inner elbow.* "Hard union along a chain removes beads
+exactly, but it isn't crease-free. Two capsules sharing an end-sphere
+are C1 on the outside of a bend and meet in a concave fold on the
+inside, with a gradient jump of about the bend angle between rings. For
+a sapling that's a few degrees per ring and sits under G12's float
+slack, which is why nobody will see it. But it's a C0 cost of the
+chain, the spine's genuine remaining advantage, and the ledger should
+hold its measurement: crease angle at the inner elbow versus
+ring-to-ring bend, once, on the sapling and on a deliberately tight
+curl. If a scene ever bends faster than the tolerance, that's the
+spine's trigger, and it's a number rather than a feeling."
+
+*Two smaller things, his.* "The `.set_by_winner` rule with 'a cut writes
+none' is correct and quietly good: a wound keeps the id of whoever grew
+there, so the scar remembers. And the one-slot limit with the two-slot
+fill is the honest shape; G12's rotating-bark mutation is what tells you
+when to pay for it." Everything else stands as written: the
+provenance-gated k, one slot, bands 1–2 through the charts, the
+Sponge-class gate with its bytes counted, thresholds before the run.
 
 **The collar: where two fronts meet.** The bench held two answers and
 this brief proposes a third that is smaller than either. The beads

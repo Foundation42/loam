@@ -1678,6 +1678,25 @@ fine" — the habit check, the residual, the fronts read as published,
 and the buffer consumed were the understanding. The `loam` branch
 stands, identical to `main`, until he deletes it.
 
+## P2.2's brief struck (Sunday 2026-09-06, evening)
+
+Christian: "The third answer is the right one, and it's right for the
+reason it gives: the beads come from a front unioning into itself, the
+collar is wanted only where a child meets its parent, and provenance
+already knows which is which. No gradient, no spine, R12a intact.
+Strike it, with one amendment and one number to record." The amendment
+— hard only into own RECENT deposit, "own front, within the last m
+segments", self-touch after m rings being another front for collar
+purposes, m chosen from the ring spacing — and the number — the inner
+elbow of a hard chain, a concave fold with a gradient jump of about
+the bend angle between rings, to be measured once on the sapling and
+on a deliberately tight curl and held in this ledger as the spine's
+trigger — are in the brief in his words, with `COLLAR_RECENT_SEGMENTS`
+(a placeholder until the sweep's geometry chooses it) and
+`G12_GRADIENT_TOL` (PROPOSED, float slack) beside the other numbers.
+Everything else stands as written. Nothing built: "Let's wrap it up,
+and open with fresh heads for P2.2."
+
 ## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
 
 The deferred fill D1 named, paid for by P2.1a: the bridge re-packed

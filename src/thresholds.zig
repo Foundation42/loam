@@ -178,6 +178,23 @@ pub const G15_UNITS: u32 = 8; // PROPOSED — small enough that the wounded sapl
 pub const G15_CUT_FRACTION: f32 = 0.5; // PROPOSED
 pub const G15_MAX_DEVIATION: f32 = 0.05; // PROPOSED — of SPREAD's inside count
 
+/// G12 (Phase 2, P2.2 — brief STRUCK Sunday 2026-09-06 evening, not
+/// built): the collar is gated by provenance — a capsule unions HARD into
+/// samples its own front wrote within the last COLLAR_RECENT_SEGMENTS
+/// segments, and SMOOTH, with k the child's radius, into any other
+/// sample: another front's, or its own older tube (the ammonite, the
+/// creeper doubling back — self-touch after m rings is another front for
+/// collar purposes). m is chosen from the sweep's geometry at build time
+/// so that consecutive capsules sharing an end-sphere are inside it and
+/// nothing else is; the value here is a placeholder until then.
+/// G12_GRADIENT_TOL: |∇φ| continuous across a bud's junction to this per
+/// lattice unit — the polynomial smin is C1 by construction, so this is
+/// float slack, not a tolerance to tune. The inner elbow of a hard chain
+/// is measured once (crease angle vs ring-to-ring bend, the sapling and a
+/// tight curl) and recorded: the spine's trigger, a number.
+pub const COLLAR_RECENT_SEGMENTS: u32 = 2; // PLACEHOLDER — chosen from the ring spacing at build time
+pub const G12_GRADIENT_TOL: f32 = 1e-3; // PROPOSED
+
 /// The change floor: a brick whose largest committed delta is below this
 /// is not active next step, and a boundary sample below it does not
 /// materialise a neighbour.
