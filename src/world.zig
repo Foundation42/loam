@@ -86,13 +86,38 @@ pub const Policy = struct {
     /// value and the two holders of a face reconstruct from different
     /// coefficients — C0 at best. Never false outside a gate.
     halo: bool = true,
+    /// Bricks a step may evaluate (R15). Null is no limit. With one set,
+    /// the active set is ordered by attention at the step's fed time —
+    /// a₀·exp(−(now − t₀)/τ) from the snapshot's summaries, ties by key —
+    /// and the head of that order IS the step: its bricks' operators run
+    /// and its fronts move. The tail carries forward unevaluated, its
+    /// attention intact, until that attention decays under the change
+    /// floor (EPSILON) — what was not a change is not attention, and a
+    /// tail kept whatever its attention grew to every brick in the world
+    /// under a budget of twelve (a seam write of 1e-5 carried for ever).
+    /// A front in a carried brick does not move (the tips lag when the
+    /// head is chosen badly — G14 c's mutation); a live front's brick is
+    /// active by the front rule whatever its attention.
+    budget: ?u32 = null,
+    /// How the head is chosen under a budget. `.key` is G14 (c)'s
+    /// mutation, kept as an instrument (`loam-run --budget-order key`).
+    budget_order: BudgetOrder = .attention,
 };
+
+pub const BudgetOrder = enum { attention, key };
 
 pub const StepStats = struct {
     active_in: u64 = 0,
     region_evals: u64 = 0,
     front_steps: u64 = 0,
     fronts_dormant: u64 = 0,
+    /// Under a budget: active bricks carried forward unevaluated, those
+    /// that left the active set instead with their attention under the
+    /// floor, and live fronts that did not move because their brick was
+    /// carried.
+    carried: u64 = 0,
+    faded: u64 = 0,
+    fronts_skipped: u64 = 0,
     bricks_changed: u64 = 0,
     bricks_materialised: u64 = 0,
     seam_bricks: u64 = 0,
@@ -169,6 +194,10 @@ pub const World = struct {
     jobs: ?*jobs.JobSystem = null,
     /// Fronts queued by authoring or the front pass; ids assigned at commit.
     pending_spawns: std.ArrayListUnmanaged(update.Spawn) = .{},
+    /// The bricks the last step evaluated, in the order it took them —
+    /// attention order under a budget, Morton otherwise. Owned. G14 (a)
+    /// recomputes this from the snapshot's summaries alone and compares.
+    evaluated: []Key = &.{},
 
     pub fn init(gpa: std.mem.Allocator, opts: InitOptions) !World {
         const head = try tree.emptySnapshot(gpa, opts.seed);
@@ -193,6 +222,7 @@ pub const World = struct {
         self.operators.deinit(self.gpa);
         self.fronts.deinit(self.gpa);
         self.pending_spawns.deinit(self.gpa);
+        self.gpa.free(self.evaluated);
         self.buffer.deinit();
     }
 
@@ -283,7 +313,7 @@ pub const World = struct {
     /// Commit whatever authoring has queued, as a step with no operators
     /// and no time. Publishes a new vid.
     pub fn apply(self: *World) Error!void {
-        try self.commit(.{ .frame = self.frame, .time_ns = self.time_ns }, self.head, false, self.jobs);
+        try self.commit(.{ .frame = self.frame, .time_ns = self.time_ns }, self.head, false, &.{}, self.jobs);
     }
 
     // ── The step ─────────────────────────────────────────────────────────
@@ -330,10 +360,30 @@ pub const World = struct {
         };
         self.stats.active_in = active.len;
 
-        // 2. Entries, serially, one per active brick.
-        var updates = try gpa.alloc(*update.RegionUpdate, active.len);
+        // The budget (R15): the active set ordered by attention at `now`,
+        // its head evaluated, its tail carried. Without one, the head is
+        // the active set.
+        const chosen = try self.chooseHead(base, active, now);
+        gpa.free(self.evaluated);
+        self.evaluated = chosen.head;
+        const head: []const Key = chosen.head;
+        const carried: []const Key = chosen.carried;
+        defer if (carried.len > 0) gpa.free(carried);
+        self.stats.carried = carried.len;
+        // The head sorted by key, for the front pass's search; null when
+        // nothing was cut, so no front asks.
+        var head_sorted: ?[]Key = null;
+        defer if (head_sorted) |hs| gpa.free(hs);
+        if (carried.len > 0) {
+            const hs = try gpa.dupe(Key, head);
+            std.mem.sort(Key, hs, {}, Key.lessThan);
+            head_sorted = hs;
+        }
+
+        // 2. Entries, serially, one per evaluated brick.
+        var updates = try gpa.alloc(*update.RegionUpdate, head.len);
         defer gpa.free(updates);
-        for (active, 0..) |k, i| updates[i] = try self.buffer.region(k);
+        for (head, 0..) |k, i| updates[i] = try self.buffer.region(k);
 
         // 3. Operate: region-local, order-free.
         var timer = std.time.Timer.start() catch unreachable;
@@ -349,7 +399,7 @@ pub const World = struct {
                 .world = self,
                 .base = base,
                 .dt = dt,
-                .active = active,
+                .active = head,
                 .updates = updates,
                 .alloc = self.buffer.planeAllocator(),
                 .evals = std.atomic.Value(u64).init(0),
@@ -357,10 +407,10 @@ pub const World = struct {
             };
             if (sys) |system| {
                 var counter = jobs.Counter.init(0);
-                system.parallelFor(@intCast(active.len), self.policy.chunk, operateJob, &ctx, &counter);
+                system.parallelFor(@intCast(head.len), self.policy.chunk, operateJob, &ctx, &counter);
                 system.waitFor(&counter);
             } else {
-                operateRange(&ctx, 0, active.len);
+                operateRange(&ctx, 0, head.len);
             }
             self.stats.region_evals = ctx.evals.load(.monotonic);
             self.stats.diffusion_clamped = ctx.clamped.load(.monotonic);
@@ -369,12 +419,69 @@ pub const World = struct {
         self.stats.ns_operate = timer.lap();
 
         // 4. Fronts, after the barrier: parallel into sinks, merged in id order.
-        if (dt > 0) try self.frontPass(base, dt, sys);
+        if (dt > 0) try self.frontPass(base, dt, head_sorted, sys);
         self.stats.ns_fronts = timer.lap();
 
         // 5. Commit and publish.
-        try self.commit(now, base, evaluated, sys);
+        try self.commit(now, base, evaluated, carried, sys);
         self.total.accumulate(self.stats);
+    }
+
+    const Head = struct { head: []Key, carried: []Key };
+
+    /// The bricks this step evaluates, owned: the active set as it is when
+    /// no budget is set or it fits; otherwise its head by attention at
+    /// `now` — descending, ties by key — and the tail, owned, to carry.
+    /// `.key` takes the head in Morton order instead: the mutation.
+    fn chooseHead(self: *World, base: *const Snapshot, active: []const Key, now: Now) !Head {
+        const gpa = self.gpa;
+        const budget: usize = self.policy.budget orelse active.len;
+        if (active.len <= budget) return .{ .head = try gpa.dupe(Key, active), .carried = &.{} };
+        const Scored = struct { key: Key, a: f64 };
+        const scored = try gpa.alloc(Scored, active.len);
+        defer gpa.free(scored);
+        const tau: f64 = thresholds.ATTENTION_TAU_S;
+        for (active, 0..) |k, i| scored[i] = .{ .key = k, .a = attentionOf(base, k, now.time_ns, tau) };
+        switch (self.policy.budget_order) {
+            .attention => std.mem.sort(Scored, scored, {}, struct {
+                fn lt(_: void, x: Scored, y: Scored) bool {
+                    if (x.a != y.a) return x.a > y.a;
+                    return x.key.raw() < y.key.raw();
+                }
+            }.lt),
+            .key => {}, // the active set is Morton-sorted already
+        }
+        const head = try gpa.alloc(Key, budget);
+        errdefer gpa.free(head);
+        for (scored[0..budget], 0..) |s, i| head[i] = s.key;
+        // The tail: carried while attentive above the floor, faded below it.
+        const eps: f64 = thresholds.EPSILON;
+        var kept: usize = 0;
+        for (scored[budget..]) |s| {
+            if (s.a > eps) kept += 1;
+        }
+        self.stats.faded = active.len - budget - kept;
+        const carried = try gpa.alloc(Key, kept);
+        var j: usize = 0;
+        for (scored[budget..]) |s| {
+            if (s.a > eps) {
+                carried[j] = s.key;
+                j += 1;
+            }
+        }
+        return .{ .head = head, .carried = carried };
+    }
+
+    /// A brick's attention at fed time `now_ns` for τ, from its summary
+    /// alone; 0 where there is no brick.
+    pub fn attentionOf(base: *const Snapshot, key: Key, now_ns: u64, tau_s: f64) f64 {
+        const b = base.brickAt(key) orelse return 0;
+        return b.summary.attentionAt(now_ns, tau_s);
+    }
+
+    /// The published brick's attention at `now_ns`, with the sim's τ.
+    pub fn attention(self: *const World, key: Key, now_ns: u64) f64 {
+        return attentionOf(self.published(), key, now_ns, thresholds.ATTENTION_TAU_S);
     }
 
     /// Nothing for a step to do: no active brick, no live non-dormant
@@ -495,6 +602,7 @@ pub const World = struct {
         spawns: std.ArrayListUnmanaged(update.Spawn) = .{},
         stepped: bool = false,
         dormant: bool = false,
+        skipped: bool = false,
         died: bool = false,
         spawned: u64 = 0,
         below_faithful: bool = false,
@@ -515,6 +623,7 @@ pub const World = struct {
         world: *World,
         base: *const Snapshot,
         dt: f64,
+        evaluated: ?[]const Key,
         sinks: []Sink,
         failed: std.atomic.Value(bool),
     };
@@ -531,6 +640,11 @@ pub const World = struct {
         const f = &self.fronts.items[i];
         const sink = &ctx.sinks[i];
         if (!f.alive) return;
+        // A brick the budget carried: its front waits with it, untouched.
+        if (ctx.evaluated) |ev| if (!keyInSorted(ev, f.brick)) {
+            sink.skipped = true;
+            return;
+        };
         if (f.dormant) {
             // Re-check only when something changed under the front.
             if (!keyInSorted(base.active, f.brick)) {
@@ -551,7 +665,9 @@ pub const World = struct {
         sink.stepped = true;
     }
 
-    fn frontPass(self: *World, base: *const Snapshot, dt: f64, sys: ?*jobs.JobSystem) !void {
+    /// `evaluated`: under a budget that cut, the head sorted by key; a
+    /// front whose brick is not in it does not move this step.
+    fn frontPass(self: *World, base: *const Snapshot, dt: f64, evaluated: ?[]const Key, sys: ?*jobs.JobSystem) !void {
         const gpa = self.gpa;
         const n = self.fronts.items.len;
         if (n == 0) return;
@@ -559,7 +675,7 @@ pub const World = struct {
         defer gpa.free(sinks);
         const alloc = self.buffer.planeAllocator();
         for (sinks) |*sk| sk.* = .{ .alloc = alloc };
-        var ctx = FrontCtx{ .world = self, .base = base, .dt = dt, .sinks = sinks, .failed = std.atomic.Value(bool).init(false) };
+        var ctx = FrontCtx{ .world = self, .base = base, .dt = dt, .evaluated = evaluated, .sinks = sinks, .failed = std.atomic.Value(bool).init(false) };
         parallelRange(sys, n, 2, FrontCtx, &ctx, frontOne);
         if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
         // Merge in id order — the serial pass's order — brick by brick,
@@ -568,6 +684,7 @@ pub const World = struct {
         for (sinks) |*sk| {
             if (sk.stepped) self.stats.front_steps += 1;
             if (sk.dormant) self.stats.fronts_dormant += 1;
+            if (sk.skipped) self.stats.fronts_skipped += 1;
             if (sk.died) self.stats.deaths += 1;
             if (sk.below_faithful) self.stats.below_faithful += 1;
             self.stats.spawns += sk.spawned;
@@ -1053,10 +1170,11 @@ pub const World = struct {
         rank: u8 = 1,
     };
 
-    /// `evaluated`: the operate phase ran over `base.active`, so a brick
-    /// that did not change has settled. When it did not run — the epoch
-    /// tick, an authoring apply — the active set carries forward.
-    fn commit(self: *World, now: Now, base: *const Snapshot, evaluated: bool, sys: ?*jobs.JobSystem) Error!void {
+    /// `evaluated`: the operate phase ran over the active set's head, so a
+    /// brick of the head that did not change has settled. When it did not
+    /// run — the epoch tick, an authoring apply — the active set carries
+    /// forward; `carried` is the budget's tail, which carries either way.
+    fn commit(self: *World, now: Now, base: *const Snapshot, evaluated: bool, carried: []const Key, sys: ?*jobs.JobSystem) Error!void {
         const gpa = self.gpa;
         const eps = thresholds.EPSILON;
         var timer = std.time.Timer.start() catch unreachable;
@@ -1142,7 +1260,7 @@ pub const World = struct {
         defer dirty.deinit(gpa);
         var active = std.ArrayListUnmanaged(Key){};
         defer active.deinit(gpa);
-        var fctx = FinalizeCtx{ .world = self, .changed = &changed, .order = order.items };
+        var fctx = FinalizeCtx{ .world = self, .changed = &changed, .order = order.items, .now_ns = now.time_ns };
         parallelRange(sys, order.items.len, 8, FinalizeCtx, &fctx, finalizeOne);
         for (order.items) |raw| {
             const c = changed.getPtr(raw).?;
@@ -1191,6 +1309,7 @@ pub const World = struct {
         if (!evaluated) {
             for (base.active) |k| try active.append(gpa, k);
         }
+        for (carried) |k| try active.append(gpa, k);
 
         // 7. The snapshot.
         std.mem.sort(Key, active.items, {}, Key.lessThan);
@@ -1309,10 +1428,16 @@ pub const World = struct {
         ctx.results[i] = .{ .b = nb, .old = old, .max_delta = max_delta, .materialised = old == null and ru.mask == 0, .rank = if (ru.mask != 0) 0 else 2 };
     }
 
-    const FinalizeCtx = struct { world: *World, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: []const u64 };
+    const FinalizeCtx = struct { world: *World, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: []const u64, now_ns: u64 };
 
+    /// The attention bookkeeping is written here and nowhere else (R15):
+    /// the largest change that reached the brick this commit — its own
+    /// deltas and ops, a seam or halo write — and the commit's fed time.
     fn finalizeOne(ctx: *FinalizeCtx, i: usize) void {
-        ctx.changed.get(ctx.order[i]).?.b.finalize(ctx.world.gpa);
+        const c = ctx.changed.get(ctx.order[i]).?;
+        c.b.attention = c.max_delta;
+        c.b.changed_ns = ctx.now_ns;
+        c.b.finalize(ctx.world.gpa);
     }
 
     fn dedupKeys(gpa: std.mem.Allocator, sorted: []const Key) ![]Key {

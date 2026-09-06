@@ -49,6 +49,11 @@ pub const Brick = struct {
     mask: channel.Mask = 0,
     planes: []*Plane = &.{},
     version: u32 = 0,
+    /// The last change's magnitude and fed time (R15, `Summary.attention`):
+    /// set by the commit before `finalize`, carried by `clone`, in the
+    /// hash — under a budget it decides what the next step evaluates.
+    attention: f32 = 0,
+    changed_ns: u64 = 0,
     summary: summary.Summary = .{},
     hash: [32]u8 = [_]u8{0} ** 32,
     refs: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
@@ -64,7 +69,7 @@ pub const Brick = struct {
     pub fn clone(gpa: std.mem.Allocator, src: *const Brick) !*Brick {
         const b = try gpa.create(Brick);
         errdefer gpa.destroy(b);
-        b.* = .{ .key = src.key, .mask = src.mask, .version = src.version, .summary = src.summary, .hash = src.hash };
+        b.* = .{ .key = src.key, .mask = src.mask, .version = src.version, .attention = src.attention, .changed_ns = src.changed_ns, .summary = src.summary, .hash = src.hash };
         const planes = try gpa.alloc(*Plane, src.planes.len);
         errdefer gpa.free(planes);
         var made: usize = 0;
@@ -439,7 +444,7 @@ pub const Brick = struct {
     }
 
     fn computeSummary(self: *const Brick) summary.Summary {
-        var s = summary.Summary{ .mask = self.mask, .version = self.version };
+        var s = summary.Summary{ .mask = self.mask, .version = self.version, .attention = self.attention, .changed_ns = self.changed_ns };
         const sp: f32 = @floatFromInt(self.spacing());
         const bd = self.band();
         const o = self.origin();
@@ -498,6 +503,8 @@ pub const Brick = struct {
         h.update(std.mem.asBytes(&raw));
         h.update(std.mem.asBytes(&self.mask));
         h.update(std.mem.asBytes(&self.version));
+        h.update(std.mem.asBytes(&self.attention));
+        h.update(std.mem.asBytes(&self.changed_ns));
         for (self.planes) |p| h.update(std.mem.sliceAsBytes(p[0..]));
         var out: [32]u8 = undefined;
         h.final(&out);

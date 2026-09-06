@@ -689,6 +689,197 @@ test "G5 mutation: iterate every brick → evaluations scale with the brick coun
     try testing.expectEqual(@as(u64, w.published().brick_count) * n_ops, w.stats.region_evals);
 }
 
+// ── P2.1a: attention ─────────────────────────────────────────────────────
+
+/// The budget G14 grows under: a fraction of the step's active set, at
+/// least one brick, set before every step from the published count.
+fn budgetFor(w: *const World, fraction: f32) u32 {
+    const n: f32 = @floatFromInt(w.published().active.len);
+    return @max(1, @as(u32, @intFromFloat(@ceil(n * fraction))));
+}
+
+const HeadAndTail = struct { head: []loam.lattice.Key, carried: usize };
+
+/// What a step must evaluate, from the snapshot's bookkeeping alone: the
+/// active set by attention at `now_ns` descending, ties by key, cut at
+/// `budget` — the active set itself when it fits or there is no budget —
+/// and how many of the tail stay attentive above the floor (carried).
+fn attentionHead(gpa: std.mem.Allocator, snap: *const loam.Snapshot, now_ns: u64, budget: ?usize) !HeadAndTail {
+    const K = loam.lattice.Key;
+    const b = budget orelse snap.active.len;
+    if (snap.active.len <= b) return .{ .head = try gpa.dupe(K, snap.active), .carried = 0 };
+    const Scored = struct { key: K, a: f64 };
+    const scored = try gpa.alloc(Scored, snap.active.len);
+    defer gpa.free(scored);
+    for (snap.active, 0..) |k, i| {
+        const a: f64 = if (snap.brickAt(k)) |br| br.summary.attentionAt(now_ns, thresholds.ATTENTION_TAU_S) else 0;
+        scored[i] = .{ .key = k, .a = a };
+    }
+    std.mem.sort(Scored, scored, {}, struct {
+        fn lt(_: void, x: Scored, y: Scored) bool {
+            if (x.a != y.a) return x.a > y.a;
+            return x.key.raw() < y.key.raw();
+        }
+    }.lt);
+    const out = try gpa.alloc(K, b);
+    for (scored[0..b], 0..) |s, i| out[i] = s.key;
+    var carried: usize = 0;
+    for (scored[b..]) |s| {
+        if (s.a > thresholds.EPSILON) carried += 1;
+    }
+    return .{ .head = out, .carried = carried };
+}
+
+fn expectSameKeys(expected: []const loam.lattice.Key, actual: []const loam.lattice.Key) !void {
+    try testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |e, a| try testing.expectEqual(e.raw(), a.raw());
+}
+
+test "G14 (a): what a step evaluates is the attention-ordered head of the active set, recomputable from the summaries alone, and evaluations follow it" {
+    const gpa = testing.allocator;
+    var g: GrownWorld = undefined;
+    try g.grow(gpa, 7, 0, null);
+    defer g.deinit();
+    const n_ops = g.world.operators.items.len;
+    var cut_steps: u64 = 0;
+    var i: u64 = 1;
+    while (i <= 80) : (i += 1) {
+        // Unbudgeted for forty steps — the head is the active set, G5's
+        // identity — then under the fraction, the head its attention order.
+        const budget: ?u32 = if (i > 40) budgetFor(&g.world, thresholds.G14_BUDGET_FRACTION) else null;
+        g.world.policy.budget = budget;
+        const before = g.world.head;
+        before.retain();
+        defer before.release();
+        try g.world.step(now(i), null);
+        const ht = try attentionHead(gpa, before, now(i).time_ns, if (budget) |b| @as(usize, b) else null);
+        defer gpa.free(ht.head);
+        try expectSameKeys(ht.head, g.world.evaluated);
+        try testing.expectEqual(g.world.evaluated.len * n_ops, g.world.stats.region_evals);
+        try testing.expectEqual(ht.carried, g.world.stats.carried);
+        try testing.expectEqual(before.active.len - g.world.evaluated.len - ht.carried, g.world.stats.faded);
+        if (before.active.len > g.world.evaluated.len) cut_steps += 1;
+    }
+    std.debug.print("\nG14 (a): 80 steps, the evaluated set recomputed from the summaries at every one; {d} steps cut by the budget, {d} bricks carried, {d} faded under the floor, {d} front-steps skipped, {d} evals\n", .{ cut_steps, g.world.total.carried, g.world.total.faded, g.world.total.fronts_skipped, g.world.total.region_evals });
+    try testing.expect(cut_steps > 0);
+    try guards.check(g.published());
+}
+
+test "G14 (a) mutation: attention ignored (every brick iterated) → evaluations scale with the brick count and the head is not the active set's" {
+    const gpa = testing.allocator;
+    var g: GrownWorld = undefined;
+    // Forty steps in: the active set is a few dozen bricks of thousands.
+    // (Right after the scene build every brick is active — the blobs
+    // touched them all — and the mutation is invisible there.)
+    try g.grow(gpa, 7, 40, null);
+    defer g.deinit();
+    const n_ops = g.world.operators.items.len;
+    g.world.policy.active_only = false;
+    const before = g.world.head;
+    before.retain();
+    defer before.release();
+    try g.world.step(now(41), null);
+    const ht = try attentionHead(gpa, before, now(41).time_ns, null);
+    defer gpa.free(ht.head);
+    try testing.expect(ht.head.len * 10 < g.world.evaluated.len);
+    try testing.expectEqual(@as(u64, g.world.published().brick_count) * n_ops, g.world.stats.region_evals);
+}
+
+test "G14 (b): a walk rejecting on the summaries' attention bound finds exactly the bricks above the floor, at the step and for a reader later" {
+    const gpa = testing.allocator;
+    const K = loam.lattice.Key;
+    var g: GrownWorld = undefined;
+    try g.grow(gpa, 7, 80, null);
+    defer g.deinit();
+    const snap = g.published();
+    const bs = try snap.bricks(gpa);
+    defer gpa.free(bs);
+    const tau: f64 = thresholds.ATTENTION_TAU_S;
+    const floor: f64 = thresholds.EPSILON;
+    var last_found: usize = 0;
+    var last_examined: usize = 0;
+    for ([_]u64{ 0, 5, 20, 45 }) |later_s| {
+        const t = snap.time_ns + later_s * std.time.ns_per_s;
+        var found = std.ArrayListUnmanaged(K){};
+        defer found.deinit(gpa);
+        var examined: usize = 0;
+        try snap.attentive(t, floor, tau, true, gpa, &found, &examined);
+        // Brute force over every brick's own bookkeeping — and the window
+        // the claim states, τ·ln(a₀/floor), which is the same test.
+        var expected = std.ArrayListUnmanaged(K){};
+        defer expected.deinit(gpa);
+        for (bs) |b| {
+            const s = b.summary;
+            const a = s.attentionAt(t, tau);
+            const above = a > floor;
+            if (@abs(a - floor) > 1e-6 * floor) {
+                const elapsed: f64 = @as(f64, @floatFromInt(t - s.changed_ns)) / 1e9;
+                const in_window = s.attention > 0 and elapsed < tau * @log(@as(f64, s.attention) / floor);
+                try testing.expectEqual(in_window, above);
+            }
+            if (above) try expected.append(gpa, b.key);
+        }
+        try expectSameKeys(expected.items, found.items);
+        std.debug.print("\nG14 (b): {d} s after step 80, {d} of {d} bricks attentive above {e:.0} at τ = {d} s; the walk examined {d} leaves", .{ later_s, found.items.len, bs.len, floor, tau, examined });
+        last_found = found.items.len;
+        last_examined = examined;
+    }
+    std.debug.print("\n", .{});
+    // Rejection from the summaries: far fewer leaves examined than exist.
+    try testing.expect(last_examined < bs.len / 4);
+    // The mutation, as an instrument: without the summaries the walk
+    // examines every leaf to find the same set.
+    var found = std.ArrayListUnmanaged(K){};
+    defer found.deinit(gpa);
+    var examined: usize = 0;
+    try snap.attentive(snap.time_ns + 45 * std.time.ns_per_s, floor, tau, false, gpa, &found, &examined);
+    try testing.expectEqual(bs.len, examined);
+    try testing.expectEqual(last_found, found.items.len);
+}
+
+const BudgetedRun = struct { inside: u64, carried: u64, faded: u64, skipped: u64, evals: u64 };
+
+/// The sapling, G2's 160 steps, under a budget of `fraction` of each
+/// step's active set — or none — the head chosen by `order`.
+fn budgetedRun(gpa: std.mem.Allocator, fraction: ?f32, order: loam.world.BudgetOrder) !BudgetedRun {
+    var g: GrownWorld = undefined;
+    try g.grow(gpa, 7, 0, null);
+    defer g.deinit();
+    g.world.policy.budget_order = order;
+    var i: u64 = 1;
+    while (i <= thresholds.G2_STEPS) : (i += 1) {
+        if (fraction) |f| g.world.policy.budget = budgetFor(&g.world, f);
+        try g.world.step(now(i), null);
+    }
+    try guards.check(g.published());
+    return .{ .inside = seedbed.insideCount(&g.world), .carried = g.world.total.carried, .faded = g.world.total.faded, .skipped = g.world.total.fronts_skipped, .evals = g.world.total.region_evals };
+}
+
+fn deviation(full: u64, under: u64) f64 {
+    const a: f64 = @floatFromInt(full);
+    const b: f64 = @floatFromInt(under);
+    return @abs(b - a) / a;
+}
+
+test "G14 (c): the sapling grown under a budget of half its active set, attention first, ends within the floor of the unbudgeted run's tissue" {
+    const gpa = testing.allocator;
+    const full = try budgetedRun(gpa, null, .attention);
+    const half = try budgetedRun(gpa, thresholds.G14_BUDGET_FRACTION, .attention);
+    const dev = deviation(full.inside, half.inside);
+    std.debug.print("\nG14 (c): inside {d} unbudgeted vs {d} at {d:.0}% of the active set by attention (deviation {d:.2}%; {d} carried, {d} faded, {d} front-steps skipped; evals {d} vs {d})\n", .{ full.inside, half.inside, thresholds.G14_BUDGET_FRACTION * 100, dev * 100, half.carried, half.faded, half.skipped, full.evals, half.evals });
+    try testing.expect(half.carried > 0);
+    try testing.expect(dev <= thresholds.G14_MAX_DEVIATION);
+}
+
+test "G14 (c) mutation: the head taken in key order → the tips lag and the tissue deviates past the floor" {
+    const gpa = testing.allocator;
+    const full = try budgetedRun(gpa, null, .attention);
+    const keyed = try budgetedRun(gpa, thresholds.G14_BUDGET_FRACTION, .key);
+    const dev = deviation(full.inside, keyed.inside);
+    std.debug.print("\nG14 (c) mutation: inside {d} unbudgeted vs {d} with the head in key order (deviation {d:.2}%; {d} front-steps skipped)\n", .{ full.inside, keyed.inside, dev * 100, keyed.skipped });
+    try testing.expect(dev > thresholds.G14_MAX_DEVIATION);
+}
+
 // ── P1.6: snapshots ──────────────────────────────────────────────────────
 
 const Reader = struct {
@@ -788,6 +979,26 @@ test "guards self-test: each invariant, corrupted, is refused by name" {
     root.summary.mask = 0;
     try testing.expectError(guards.Violation.SummaryNotConservative, guards.check(snap));
     root.summary.mask = saved_mask;
+    try guards.check(snap);
+
+    // 1b. A parent whose attention bound is under a child's (R15): a walk
+    // trusting it would skip a brick that changed. The magnitude from the
+    // root's side; the time from a child's — the seams scene is authored
+    // at time zero, so every `changed_ns` here is zero and only a child
+    // raised above its parent can show the bound.
+    const saved_att = root.summary.attention;
+    try testing.expect(saved_att > 0);
+    root.summary.attention = 0;
+    try testing.expectError(guards.Violation.SummaryNotConservative, guards.check(snap));
+    root.summary.attention = saved_att;
+    const child: *loam.tree.Node = blk: {
+        for (root.kind.inner) |c| if (c) |cn| break :blk @constCast(cn);
+        unreachable;
+    };
+    const saved_child = child.summary;
+    child.summary.changed_ns = root.summary.changed_ns + 1;
+    try testing.expectError(guards.Violation.SummaryNotConservative, guards.check(snap));
+    child.summary = saved_child;
     try guards.check(snap);
 
     // 2. An absent channel instantiated (an all-zero plane).

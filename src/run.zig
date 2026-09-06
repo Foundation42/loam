@@ -45,6 +45,9 @@ const usage =
     \\  --inhibit I          the front's inhibition threshold (default the params')
     \\  --persist P          the front's heading persistence (default 1)
     \\  --phases             print wall-clock per phase beside each line
+    \\  --budget N           evaluate at most N bricks a step, attention first (R15)
+    \\  --budget-fraction F  the same as a fraction of each step's active set (G14 c)
+    \\  --budget-order O     attention (default) | key — key is G14 (c)'s mutation
     \\  --tropism-sweep D,D,…  the G3 ensemble at each stimulus displacement D (dose-response), then exit
     \\  --seeds N            seeds in the ensemble (default 6)
     \\  --coeff A            stimulus coefficient for the sweep (default the G3 scene's)
@@ -74,6 +77,9 @@ const Opts = struct {
     active: bool = false,
     every: u32 = 10,
     phases: bool = false,
+    budget: ?u32 = null,
+    budget_fraction: ?f32 = null,
+    budget_key: bool = false,
     trace: ?[]const u8 = null,
     avoid: ?f32 = null,
     inhibit: ?f32 = null,
@@ -188,6 +194,15 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             o.active = true;
         } else if (std.mem.eql(u8, a, "--phases")) {
             o.phases = true;
+        } else if (std.mem.eql(u8, a, "--budget")) {
+            o.budget = try std.fmt.parseInt(u32, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--budget-fraction")) {
+            o.budget_fraction = try std.fmt.parseFloat(f32, try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--budget-order")) {
+            const v = try next(args, &i);
+            if (std.mem.eql(u8, v, "key")) {
+                o.budget_key = true;
+            } else if (!std.mem.eql(u8, v, "attention")) return error.BadBudgetOrder;
         } else if (std.mem.eql(u8, a, "--tropism-sweep")) {
             var it = std.mem.splitScalar(u8, try next(args, &i), ',');
             while (it.next()) |part| try o.sweep.append(gpa, try std.fmt.parseFloat(f64, part));
@@ -302,6 +317,13 @@ pub fn main() !void {
             try world.apply();
             try stdout.print("step {d}: damage applied, {d} bricks touched\n", .{ step, world.published().dirty.len });
         };
+        // The budget, per step: a count, or a fraction of the published
+        // active set (G14 c's instrument), at least one brick.
+        if (opts.budget_fraction) |f| {
+            const n: f32 = @floatFromInt(world.published().active.len);
+            world.policy.budget = @max(1, @as(u32, @intFromFloat(@ceil(n * f))));
+        } else world.policy.budget = opts.budget;
+        world.policy.budget_order = if (opts.budget_key) .key else .attention;
         timer.reset();
         try world.step(.{ .frame = step, .time_ns = step * opts.dt_ms * std.time.ns_per_ms }, js);
         const ms = @as(f64, @floatFromInt(timer.read())) / 1e6;
@@ -325,6 +347,7 @@ pub fn main() !void {
             try stdout.print("step {d:>4}  active {d:>5}→{d:<5} evals {d:>6}  fronts {d}/{d} dormant  changed {d:>4} (+{d} new, {d} seam)  writes {d}/{d} seam/halo  spawns {d}  {d:.2} ms\n", .{
                 step, s.active_in, s.active_out, s.region_evals, live, dormant, s.bricks_changed, s.bricks_materialised, s.seam_bricks, s.seam_writes, s.halo_writes, s.spawns, ms,
             });
+            if (world.policy.budget != null) try stdout.print("           budget {d}: {d} carried, {d} faded, {d} front-steps skipped\n", .{ world.policy.budget.?, s.carried, s.faded, s.fronts_skipped });
             if (opts.phases) try stdout.print("           operate {d:.2}  fronts {d:.2}  apply {d:.2}  frontier {d:.2}  seams {d:.2}  finalize {d:.2}  build {d:.2}  publish {d:.2} ms\n", .{
                 @as(f64, @floatFromInt(s.ns_operate)) / 1e6, @as(f64, @floatFromInt(s.ns_fronts)) / 1e6, @as(f64, @floatFromInt(s.ns_apply)) / 1e6, @as(f64, @floatFromInt(s.ns_frontier)) / 1e6, @as(f64, @floatFromInt(s.ns_seams)) / 1e6, @as(f64, @floatFromInt(s.ns_finalize)) / 1e6, @as(f64, @floatFromInt(s.ns_build)) / 1e6, @as(f64, @floatFromInt(s.ns_publish)) / 1e6,
             });
@@ -334,6 +357,14 @@ pub fn main() !void {
     try stdout.print("done: {d} steps in {d:.1} ms ({d:.2} ms/step), {d} bricks, {d} nodes, {d} fronts, vid {d}\n", .{ opts.steps, total_ms, total_ms / @as(f64, @floatFromInt(opts.steps + 1)), snap.brick_count, snap.node_count, snap.fronts.len, snap.vid });
     try stdout.print("root_hash    {s}\ncontent_hash {s}\n", .{ loam.dump.hex(snap.rootHash()), loam.dump.hex(snap.contentHash()) });
     try stdout.print("inside {d}  growth {d:.3}  front-steps below the faithful floor {d} (refinement's demand)\n", .{ seedbed.insideCount(&world), seedbed.total(&world, Channel.growth.bit()), world.total.below_faithful });
+    {
+        // Where the world is changing, from the summaries alone (R15).
+        var found = std.ArrayListUnmanaged(loam.lattice.Key){};
+        defer found.deinit(gpa);
+        var examined: usize = 0;
+        try snap.attentive(snap.time_ns, loam.thresholds.EPSILON, loam.thresholds.ATTENTION_TAU_S, true, gpa, &found, &examined);
+        try stdout.print("attentive {d} of {d} bricks at the end (τ {d} s, floor {e:.0}; the walk examined {d} leaves); {d} carried, {d} faded, {d} front-steps skipped over the run\n", .{ found.items.len, snap.brick_count, loam.thresholds.ATTENTION_TAU_S, loam.thresholds.EPSILON, examined, world.total.carried, world.total.faded, world.total.fronts_skipped });
+    }
 
     if (opts.ray) |r| {
         const c = try seedbed.rayCount(&world, .{ r[0], r[1], r[2] }, .{ r[3], r[4], r[5] }, Channel.surface.mask() | Channel.density.mask(), .primary);

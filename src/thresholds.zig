@@ -122,11 +122,12 @@ pub const G9_TOL: f32 = 1e-5; // PROPOSED
 /// overshoots, zero late hits, in all of them.
 pub const G11_RAYS: u32 = 4096; // PROPOSED
 
-/// G14 (Phase 2, P2.1a — pre-registered, not built): attention is
+/// G14 (Phase 2, P2.1a, built Sunday 2026-09-06): attention is
 /// a(t) = a₀·exp(−(t − t₀)/τ) from a brick's last change (a₀, t₀), never
 /// stepped (R15). τ is a reader's choice; this is the sim's, for the
-/// active set's order under a budget and for the summaries. The floor is
-/// the change floor, EPSILON: what was not a change is not attention.
+/// active set's order under a budget (in the hash, through fmath.exp).
+/// The floor is the change floor, EPSILON: what was not a change is not
+/// attention, and G14 (b)'s walk rejects below it.
 pub const ATTENTION_TAU_S: f32 = 3; // PROPOSED — the Phase 1 Activity level's τ
 /// G14 (c): the budget the gate grows the sapling under, as a fraction of
 /// each step's active bricks, and how far the budgeted run's inside count
@@ -167,5 +168,8 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// a quiet step publishing nothing; the wounded fixture spawns 7 fronts
 /// where the decaying level let 11). The floor's and the steady state's
 /// re-baselines were lost once to a shell that killed itself before its
-/// edit ran; the suite caught it.
-pub const G1_REFERENCE: []const u8 = "5220c6f21046e52b7410ff80b8663d8a95e079fe6c2baeda4358f5e431d0b5ea";
+/// edit ran; the suite caught it. Attention `e3068932…` (P2.1a: every
+/// changed brick carries the magnitude and fed time of its last change in
+/// its hash — it orders the step under a budget, so it is what the world
+/// is; the planes, the fronts and the active set did not move).
+pub const G1_REFERENCE: []const u8 = "e30689325efab72fd496fabddad0727bb391d5d89b4839ca83186da1c9b43f7c";

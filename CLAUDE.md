@@ -103,6 +103,16 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   a decaying level kept fifty bricks changing for forty steps after the
   last front stopped. Read warmth as `now − Activity`, with the world's
   clock, not the snapshot's.
+- **Attention is derived, never stepped (R15).** Every brick carries
+  the magnitude and fed time of its last change, `attention` and
+  `changed_ns`, written in the commit's finalize and nowhere else, in
+  its hash, merged by MAX on each field separately into the summaries.
+  a(t) = a₀·exp(−(t − t₀)/τ) is computed where it is read
+  (`Summary.attentionAt`, through `fmath.exp`); nothing maintains it.
+  Under `Policy.budget` the active set's head by attention IS the step
+  — operators and fronts — and the tail carries forward until its
+  attention fades under EPSILON. G14 (a) recomputes the head from the
+  summaries alone; a change to the scoring must keep that recomputable.
 - **Snapshots are immutable and refcounted.** A published brick is never
   handed out as `*Brick`. The commit clones what it changes; untouched
   subtrees are shared by identity (G4 checks identity, not equality).

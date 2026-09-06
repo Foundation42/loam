@@ -416,6 +416,29 @@ pub const Snapshot = struct {
         return list.toOwnedSlice();
     }
 
+    /// The bricks whose attention at `now_ns` is above `floor` for a
+    /// reader's τ (R15): a subtree is rejected from its summary's bound
+    /// alone, the G6 shape for "where is the world changing". `examined`
+    /// counts the leaves looked at; with `use_summaries` false — the
+    /// instrument's mutation — every leaf is.
+    pub fn attentive(self: *const Snapshot, now_ns: u64, floor: f64, tau_s: f64, use_summaries: bool, gpa: std.mem.Allocator, out: *std.ArrayListUnmanaged(Key), examined: *usize) !void {
+        const r = self.root orelse return;
+        try attentiveWalk(r, now_ns, floor, tau_s, use_summaries, gpa, out, examined);
+    }
+
+    fn attentiveWalk(n: *const Node, now_ns: u64, floor: f64, tau_s: f64, use_summaries: bool, gpa: std.mem.Allocator, out: *std.ArrayListUnmanaged(Key), examined: *usize) !void {
+        switch (n.kind) {
+            .leaf => |b| {
+                examined.* += 1;
+                if (b.summary.attentionAt(now_ns, tau_s) > floor) try out.append(gpa, b.key);
+            },
+            .inner => |ch| {
+                if (use_summaries and n.summary.attentionAt(now_ns, tau_s) <= floor) return;
+                for (ch) |c| if (c) |cn| try attentiveWalk(cn, now_ns, floor, tau_s, use_summaries, gpa, out, examined);
+            },
+        }
+    }
+
     /// The root's counts: O(1), kept on every node at build.
     pub fn countNodes(self: *const Snapshot) struct { nodes: u32, bricks: u32 } {
         const r = self.root orelse return .{ .nodes = 0, .bricks = 0 };

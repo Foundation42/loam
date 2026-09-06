@@ -112,7 +112,10 @@ neighbours — the magnitude of what actually reached a neighbour is the
 honest graded wake, and the seam and halo writes already carry it. The
 active set stays what it is — changed above the floor, or a live front
 — since for local operators that rule is exact; attention orders the
-active set when a BUDGET is set, and is what readers see.
+active set when a BUDGET is set, and is what readers see. (Built Sunday
+afternoon. One rule added against the code, proposed: a brick the
+budget carried leaves the active set once its attention has decayed
+under the change floor — "the fade rule", the ledger, P2.1a.)
 
 **R16 — The budget is fed, in work units, and a step is resumable.**
 (Christian, Sunday evening: "a budget policy for the updates to keep
@@ -158,7 +161,7 @@ that must bite.
 | G11 Sphere trace | a march stepped by \|φ\|/L never overshoots the zero set | for N random rays, the first sign change lies within one bisection tolerance of the hit; no hit missed that a dense march finds | 0 misses in ⟨4096⟩ rays | step by 2\|φ\|/L → overshoots |
 | G12 Collar | smooth union is smooth at a branch | \|∇φ\| continuous across the junction; provenance-blended band signal continuous | no jump above ⟨…⟩ | hard min → a crease; nearest-front ownership → the bark rotates |
 | G13 Thin feature (STRUCK) | sub-gauge structure survives the B-spline | a straight capsule across a radius sweep ⟨0.5 … 6⟩ r/h, nine axis offsets in the cell, three orientations: whether the zero set survives, and r_rec/r worst and best | (a) the instrument reads the prediction: survival matches, r_rec/r within ⟨1%⟩ of `tools/g13_predict.py`; (b) survives at r/h ≥ ⟨1.0⟩; (c) \|r_rec − r\|/r ≤ ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and thinner is refinement's problem | gauge doubled without refinement → vanishes at 1.0, thins 30% at 2.0 (bites b, c); control values half a cell off → ±40% at 2.0 (bites a, c); trilinear → survives lower, thins less (bites a only: the instrument's variation, recorded) |
-| G14 Attention | the step's work follows where things are changing, and a reader can see it without touching a brick | (a) evaluations == Σ ops over bricks with a(now) > floor, every step (G5 made graded); (b) a walk rejecting attention-zero subtrees from summaries alone visits exactly the bricks changed within τ·ln(a₀/floor) of now; (c) under a budget of ⟨50%⟩ of the step's active bricks, the ones evaluated are the highest-attention ones, and the sapling grown under budget ends within ⟨5%⟩ of the unbudgeted run's inside count | exact; exact; ⟨5%⟩ | (a) attention ignored → evaluations scale with the brick count; (b) attention not merged → the walk visits every brick; (c) budget taken in key order instead of attention order → the tips lag and the deviation exceeds the floor |
+| G14 Attention (built Sunday afternoon; (a) restated at build, see the ledger) | the step's work follows where things are changing, and a reader can see it without touching a brick | (a) the evaluated set is the attention-ordered head of the active set, recomputable from the published summaries alone, and evaluations == ops × its size, every step (G5 made graded); (b) a walk rejecting attention-zero subtrees from summaries alone visits exactly the bricks changed within τ·ln(a₀/floor) of now; (c) under a budget of ⟨50%⟩ of the step's active bricks, the ones evaluated are the highest-attention ones, and the sapling grown under budget ends within ⟨5%⟩ of the unbudgeted run's inside count | exact; exact; ⟨5%⟩ | (a) attention ignored → evaluations scale with the brick count; (b) attention not merged → the walk visits every brick; (c) budget taken in key order instead of attention order → the tips lag and the deviation exceeds the floor |
 | G15 Budget | a step spread over frames is the same step, and a call never exceeds its budget | (a) the wounded sapling stepped through `work(B)` in calls of ⟨B = 8⟩ units publishes the frozen reference — exactly; (b) no call performs more than B units, any phase; (c) under CUT at ⟨50%⟩ of each step's units the evaluated set is the attention-ordered head, and the run ends within ⟨5%⟩ of SPREAD's inside count | exact; exact; ⟨5%⟩ | (a) a chunk reading a brick another chunk already changed → the hash moves; (b) the seam and halo apply passes left unchunked → a call exceeds B; (c) the cut taken in key order → the deviation exceeds the floor |
 | G1 again | replay, end to end, with the new carrier | frozen reference, re-baselined as a reviewed event with old and new in the ledger | identical | commit order reversed |
 | The look | the trunk with no facets | the close-up at `--loam-scale 0.06` | Christian's eyes | — |
@@ -226,7 +229,10 @@ G9, G10, G11, G1 re-baselined.
 The bridge and the shader move from `material` iso to `surface` zero.
 
 **P2.1a — attention** (pre-registered Sunday evening; ordered ahead of
-P2.2 by Christian). (a₀, t₀) per brick in the snapshot beside the active
+P2.2 by Christian; BUILT Sunday 2026-09-06 afternoon — the ledger,
+"P2.1a — attention" and "The bridge's dirty upload": G14 green and
+bitten, G1 `e3068932…`, the fade rule proposed, the bridge writing only
+the strides whose `changed_ns` moved). (a₀, t₀) per brick in the snapshot beside the active
 set, written at commit from the largest change that reached the brick;
 `Summary.attention` merged by max; `World.attention(key, now)` and a
 walk that rejects on it; `Policy.budget` — evaluations a step may

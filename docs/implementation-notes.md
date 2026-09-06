@@ -1,6 +1,10 @@
 # Implementation notes — the ledger
 
 **Status:** Phase 1 built, 2026-09-06: P1.1–P1.7, G1–G8 green and bitten.
+**P2.1a built Sunday 2026-09-06, afternoon** — attention: derived from
+each brick's last change, in the summaries and the hash, ordering the
+step under a budget; G14 green and bitten, G1 re-baselined ("P2.1a —
+attention" below).
 Phase 2 opened the same evening: the first loam-grown thing on screen
 (matryoshka branch `loam`, "Renderer integration, beat 1" below).
 **P2.1 built Sunday 2026-09-06** — the continuous carrier: R7 and G13
@@ -995,6 +999,168 @@ building each changed brick's neighbourhood once a commit instead of
 once a pass (three passes now), and the summary's per-entry
 `blockPoint`. Not done: the day's frozen reference has moved four times
 and each was a reviewed event; this one moves it again.
+
+## P2.1a — attention (Sunday 2026-09-06, afternoon; G14 green and bitten, G1 again)
+
+Built as pre-registered the evening before (R15, G14, the entry above),
+first thing of the session, Christian: "P2.1a etc.. let's make this
+thing fly!"
+
+**Where the bookkeeping lives.** Two fields on the brick beside its
+version — `attention` (a₀, an f32) and `changed_ns` (t₀, the fed
+nanosecond) — written in one place, the commit's finalize, from the
+largest change that reached the brick this commit: its own deltas and
+surface ops, a seam write, a halo write, whichever was larger
+(`Changed.max_delta`, which the active-set rule already read). Carried
+by `clone`, so an untouched brick keeps its pair; in the brick's hash,
+because under a budget the pair decides what the next step evaluates
+and a world that would step differently is a different world (the G1
+reference moved once for it, `5220c6f2…` → `e3068932…`, the planes,
+the fronts and the active set unmoved). Copied into the brick's
+summary and merged up the tree by MAX on each field separately: a
+node's (max a₀, max t₀) bounds a(t) = a₀·exp(−(t − t₀)/τ) for every
+brick beneath it at every t and for any τ, which is what lets a reader
+choose its own τ and still reject a subtree from the summary alone —
+a single merged a(t) would have fixed τ and t at the merge. The guard's
+`covers` holds the parent to both. Nothing is stepped: `attentionAt`
+derives the value where it is read, through the sim's own exp, and a
+quiet world stays quiet.
+
+**The budget (R15's first customer).** `Policy.budget`, a count of
+bricks: the active set is scored at the step's fed time, sorted by
+attention descending with ties by key, and the head is the step — its
+operators run, its fronts move; the tail carries forward unevaluated
+with its pair intact, and a front whose brick was carried does not
+move (the front is work in its brick). `World.evaluated` keeps the
+head, in order, as the instrument G14 (a) checks against. A live
+front's brick re-enters the active set by the front rule whatever its
+attention, so a tip that was carried competes again next step.
+
+**The fade rule (proposed).** The first instrument run under a fixed
+budget of twelve on the wounded sapling showed the tail inflating to
+3,463 of 3,652 bricks by step 40 — a brick that received a seam write
+of 1e-5 was carried for ever, outranked every step by fresh deposits,
+never evaluated, never settled. The change floor already says what
+such a change is worth: a delta under EPSILON does not activate a
+brick. Applied to the tail: a carried brick whose attention has
+DECAYED under the floor leaves the active set (`StepStats.faded`). Same
+run after: 35 active at step 60. What this drops is work on a brick
+whose last change was, by the sim's own floor, nothing by the time it
+would have been looked at; R16's "a brick skipped under a cut keeps its
+attention" still holds — it keeps it until it is under the floor. Ruling
+for Christian, with the alternative: keep the tail whole and bound it
+by the brick count.
+
+**G14 (a), restated at build.** The brief's (a) read "evaluations == Σ
+ops over bricks with a(now) > floor". Built literally that is not a
+claim this system makes: the attentive set — bricks with a(now) above
+the floor — is what a READER sees and it decays over τ (a deposit of 6
+lattice units stays above 1e-6 for 47 s), while the active set is exact
+(changed at the last commit, or a live front) and has no tail; R15
+itself keeps the two apart. What is exact, and what the gate now says:
+the evaluated set is the attention-ordered head of the active set,
+recomputable from the published summaries alone — the gate recomputes
+it at every step and compares key for key, in order — and evaluations
+are ops × its size (G5's identity, graded by the budget); the tail is
+the attentive remainder, counted, and the faded the rest. Forty steps
+unbudgeted then forty under the fraction: 40 steps cut, 1,089 bricks
+carried, 23 faded, 12 front-steps skipped (dormant fronts in carried
+bricks), 5,422 evaluations. Mutation, attention ignored (every brick
+iterated, G5's): 3,652 bricks evaluated against a head of tens, and
+evaluations at brick count × ops. Note the mutation had to be applied
+at step 41: right after the scene build every brick is active — the
+blobs touched them all — and "every brick" and "the active set"
+coincide at step 1, where the G5 mutation also looks; recorded, G5's
+mutation not changed.
+
+**G14 (b).** The walk (`Snapshot.attentive`) descends only where the
+node's bound is above the floor and accepts a leaf on its own pair —
+exact at a leaf, conservative above. Against every brick's own
+bookkeeping, and against the window the claim states (now − t₀ <
+τ·ln(a₀/floor), the same inequality in the other form, checked equal
+away from an ulp of the floor): the same keys in the same order, at
+step 80 and for a reader 5, 20 and 45 s later. Numbers, seed 7, step
+80, τ = 3 s, floor 1e-6: 98 of 3,652 bricks attentive, 264 leaves
+examined; 45 s later 25 attentive, 96 examined. Mutation, as the
+instrument's variation: without the summaries the walk examines all
+3,652 to find the same 25. By hand: `Summary.merge` dropping attention
+(a parent at 0) — the walk finds nothing and the exactness fails at the
+first time; recorded.
+
+**G14 (c).** The sapling, G2's 160 steps, under a budget of half of
+each step's active set: inside count 4,999 unbudgeted and 4,999 under
+the budget — not within 5%, identical — with 6,119 bricks carried, 79
+faded and 141 front-steps skipped (dormant fronts whose bricks were
+active for a neighbour's seam write), 6,247 evaluations against 6,820.
+The reason it is identical: a front's deposit is the largest change in
+the world (a sample crossing the band is a delta of 2·band = 6h), so
+every live tip is in the head every step, and the only operator the
+sapling mounts is healing, which evaluates to nothing on unwounded
+tissue — the carried half was work that would have changed nothing.
+Mutation, the head in key order: 3,192, a deviation of 36% (the tips in
+the upper Morton half never move again). Before the fade rule the same
+mutation read +12% — MORE tissue: the inflated tail made the budget
+larger in absolute terms, the frozen tips stopped crowding the
+survivors, and the survivors grew longer before inhibition stopped
+them. A different tree either way; the gate varies on the axis.
+
+**Where operators matter, a budget is a different world.** The wounded
+sapling, 60 steps, wound at 20, `loam-run --scene wound --damage
+-10,8,-10,10,16,10@20`: unbudgeted 3,125 inside and 15 fronts;
+`--budget-fraction 0.5` 3,838 and 17; `--budget 12` 1,607 and 4. Under
+the half budget the wound's 48 bricks cannot all be evaluated the step
+they change (budget 24), and a cut's delta is at most the band (3h)
+where a deposit's is twice that, so fresh deposits outrank the
+unevaluated wound bricks while healing's 9-second window runs on them:
+repair spawns land later and elsewhere, and the tree that grows is a
+different tree. That is the graded sleep Christian asked for — less
+work, and the work chosen by where the change was largest — and it
+raises a question that is his: whether a wound should outrank a
+deposit. By R15 attention is the magnitude of the change, and by the
+carrier's measure a cut is the smaller change. Recorded, not tuned.
+
+**Names.** `attention` and `changed_ns` (rejected: `touched_ns` —
+clashes with Activity's touch, a per-sample time; `a0`, `t0` — say
+nothing aloud); `faded` for the tail's departure under the floor;
+`head` and `carried` for the budget's two halves; `Snapshot.attentive`
+for the walk.
+
+**Cost.** The head choice scores and sorts the active set once a step
+(a `brickAt` and an exp a brick): O(n log n) in the active count, which
+the fade rule bounds by the attentive set. `loam-run --budget N`,
+`--budget-fraction F` and `--budget-order key` are the instruments; the
+final line prints the attentive count and what the walk examined.
+
+**Not done.** P2.1b's units and `work(B)`; a score a front can read;
+D2's criterion. (The bridge's dirty-set upload from `changed_ns`: the
+next entry.)
+
+## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
+
+The deferred fill D1 named, paid for by P2.1a: the bridge re-packed
+every surface brick for the GPU whenever the vid moved — one contiguous
+array, rebuilt from scratch, every loam second. Now a brick keeps its
+slot in the loam SSBO for as long as it holds surface (`slot_of`, a free
+list for slots whose brick lost its zero set or went), and on a vid
+change the pack walks the surface bricks and writes only those whose
+`changed_ns` is past what the slot holds — loam's attention bookkeeping
+is the dirty set, nothing added to the field for it. The sink's `at`
+was already an element offset; the pack now writes one stride at a
+brick's own slot instead of the whole array at zero. The dynamic pool
+is filled from the live slots, so an object's slot index never moves
+under a brick between frames.
+
+Gate, in the bridge's own test (`zig build loam-test`, 12/12): after 60
+loam seconds the first pack writes one stride per surface brick at its
+slot (59, the top offset 58 strides in); the same vid again writes
+nothing; five seconds on, 34 of 73 surface bricks have a `changed_ns`
+past the upload and exactly 34 strides are written — every changed
+brick among them, none of the rest — and every object offered names a
+live slot once. The overlay line says "{n} on the GPU ({m} written on
+the last pack)". Not done: coalescing adjacent dirty slots into one
+write (34 memcpys of 5.3 KB a pack is nothing yet); freeing is by
+absence, so a brick that loses its surface and regains it next second
+takes a fresh slot — harmless, and the free list is what pays for it.
 
 ## Attention pre-registered (Sunday 2026-09-06, evening)
 
