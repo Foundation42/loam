@@ -49,7 +49,16 @@ facet, no seam, no triangle anywhere in it.
 
 ```
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --cam -13.77,3,5.31,0.78,-0.42
+matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-scene junction   # a bud junction: the collar's scene
+matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-scene coil       # a coiling tendril: the self-touch
+matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-collar 0         # the hard union, for a side-by-side
 ```
+
+The mount grows the sapling unless `--loam-scene` names one of P2.2's
+two scenes; `--loam-collar` is the collar as a fraction of the ring's
+radius, and zero is the fold the collar replaces. The difference is in
+the crotch of each fork and nowhere else, a fillet of the child's
+radius, so it is subtle by design.
 
 Every brick knows how much it last changed and when — attention, derived
 where it is read, never stepped, scored per channel over its range — so
