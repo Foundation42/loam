@@ -10,7 +10,8 @@ residual, built the same afternoon: deferral costs, G14 (e) read its
 prediction exactly ("R17 — the residual, built"). **P2.1b built the
 same afternoon** — the step as begin / work / cut / finish, SPREAD
 exact to the frozen reference, G15 green and bitten ("P2.1b — the
-budget in work units").
+budget in work units"). The step cost taken and the matryoshka merge
+done the same afternoon: matryoshka `main` carries the loam leaf.
 Phase 2 opened the same evening: the first loam-grown thing on screen
 (matryoshka branch `loam`, "Renderer integration, beat 1" below).
 **P2.1 built Sunday 2026-09-06** — the continuous carrier: R7 and G13
@@ -1638,6 +1639,20 @@ Blake3 kept for the tree. Either moves the frozen reference. Not done.
 The seam collect itself — the walk of 386 boundary points with a
 holder lookup at each — is the other expensive shape, 100 µs a unit
 in Debug after the cache; the instrument says where to look next.
+
+## The merge (Sunday 2026-09-06, afternoon)
+
+Christian's order: "Step cost next, then the merge, in that order."
+Matryoshka's `main` sat exactly at the branch point — six reviewed
+commits on `loam` (the leaf and the shader from the renderer beat, the
+carrier's sphere tracer, the dirty upload from `changed_ns`, the
+per-frame count of units), nothing new on `main` — so the merge was a
+fast-forward with no conflicts: `main` is `f6371d7`, pushed; 157 of
+157 build steps, the bridge's thirteen tests. His ruling from the
+carrier's day held to: "merge once it's understood, not once it looks
+fine" — the habit check, the residual, the fronts read as published,
+and the buffer consumed were the understanding. The `loam` branch
+stands, identical to `main`, until he deletes it.
 
 ## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
 

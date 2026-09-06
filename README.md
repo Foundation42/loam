@@ -41,9 +41,9 @@ stored in 11³ blocks (the brick's 9³ samples and one halo layer from the
 neighbours) and reconstructed by a cubic B-spline: C2 inside a brick and
 across a same-gauge seam, with a Lipschitz bound in every summary so a
 renderer sphere-traces it by |φ|/L and never overshoots. Fronts sweep
-lofted capsules into it; a wound cuts it. Matryoshka's `loam` branch
-mounts a world through `src/loam_bridge.zig` and renders the carrier's
-bricks as a leaf of the dynamic tree with the same B-spline and the same
+lofted capsules into it; a wound cuts it. Matryoshka (on `main`
+since Sunday 2026-09-06) mounts a world through `src/loam_bridge.zig`
+and renders the carrier's bricks as a leaf of the dynamic tree with the same B-spline and the same
 step: a tree on the grass beside Suzanne, ray-traced with its shadow, no
 facet, no seam, no triangle anywhere in it.
 
