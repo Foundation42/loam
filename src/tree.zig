@@ -179,12 +179,16 @@ pub const Snapshot = struct {
     active: []Key = &.{},
     /// Bricks the commit that made this snapshot touched. Owned, sorted.
     dirty: []Key = &.{},
-    /// OBLIGATIONS (Christian's ruling, Sunday afternoon): bricks the
-    /// budget scheduled and did not finish — carried — which run first
-    /// next step, in key order, by construction and not by their score.
-    /// Owned, sorted. Live fronts' bricks are the other obligations and
-    /// are read from `fronts`.
-    obliged: []Key = &.{},
+    /// THE RESIDUAL (R17): for each key of `active`, the fed time since
+    /// which the brick has been owed an evaluation — now when the commit
+    /// that made this snapshot evaluated it, else what the previous
+    /// snapshot held (or now if it was not active there). lag = now −
+    /// since is the brick's clock running behind the world's, and the
+    /// scheduler's score is pending × (1 + lag/τ). Rides the active set
+    /// rather than the brick because an evaluated brick that did not
+    /// change is never cloned. Owned, aligned with `active`, in the
+    /// content hash — it orders the step.
+    active_since: []u64 = &.{},
     /// The budget the step that made this snapshot ran under, in bricks;
     /// null is none. On the transcript because the world under a budget
     /// is a different world: an input like the seed, in the content hash,
@@ -201,7 +205,7 @@ pub const Snapshot = struct {
             self.gpa.free(self.fronts);
             self.gpa.free(self.active);
             self.gpa.free(self.dirty);
-            self.gpa.free(self.obliged);
+            self.gpa.free(self.active_since);
             self.gpa.destroy(self);
         }
     }
@@ -226,15 +230,37 @@ pub const Snapshot = struct {
             const raw = k.raw();
             h.update(std.mem.asBytes(&raw));
         }
-        for (self.obliged) |k| {
-            const raw = k.raw();
-            h.update(std.mem.asBytes(&raw));
-        }
+        for (self.active_since) |t| h.update(std.mem.asBytes(&t));
         const budget: u32 = self.budget orelse std.math.maxInt(u32);
         h.update(std.mem.asBytes(&budget));
         var out: [32]u8 = undefined;
         h.final(&out);
         return out;
+    }
+
+    /// Since when an active brick has been owed (R17), or null if `k` is
+    /// not active.
+    pub fn sinceOf(self: *const Snapshot, k: Key) ?u64 {
+        var lo: usize = 0;
+        var hi: usize = self.active.len;
+        const r = k.raw();
+        while (lo < hi) {
+            const mid = (lo + hi) / 2;
+            const m = self.active[mid].raw();
+            if (m == r) return self.active_since[mid];
+            if (m < r) lo = mid + 1 else hi = mid;
+        }
+        return null;
+    }
+
+    /// The backlog: active bricks owed from before this snapshot's commit
+    /// — carried at least once. A standing number.
+    pub fn backlog(self: *const Snapshot) usize {
+        var n: usize = 0;
+        for (self.active_since) |t| if (t < self.time_ns) {
+            n += 1;
+        };
+        return n;
     }
 
     /// The leaf whose closed cube holds lattice point `p`, or null. A

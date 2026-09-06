@@ -86,38 +86,37 @@ pub const Policy = struct {
     /// value and the two holders of a face reconstruct from different
     /// coefficients — C0 at best. Never false outside a gate.
     halo: bool = true,
-    /// Bricks a step may evaluate (R15, R16). Null is no limit. With one
-    /// set the head of the active set IS the step — its bricks' operators
-    /// run and its fronts move — chosen in two tiers (Christian's ruling:
-    /// attention and obligation are different things; obligation is a
-    /// queue, not a score). Tier one, OBLIGATIONS in key order: bricks
-    /// hosting a live front, then bricks the last step carried — the
-    /// sim's own agents before its backlog, STRUCK: "a skipped front
-    /// step is the front's clock silently halved, and clocks in Loam are
-    /// meant to be explicit channels, never a side effect of the budget;
-    /// the backlog is field settling, which can wait" (a plain queue
-    /// moved every front every other step at half the active set, G14 c
-    /// 38% off — `.queue`, the ruling's mutation). So a live front's
-    /// brick is NEVER cut: what the fronts alone exceed the budget by is
-    /// an OVERRUN the step reports (`StepStats.overrun`), not a skip.
-    /// Tier two, the rest by ATTENTION at the step's fed time — a₀·exp(−(now −
-    /// t₀)/τ) from the summaries, ties by key. The tail carries forward
-    /// unevaluated and becomes next step's obligations, except that a
-    /// brick whose attention has decayed under the change floor AND
-    /// hosts no front FADES out (the fade rule: diffusion and decay are
-    /// contractions, a seam write of 1e-5 cannot grow into something that
-    /// mattered; a front can — and without it a budget of twelve carried
-    /// every brick in the world). A front in a carried brick does not
-    /// move: the tips lag when the head is chosen badly (G14 c).
+    /// Bricks a step may evaluate (R15, R16, R17). Null is no limit. With
+    /// one set the head of the active set IS the step — its bricks'
+    /// operators run and its fronts move. First the bricks hosting a live
+    /// front, in key order, NEVER cut (Christian, struck: "a skipped
+    /// front step is the front's clock silently halved, and clocks in
+    /// Loam are meant to be explicit channels, never a side effect of the
+    /// budget"): what the fronts alone exceed the budget by is an OVERRUN
+    /// the step reports (`StepStats.overrun`), not a skip. Then the rest
+    /// by THE RESIDUAL's score, pending × (1 + lag/τ) — pending the
+    /// brick's attention accumulated by max since it was last evaluated,
+    /// lag = now − the fed time it has been owed since
+    /// (`Snapshot.active_since`) — descending, ties by key: deferral
+    /// costs, so a hot region is served often and every brick with real
+    /// pending change is served within a bounded delay (G14 e). The tail
+    /// carries forward with its since intact, except that a brick whose
+    /// READER attention has decayed under the change floor AND hosts no
+    /// front FADES out (the fade rule, struck: a seam write of 1e-5
+    /// cannot grow into something that mattered; a front can). What is
+    /// NOT guaranteed is that the world keeps up: more load than budget
+    /// raises lag everywhere, visibly, on the transcript.
     budget: ?u32 = null,
     /// How the head is chosen under a budget. `.key` is G14 (c)'s
-    /// mutation; `.queue` the ruling's — one obligation queue, fronts
-    /// and backlog together in key order, cut at the budget. Both kept
-    /// as instruments (`loam-run --budget-order key|queue`).
+    /// mutation; `.queue` the tier ruling's — one obligation queue,
+    /// fronts and backlog together in key order, cut at the budget;
+    /// `.no_lag` the residual's (G14 e) — the score without its lag
+    /// term, under which a cold region starves. All kept as instruments
+    /// (`loam-run --budget-order key|queue|no_lag`).
     budget_order: BudgetOrder = .attention,
 };
 
-pub const BudgetOrder = enum { attention, key, queue };
+pub const BudgetOrder = enum { attention, key, queue, no_lag };
 
 pub const StepStats = struct {
     active_in: u64 = 0,
@@ -134,10 +133,11 @@ pub const StepStats = struct {
     /// Bricks the fronts' tier exceeded the budget by: non-deferrable
     /// work done beyond the budget, reported, never skipped.
     overrun: u64 = 0,
-    /// The obligations carried into this step (`Snapshot.obliged`): the
-    /// backlog, a standing number. Backlog above the budget for
-    /// consecutive steps (`World.overload_steps`) is the signal that the
-    /// honest response is slowing the world's clock — D5's job, named.
+    /// Active bricks owed from before the last commit — carried at least
+    /// once (`Snapshot.backlog`): a standing number. Backlog above the
+    /// budget for consecutive steps (`World.overload_steps`) is the
+    /// signal that the honest response is slowing the world's clock —
+    /// D5's job, named.
     backlog: u64 = 0,
     bricks_changed: u64 = 0,
     bricks_materialised: u64 = 0,
@@ -339,7 +339,7 @@ pub const World = struct {
     /// Commit whatever authoring has queued, as a step with no operators
     /// and no time. Publishes a new vid.
     pub fn apply(self: *World) Error!void {
-        try self.commit(.{ .frame = self.frame, .time_ns = self.time_ns }, self.head, false, &.{}, null, self.jobs);
+        try self.commit(.{ .frame = self.frame, .time_ns = self.time_ns }, self.head, false, &.{}, &.{}, null, self.jobs);
     }
 
     // ── The step ─────────────────────────────────────────────────────────
@@ -397,15 +397,11 @@ pub const World = struct {
         const carried: []const Key = chosen.carried;
         defer if (carried.len > 0) gpa.free(carried);
         self.stats.carried = carried.len;
-        // The head sorted by key, for the front pass's search; null when
-        // nothing was cut, so no front asks.
-        var head_sorted: ?[]Key = null;
-        defer if (head_sorted) |hs| gpa.free(hs);
-        if (carried.len > 0) {
-            const hs = try gpa.dupe(Key, head);
-            std.mem.sort(Key, hs, {}, Key.lessThan);
-            head_sorted = hs;
-        }
+        // The head sorted by key: the commit's "evaluated this step", and
+        // the front pass's search when something was cut.
+        const head_sorted = try gpa.dupe(Key, head);
+        defer gpa.free(head_sorted);
+        std.mem.sort(Key, head_sorted, {}, Key.lessThan);
 
         // 2. Entries, serially, one per evaluated brick.
         var updates = try gpa.alloc(*update.RegionUpdate, head.len);
@@ -446,11 +442,11 @@ pub const World = struct {
         self.stats.ns_operate = timer.lap();
 
         // 4. Fronts, after the barrier: parallel into sinks, merged in id order.
-        if (dt > 0) try self.frontPass(base, dt, head_sorted, sys);
+        if (dt > 0) try self.frontPass(base, dt, if (carried.len > 0) head_sorted else null, sys);
         self.stats.ns_fronts = timer.lap();
 
         // 5. Commit and publish.
-        try self.commit(now, base, evaluated, carried, self.policy.budget, sys);
+        try self.commit(now, base, evaluated, head_sorted, carried, self.policy.budget, sys);
         self.total.accumulate(self.stats);
     }
 
@@ -478,43 +474,51 @@ pub const World = struct {
         const gpa = self.gpa;
         const fronts = try self.frontBricks(gpa);
         errdefer gpa.free(fronts);
-        self.stats.backlog = base.obliged.len;
+        const backlog = base.backlog();
+        self.stats.backlog = backlog;
         const budget: usize = self.policy.budget orelse active.len;
         if (self.policy.budget) |b| {
-            if (base.obliged.len > b) self.overload_steps += 1 else self.overload_steps = 0;
+            if (backlog > b) self.overload_steps += 1 else self.overload_steps = 0;
         } else self.overload_steps = 0;
         if (active.len <= budget) return .{ .head = try gpa.dupe(Key, active), .carried = &.{}, .fronts = fronts };
-        // tier 0: hosts a live front; 1: carried by the last step; 2: the rest.
-        const Scored = struct { key: Key, a: f64, tier: u8 };
+        // tier 0: hosts a live front (never cut); 1: the rest, by score.
+        // Under `.queue` the backlog joins tier 0 — the tier ruling's
+        // mutation, one key-ordered queue cut at the budget.
+        const Scored = struct { key: Key, a: f64, score: f64, tier: u8 };
         const scored = try gpa.alloc(Scored, active.len);
         defer gpa.free(scored);
-        const tau: f64 = thresholds.ATTENTION_TAU_S;
-        const single_queue = self.policy.budget_order == .queue;
+        const tau_a: f64 = thresholds.ATTENTION_TAU_S;
+        const tau_lag: f64 = thresholds.LAG_TAU_S;
+        const order = self.policy.budget_order;
         var n0: usize = 0;
         for (active, 0..) |k, i| {
             const hosts = keyInSorted(fronts, k);
-            const obliged = keyInSorted(base.obliged, k);
+            const since = base.sinceOf(k) orelse now.time_ns;
+            const owed_before = since < base.time_ns;
+            const pending: f64 = if (base.brickAt(k)) |b| b.summary.attention else 0;
+            const lag_s: f64 = @as(f64, @floatFromInt(now.time_ns -| since)) / 1e9;
             scored[i] = .{
                 .key = k,
-                .a = attentionOf(base, k, now.time_ns, tau),
-                .tier = if (hosts) 0 else if (obliged) @as(u8, if (single_queue) 0 else 1) else 2,
+                .a = attentionOf(base, k, now.time_ns, tau_a),
+                .score = if (order == .no_lag) pending else pending * (1 + lag_s / tau_lag),
+                .tier = if (hosts or (order == .queue and owed_before)) 0 else 1,
             };
             if (hosts) n0 += 1;
         }
-        switch (self.policy.budget_order) {
-            .attention, .queue => std.mem.sort(Scored, scored, {}, struct {
+        switch (order) {
+            .attention, .queue, .no_lag => std.mem.sort(Scored, scored, {}, struct {
                 fn lt(_: void, x: Scored, y: Scored) bool {
                     if (x.tier != y.tier) return x.tier < y.tier;
-                    if (x.tier == 2 and x.a != y.a) return x.a > y.a;
+                    if (x.tier == 1 and x.score != y.score) return x.score > y.score;
                     return x.key.raw() < y.key.raw();
                 }
             }.lt),
             .key => {}, // the active set is Morton-sorted already
         }
         // The fronts' tier is never cut: the head grows past the budget by
-        // what they exceed it, and the step reports the overrun. (The two
-        // mutations cut at the budget, fronts and all.)
-        const take: usize = if (self.policy.budget_order == .attention) @max(budget, n0) else budget;
+        // what they exceed it, and the step reports the overrun. (The
+        // `.key` and `.queue` mutations cut at the budget, fronts and all.)
+        const take: usize = if (order == .attention or order == .no_lag) @max(budget, n0) else budget;
         self.stats.overrun = take - budget;
         const head = try gpa.alloc(Key, take);
         errdefer gpa.free(head);
@@ -1246,7 +1250,9 @@ pub const World = struct {
     /// brick of the head that did not change has settled. When it did not
     /// run — the epoch tick, an authoring apply — the active set carries
     /// forward; `carried` is the budget's tail, which carries either way.
-    fn commit(self: *World, now: Now, base: *const Snapshot, evaluated: bool, carried: []const Key, budget: ?u32, sys: ?*jobs.JobSystem) Error!void {
+    /// `head`, sorted: the bricks evaluated this step — their pending
+    /// attention is reset and their since is now (R17).
+    fn commit(self: *World, now: Now, base: *const Snapshot, evaluated: bool, head: []const Key, carried: []const Key, budget: ?u32, sys: ?*jobs.JobSystem) Error!void {
         const gpa = self.gpa;
         const eps = thresholds.EPSILON;
         var timer = std.time.Timer.start() catch unreachable;
@@ -1332,7 +1338,7 @@ pub const World = struct {
         defer dirty.deinit(gpa);
         var active = std.ArrayListUnmanaged(Key){};
         defer active.deinit(gpa);
-        var fctx = FinalizeCtx{ .world = self, .changed = &changed, .order = order.items, .now_ns = now.time_ns };
+        var fctx = FinalizeCtx{ .world = self, .base = base, .changed = &changed, .order = order.items, .now_ns = now.time_ns, .head = head };
         parallelRange(sys, order.items.len, 8, FinalizeCtx, &fctx, finalizeOne);
         for (order.items) |raw| {
             const c = changed.getPtr(raw).?;
@@ -1394,12 +1400,13 @@ pub const World = struct {
         errdefer gpa.free(active_owned);
         const dirty_owned = try dedupKeys(gpa, dirty.items);
         errdefer gpa.free(dirty_owned);
-        // The carried bricks are next step's obligations, in key order.
-        const carried_sorted = try gpa.dupe(Key, carried);
-        defer gpa.free(carried_sorted);
-        std.mem.sort(Key, carried_sorted, {}, Key.lessThan);
-        const obliged_owned = try dedupKeys(gpa, carried_sorted);
-        errdefer gpa.free(obliged_owned);
+        // Since when each active brick is owed (R17): now if evaluated this
+        // step, else what it was, else now.
+        const since_owned = try gpa.alloc(u64, active_owned.len);
+        errdefer gpa.free(since_owned);
+        for (active_owned, 0..) |k, i| {
+            since_owned[i] = if (keyInSorted(head, k)) now.time_ns else (base.sinceOf(k) orelse now.time_ns);
+        }
         snap.* = .{
             .gpa = gpa,
             .vid = self.vid + 1,
@@ -1410,7 +1417,7 @@ pub const World = struct {
             .fronts = fronts_copy,
             .active = active_owned,
             .dirty = dirty_owned,
-            .obliged = obliged_owned,
+            .active_since = since_owned,
             .budget = budget,
         };
         const counts = snap.countNodes();
@@ -1518,15 +1525,22 @@ pub const World = struct {
         ctx.results[i] = .{ .b = nb, .old = old, .max_delta = max_delta, .attention = att, .materialised = old == null and ru.mask == 0, .rank = if (ru.mask != 0) 0 else 2 };
     }
 
-    const FinalizeCtx = struct { world: *World, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: []const u64, now_ns: u64 };
+    const FinalizeCtx = struct { world: *World, base: *const Snapshot, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: []const u64, now_ns: u64, head: []const Key };
 
     /// The attention bookkeeping is written here and nowhere else (R15):
     /// the largest change that reached the brick this commit — its own
     /// deltas and ops, a seam or halo write — per channel over that
-    /// channel's range, the max across channels, and the commit's fed time.
+    /// channel's range, the max across channels, and the commit's fed
+    /// time. A brick still OWED — active in the base and not evaluated
+    /// this step — accumulates by max: the earlier change is still
+    /// pending (R17). Any other starts afresh: evaluated this step, or
+    /// settled and re-entering (a settled brick is never cloned, so the
+    /// attention it carries is the pending it had when last looked at,
+    /// stale — accumulating it once made a re-entering brick owe twice).
     fn finalizeOne(ctx: *FinalizeCtx, i: usize) void {
         const c = ctx.changed.get(ctx.order[i]).?;
-        c.b.attention = c.attention;
+        const owed = ctx.base.sinceOf(c.b.key) != null and !keyInSorted(ctx.head, c.b.key);
+        c.b.attention = if (owed) @max(c.b.attention, c.attention) else c.attention;
         c.b.changed_ns = ctx.now_ns;
         c.b.finalize(ctx.world.gpa);
     }

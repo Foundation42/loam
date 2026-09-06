@@ -705,34 +705,35 @@ fn hostsFront(snap: *const loam.Snapshot, k: loam.lattice.Key) bool {
     return false;
 }
 
-/// 0 hosts a live front, 1 was carried by the last step, 2 the rest.
-fn tierOf(snap: *const loam.Snapshot, k: loam.lattice.Key) u8 {
-    if (hostsFront(snap, k)) return 0;
-    for (snap.obliged) |o| if (o.eql(k)) return 1;
-    return 2;
+/// The residual's score from the snapshot alone (R17): pending × (1 + lag/τ).
+fn scoreOf(snap: *const loam.Snapshot, k: loam.lattice.Key, now_ns: u64) f64 {
+    const pending: f64 = if (snap.brickAt(k)) |b| b.summary.attention else 0;
+    const since = snap.sinceOf(k) orelse now_ns;
+    const lag_s: f64 = @as(f64, @floatFromInt(now_ns -| since)) / 1e9;
+    return pending * (1 + lag_s / thresholds.LAG_TAU_S);
 }
 
 /// What a step must evaluate, from the snapshot's bookkeeping alone: the
-/// obligations — the live fronts' bricks, then `obliged`, each in key
-/// order — then the rest by attention at `now_ns` descending, ties by
-/// key, cut at `budget` — the active set itself when it fits or there is
-/// no budget — and how many of the tail carry (attentive above the
-/// floor, or hosting a front).
+/// live fronts' bricks in key order, never cut, then the rest by the
+/// residual's score at `now_ns` descending, ties by key, cut at
+/// `budget` — the active set itself when it fits or there is no budget
+/// — and how many of the tail carry (attentive above the floor, or
+/// hosting a front).
 fn attentionHead(gpa: std.mem.Allocator, snap: *const loam.Snapshot, now_ns: u64, budget: ?usize) !HeadAndTail {
     const K = loam.lattice.Key;
     const b = budget orelse snap.active.len;
     if (snap.active.len <= b) return .{ .head = try gpa.dupe(K, snap.active), .carried = 0 };
-    const Scored = struct { key: K, a: f64, tier: u8 };
+    const Scored = struct { key: K, a: f64, score: f64, tier: u8 };
     const scored = try gpa.alloc(Scored, snap.active.len);
     defer gpa.free(scored);
     for (snap.active, 0..) |k, i| {
         const a: f64 = if (snap.brickAt(k)) |br| br.summary.attentionAt(now_ns, thresholds.ATTENTION_TAU_S) else 0;
-        scored[i] = .{ .key = k, .a = a, .tier = tierOf(snap, k) };
+        scored[i] = .{ .key = k, .a = a, .score = scoreOf(snap, k, now_ns), .tier = if (hostsFront(snap, k)) 0 else 1 };
     }
     std.mem.sort(Scored, scored, {}, struct {
         fn lt(_: void, x: Scored, y: Scored) bool {
             if (x.tier != y.tier) return x.tier < y.tier;
-            if (x.tier == 2 and x.a != y.a) return x.a > y.a;
+            if (x.tier == 1 and x.score != y.score) return x.score > y.score;
             return x.key.raw() < y.key.raw();
         }
     }.lt);
@@ -779,9 +780,9 @@ test "G14 (a): what a step evaluates is the attention-ordered head of the active
         try testing.expectEqual(g.world.evaluated.len * n_ops, g.world.stats.region_evals);
         try testing.expectEqual(ht.carried, g.world.stats.carried);
         try testing.expectEqual(before.active.len - g.world.evaluated.len - ht.carried, g.world.stats.faded);
-        // The carried bricks are the next snapshot's obligations, and the
-        // budget the step ran under is on it.
-        try testing.expectEqual(ht.carried, g.published().obliged.len);
+        // The carried bricks are the next snapshot's backlog — owed since
+        // before its commit — and the budget the step ran under is on it.
+        try testing.expectEqual(ht.carried, g.published().backlog());
         try testing.expectEqual(budget, g.published().budget);
         // No live front's step is ever skipped under a budget (struck):
         // what the fronts exceed it by is an overrun, reported.
@@ -804,7 +805,7 @@ test "G14 (a): what a step evaluates is the attention-ordered head of the active
             live += 1;
         };
     }
-    std.debug.print("G14 (a): ten steps at a budget of one brick: {d} live front-steps, none skipped, overrun {d} bricks; backlog {d} at the end, {d} consecutive steps over budget\n", .{ live, overrun, g.published().obliged.len, g.world.overload_steps });
+    std.debug.print("G14 (a): ten steps at a budget of one brick: {d} live front-steps, none skipped, overrun {d} bricks; backlog {d} at the end, {d} consecutive steps over budget\n", .{ live, overrun, g.published().backlog(), g.world.overload_steps });
     try testing.expect(overrun > 0);
     try testing.expect(g.world.overload_steps >= 9);
     try guards.check(g.published());
@@ -882,6 +883,108 @@ test "G14 (b): a walk rejecting on the summaries' attention bound finds exactly 
     try snap.attentive(snap.time_ns + 35 * std.time.ns_per_s, floor, tau, false, gpa, &found, &examined);
     try testing.expectEqual(bs.len, examined);
     try testing.expectEqual(last_found, found.items.len);
+}
+
+// ── G14 (e): the residual ────────────────────────────────────────────────
+
+const Residual = struct { cold_max: u64 = 0, cold_min: u64 = std.math.maxInt(u64), cold_served: u64 = 0, hot_served: u64 = 0, n_cold: usize = 0, slots: usize = 0, predicted: u32 = 0 };
+
+fn isHot(k: loam.lattice.Key) bool {
+    return k.origin()[0] < lattice.CELLS / 2;
+}
+
+/// A 4×4×4-brick region of uniform change: `amount` added to every own
+/// sample of every brick, queued for the next `apply`.
+fn authorRegion(w: *World, bit: u6, x0: u32, mid: u32, amount: f32) !void {
+    const alloc = w.buffer.arena.allocator();
+    const side: u32 = brick.CELLS;
+    var bx: u32 = 0;
+    while (bx < 4) : (bx += 1) {
+        var by: u32 = 0;
+        while (by < 4) : (by += 1) {
+            var bz: u32 = 0;
+            while (bz < 4) : (bz += 1) {
+                const ru = try w.author(lattice.Key.ofBrick(0, .{ x0 + bx * side, mid - 2 * side + by * side, mid - 2 * side + bz * side }));
+                var k: u32 = 0;
+                while (k < brick.N) : (k += 1) {
+                    var j: u32 = 0;
+                    while (j < brick.N) : (j += 1) {
+                        var ii: u32 = 0;
+                        while (ii < brick.N) : (ii += 1) try ru.add(alloc, bit, Brick.index(ii, j, k), amount);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Two regions of UNIFORM pending change, authored before every step —
+/// the hot one at G14E_RATIO times the cold one's delta, on a channel
+/// with no range so a change scores as it is — under a budget the hot
+/// region's active bricks alone fill; no operator, no front. (A
+/// diffusing blob gave each region a profile, and cold centre bricks
+/// outranked hot edge bricks on pending alone, which is the score
+/// working, not the claim.) The lag, in steps, at which every cold
+/// brick is served.
+fn residualRun(gpa: std.mem.Allocator, order: loam.world.BudgetOrder, steps: u64) !Residual {
+    var w = try World.init(gpa, .{ .seed = 3 });
+    defer w.deinit();
+    w.policy.budget_order = order;
+    const bit = Channel.light.bit();
+    const mid: u32 = lattice.CELLS / 2;
+    const hot_delta: f32 = 0.01;
+    var r = Residual{};
+    var i: u64 = 0;
+    while (i <= steps) : (i += 1) {
+        try authorRegion(&w, bit, mid - 6 * brick.CELLS, mid, hot_delta);
+        try authorRegion(&w, bit, mid + 2 * brick.CELLS, mid, hot_delta / thresholds.G14E_RATIO);
+        try w.apply();
+        const snap = w.head;
+        snap.retain();
+        defer snap.release();
+        var hot: u32 = 0;
+        for (snap.active) |k| if (isHot(k)) {
+            hot += 1;
+        };
+        // From step 2 the hot region's active count IS the budget.
+        w.policy.budget = if (i >= 2) @max(1, hot) else null;
+        if (i == 2) {
+            r.n_cold = snap.active.len - hot;
+            r.slots = hot;
+            r.predicted = thresholds.g14ePredictedSteps(1.0, thresholds.G14E_RATIO, r.n_cold, r.slots);
+        }
+        try w.step(now(i), null);
+        if (i < 2) continue;
+        for (w.evaluated) |k| {
+            const since = snap.sinceOf(k) orelse continue;
+            const lag_steps = (now(i).time_ns - since) / std.time.ns_per_s;
+            if (isHot(k)) {
+                r.hot_served += 1;
+            } else {
+                r.cold_served += 1;
+                r.cold_max = @max(r.cold_max, lag_steps);
+                r.cold_min = @min(r.cold_min, lag_steps);
+            }
+        }
+    }
+    try guards.check(w.published());
+    return r;
+}
+
+test "G14 (e) the residual: under a budget the hot region alone fills, every cold brick is served within the steps predicted from τ, and the cold region is deferred at all" {
+    const gpa = testing.allocator;
+    const r = try residualRun(gpa, .attention, 60);
+    std.debug.print("\nG14 (e): {d} cold bricks against {d} hot slots at {d:.0}×; cold served {d} times at lags {d}–{d} steps, predicted ≤ {d} (τ = {d} s); hot served {d}\n", .{ r.n_cold, r.slots, thresholds.G14E_RATIO, r.cold_served, r.cold_min, r.cold_max, r.predicted, thresholds.LAG_TAU_S, r.hot_served });
+    try testing.expect(r.cold_served > 0);
+    try testing.expect(r.cold_min > 1);
+    try testing.expect(r.cold_max <= r.predicted);
+}
+
+test "G14 (e) mutation: the lag term zeroed → the cold region is never served" {
+    const gpa = testing.allocator;
+    const r = try residualRun(gpa, .no_lag, 60);
+    std.debug.print("\nG14 (e) mutation, no lag: cold served {d} times in 60 steps; hot {d}\n", .{ r.cold_served, r.hot_served });
+    try testing.expectEqual(@as(u64, 0), r.cold_served);
 }
 
 const BudgetedRun = struct { inside: u64, carried: u64, faded: u64, skipped: u64, evals: u64 };

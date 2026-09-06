@@ -166,6 +166,7 @@ that must bite.
 | G12 Collar | smooth union is smooth at a branch | \|∇φ\| continuous across the junction; provenance-blended band signal continuous | no jump above ⟨…⟩ | hard min → a crease; nearest-front ownership → the bark rotates |
 | G13 Thin feature (STRUCK) | sub-gauge structure survives the B-spline | a straight capsule across a radius sweep ⟨0.5 … 6⟩ r/h, nine axis offsets in the cell, three orientations: whether the zero set survives, and r_rec/r worst and best | (a) the instrument reads the prediction: survival matches, r_rec/r within ⟨1%⟩ of `tools/g13_predict.py`; (b) survives at r/h ≥ ⟨1.0⟩; (c) \|r_rec − r\|/r ≤ ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and thinner is refinement's problem | gauge doubled without refinement → vanishes at 1.0, thins 30% at 2.0 (bites b, c); control values half a cell off → ±40% at 2.0 (bites a, c); trilinear → survives lower, thins less (bites a only: the instrument's variation, recorded) |
 | G14 Attention (built Sunday afternoon; (a) restated at build, the head in two tiers by the ruling, (c) named invariance and (d) reproducibility added by the ruling, see the ledger) | the step's work follows where things are changing, and a reader can see it without touching a brick | (a) the evaluated set is the head of the active set — the fronts' bricks never cut, then the backlog, both in key order, then by attention — recomputable from the published snapshot alone, evaluations == ops × its size, and no front step skipped under any budget with the overrun reported, every step (G5 made graded); (d) the budget is on the transcript: a run replayed from its recorded per-step budgets publishes the same content hash, serial and over the job system, and a record altered where it bites does not; (b) a walk rejecting attention-zero subtrees from summaries alone visits exactly the bricks changed within τ·ln(a₀/floor) of now; (c) under a budget of ⟨50%⟩ of the step's active bricks, the ones evaluated are the highest-attention ones, and the sapling grown under budget ends within ⟨5%⟩ of the unbudgeted run's inside count | exact; exact; ⟨5%⟩ | (a) attention ignored → evaluations scale with the brick count; (b) attention not merged → the walk visits every brick; (c) budget taken in key order instead of attention order → the tips lag and the deviation exceeds the floor |
+| G14 (e) The residual (pre-registered Sunday afternoon, then built: lags 19–20 against a bound of 20, the cold region never served without the lag term) | deferral costs, so no brick with real pending change starves under a hot region | two diffusing regions, one at ⟨10⟩× the other's attention, under a budget the hot region alone fills: the longest lag at which any cold brick is evaluated, against the prediction from τ | ≤ k = ⌈(R − 1)·τ/dt + R⌉ + ⌈n_cold / slots⌉, from `g14ePredictedSteps` before the run; and the cold region IS deferred (its least lag > one step) | the lag term zeroed → the cold region is never served in the run |
 | G15 Budget | a step spread over frames is the same step, and a call never exceeds its budget | (a) the wounded sapling stepped through `work(B)` in calls of ⟨B = 8⟩ units publishes the frozen reference — exactly; (b) no call performs more than B units, any phase; (c) under CUT at ⟨50%⟩ of each step's units the evaluated set is the attention-ordered head, and the run ends within ⟨5%⟩ of SPREAD's inside count | exact; exact; ⟨5%⟩ | (a) a chunk reading a brick another chunk already changed → the hash moves; (b) the seam and halo apply passes left unchunked → a call exceeds B; (c) the cut taken in key order → the deviation exceeds the floor |
 | G1 again | replay, end to end, with the new carrier | frozen reference, re-baselined as a reviewed event with old and new in the ledger | identical | commit order reversed |
 | The look | the trunk with no facets | the close-up at `--loam-scale 0.06` | Christian's eyes | — |
@@ -281,14 +282,46 @@ start: units measured, the count each call was given and performed
 recorded on the snapshot and the trace as `Snapshot.budget` is now, and
 replay replays the record (G14 (d)'s shape, in units).
 
-*Open, pre-registration to follow Christian's strike: a residual of
-obligation.* Christian, with Claude Chat: "maintain a residual of
-obligation that grows so that the work order becomes a function
-f(attention, obligation, residual)" — lag = now − last evaluated, the
-brick's clock running behind the world's; score attention × (1 +
-lag/τ); fronts outside the score; cut bricks ride it with lag ≥ 1
-step; last-evaluated in the hash. The ledger's analysis, "The strike,
-and P2.1b's word", and the proposal that follows it.
+**R17 — The residual: deferral costs, and the guarantee is a fair
+distribution, not keeping up.** (Christian with Claude Chat, Sunday
+afternoon, taken and BUILT the same afternoon — the ledger, "R17 — the
+residual, built": "then a fast changing area can't drag down the whole
+world. Well it can impose load, but the load distribution is still
+fair … Load is real; what the residual removes is the ability of load
+to become injustice.") In place of the backlog tier: every active brick
+is owed since a fed time (`Snapshot.active_since`, beside `active`, in
+the content hash — it orders the step), set to now when the brick was
+evaluated this step and kept from the previous snapshot when it was
+not; lag = now − since is the brick's clock running behind the
+world's. The discretionary head is ordered by score = pending × (1 +
+lag/τ), pending the brick's attention accumulated by MAX while it
+waits and reset by evaluation (undecayed — the reader's decayed
+attention in the product rises at most 1.5× before it falls, so a
+carried brick could never catch a hot region; the two are different
+quantities: the reader asks how recently, the scheduler how much is
+owed). Fronts stay outside the score: non-deferrable, charged first,
+overrun reported (G15 d). A cut brick (P2.1b) rides the score with lag
+≥ one step by construction. The fade rule stays as struck — the
+reader's decayed attention under the floor and no front — bounding
+the tail; it does not fall out of the product. The guarantee, in
+Christian's words: "The scheduler guarantees a fair *distribution*: a
+hot region gets served often, but every brick with real pending change
+is served within a bounded delay, so the rest of the world keeps
+evolving, just later. It does not guarantee the world keeps up. If the
+hot region plus the fronts exceed the budget, lag rises everywhere,
+and that's correct: the honest response to more load than budget is
+the world's clock slowing, visibly and on the transcript, not one
+region silently freezing while another runs." The one knob is τ
+(`LAG_TAU_S`, PROPOSED 1 s): a brick at a catches a region at R·a once
+lag ≥ (R − 1)τ + R·dt. Gate G14 (e), pre-registered: one region at R =
+⟨10⟩× the other's attention under a budget the hot region alone
+fills; the coldest real brick is served within k steps, k from
+`thresholds.g14ePredictedSteps` before the run; mutation: the lag term
+zeroed → the cold region is never served. "If k comes out long enough
+to see, τ is wrong, not the design." Backlog and overload stay
+standing numbers: lag-weighted pending over the active set is "how far
+behind the world is", and its growth under a sustained cut is D5's
+signal.
 
 **P2.2 — history and bands.** Provenance at deposition; ring history on
 the front; bands 1–2 through the charts, blended by collar weights; bands

@@ -47,7 +47,7 @@ const usage =
     \\  --phases             print wall-clock per phase beside each line
     \\  --budget N           evaluate at most N bricks a step, attention first (R15)
     \\  --budget-fraction F  the same as a fraction of each step's active set (G14 c)
-    \\  --budget-order O     attention (default) | key | queue — the two mutations
+    \\  --budget-order O     attention (default) | key | queue | no_lag — the three mutations
     \\  --budget-schedule F  replay the budgets recorded on trace F's `# step` lines (G14 d)
     \\  --tropism-sweep D,D,…  the G3 ensemble at each stimulus displacement D (dose-response), then exit
     \\  --seeds N            seeds in the ensemble (default 6)
@@ -395,7 +395,7 @@ pub fn main() !void {
         defer found.deinit(gpa);
         var examined: usize = 0;
         try snap.attentive(snap.time_ns, loam.thresholds.EPSILON, loam.thresholds.ATTENTION_TAU_S, true, gpa, &found, &examined);
-        try stdout.print("attentive {d} of {d} bricks at the end (τ {d} s, floor {e:.0}; the walk examined {d} leaves, {d:.2} per attentive brick); {d} carried, {d} faded, {d} front-steps skipped, overrun {d} over the run; backlog {d} at the end, {d} consecutive steps over budget\n", .{ found.items.len, snap.brick_count, loam.thresholds.ATTENTION_TAU_S, loam.thresholds.EPSILON, examined, @as(f64, @floatFromInt(examined)) / @as(f64, @floatFromInt(@max(found.items.len, 1))), world.total.carried, world.total.faded, world.total.fronts_skipped, world.total.overrun, snap.obliged.len, world.overload_steps });
+        try stdout.print("attentive {d} of {d} bricks at the end (τ {d} s, floor {e:.0}; the walk examined {d} leaves, {d:.2} per attentive brick); {d} carried, {d} faded, {d} front-steps skipped, overrun {d} over the run; backlog {d} at the end, {d} consecutive steps over budget\n", .{ found.items.len, snap.brick_count, loam.thresholds.ATTENTION_TAU_S, loam.thresholds.EPSILON, examined, @as(f64, @floatFromInt(examined)) / @as(f64, @floatFromInt(@max(found.items.len, 1))), world.total.carried, world.total.faded, world.total.fronts_skipped, world.total.overrun, snap.backlog(), world.overload_steps });
     }
 
     if (opts.ray) |r| {

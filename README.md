@@ -34,7 +34,7 @@ w.run(60)
 print(w.root_hash().hex(), w.stats()["fronts"])
 ```
 
-## Status — Phase 2.1: the continuous carrier
+## Status — Phase 2.1 and 2.1a: the continuous carrier, and attention
 
 Matter is the zero set of a continuous signed implicit, `surface`,
 stored in 11³ blocks (the brick's 9³ samples and one halo layer from the
@@ -54,9 +54,10 @@ matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --cam -13
 Every brick knows how much it last changed and when — attention, derived
 where it is read, never stepped, scored per channel over its range — so
 a reader finds where the world is changing from the summaries alone, and
-a step under a budget spends its work in two tiers: what it owes (live
-fronts, then last step's backlog, a queue in key order) and what it
-wants (the rest by attention). `loam-run --budget-fraction 0.5` grows
+a step under a budget spends its work first on what it owes (the live
+fronts, never cut) and then by a score in which deferral costs —
+pending change times how long it has waited — so a hot region is served
+often and every brick with real pending change within a bounded delay. `loam-run --budget-fraction 0.5` grows
 the same sapling from 22% fewer evaluations, and the budget rides on the
 snapshot's hash and the trace: an input like the seed. The bridge reads
 the same bookkeeping as its dirty set: a brick keeps its slot on the GPU
@@ -85,7 +86,7 @@ floor").
 | G10 bound | the summary's Lipschitz bound is conservative | 19,800 random pairs, 0 exceed it; the old axis-only bound is exceeded 45 times |
 | G11 sphere trace | a march stepped by \|φ\|/L never lands inside or tunnels | 4096 rays against a dense march: 0 disagreements, 0 late, 0 overshoots; stepping 2\|φ\|/L overshoots 167 times in 1024 |
 | G1 again | replay with the new carrier | one frozen reference, from Zig, from Python, across processes, with any thread count; the sim owns its sin, cos and exp so no libm can move it |
-| G14 attention | the step's work follows where things are changing, and a reader sees it from the summaries | the evaluated set is the head of the active set — obligations in key order, then by attention — recomputed from the snapshot at every step; a walk on the summaries finds exactly the attentive bricks (91 of 3652 at step 80, 264 leaves examined); the sapling under a budget of half its active set is the same tree from 22% fewer evaluations (invariance), and a run replayed from its recorded budgets is the same hash (reproducibility); no front step is ever skipped, the overrun is reported; the head in key order loses 36%, one queue of fronts and backlog gains 38% |
+| G14 attention | the step's work follows where things are changing, and a reader sees it from the summaries | the evaluated set is the head of the active set — obligations in key order, then by attention — recomputed from the snapshot at every step; a walk on the summaries finds exactly the attentive bricks (91 of 3652 at step 80, 264 leaves examined); the sapling under a budget of half its active set is the same tree from 14% fewer evaluations (invariance), and a run replayed from its recorded budgets is the same hash (reproducibility); no front step is ever skipped, the overrun is reported; deferral costs, so under a region ten times hotter every cold brick is served within the 20 steps predicted from τ, and never without the lag term; the head in key order loses 36%, one queue of fronts and backlog gains 35% |
 
 ### Phase 1, all eight gates
 
@@ -115,13 +116,19 @@ zig build run -- --all-regions --steps 40   # the G5 mutation, as a number
 zig build run -- --threads 16 --steps 200 --phases      # the parallel phases over common's JobSystem; same hash
 zig build run -- --tropism-sweep 10,20,40   # G3's ensemble as a dose-response, one world per core
 zig build run -- --steps 160 --every 0 --trace fronts.txt   # every front, every step: the habit check's instrument
+zig build run -- --steps 160 --budget-fraction 0.5 --trace run.txt   # half the active set a step; the budget on every `# step` line
+zig build run -- --steps 160 --budget-schedule run.txt              # replayed from the record: the same hash
+zig build run -- --scene wound --damage -10,8,-10,10,16,10@20 --steps 60 --budget 12   # a sustained cut: the backlog, and the overload count
+zig build run -- --steps 160 --budget-fraction 0.5 --budget-order no_lag   # G14 (e)'s mutation, as a number
 python3 -m unittest discover -s py/tests    # after zig build
 zig build test                              # the gates
 ```
 
 Fixed dt is the only clock: `--dt-ms 1000` is one fed second per step,
 and two runs with the same flags print the same hash — with any thread
-count.
+count. The budget is the other input, and it is on the transcript: a
+run replayed from its recorded per-step budgets prints the same hash,
+and a different schedule is a different world that says so.
 
 ## Layout
 
@@ -130,11 +137,11 @@ count.
 | `src/lattice.zig` | the 20-bit dyadic lattice, Morton keys, the world↔lattice door |
 | `src/channel.zig` | channel bits, the registry with its user range, per-channel clamps |
 | `src/brick.zig` | 8-cell bricks at a gauge, 11³ blocks (9³ samples and a halo), the cubic B-spline and its derivatives, popcount-packed planes |
-| `src/summary.zig` | the conservative node payload: tight bounds, mask, ranges, Lipschitz bounds, majorant, version |
+| `src/summary.zig` | the conservative node payload: tight bounds, mask, ranges, Lipschitz bounds, majorant, version, and attention — the last change's magnitude and time, merged by max, decayed where it is read |
 | `src/fmath.zig` | the sim's own sin, cos and exp: the same bits in every binary |
-| `src/tree.zig` | the persistent 8-way tree, Merkle hashes, snapshots, point lookup and sampling |
+| `src/tree.zig` | the persistent 8-way tree, Merkle hashes, snapshots (the active set, since when each brick is owed, the budget the step ran under), point lookup and sampling, the attention walk |
 | `src/update.zig` | region-local update buffers: deltas, surface ops (join, cut), materialise, spawns |
-| `src/world.zig` | the step: operate → fronts (the capsule sweep) → commit (frontier, seams, halos, summaries) → publish; the hazard-slot reader |
+| `src/world.zig` | the step: the head under a budget (the fronts' bricks first, never cut; then the residual's score) → operate → fronts (the capsule sweep) → commit (frontier, seams, halos, summaries, the attention bookkeeping) → publish; the hazard-slot reader |
 | `src/operators.zig` | Diffusion, Decay, Advection, Healing; the operator vtable |
 | `src/front.zig` | the Lagrangian front carrying loop-loft's ring |
 | `src/ray.zig` | the traversal cursor: near-to-far, summary rejection, the `--no-skip` instrument; the sphere tracer |
@@ -143,10 +150,11 @@ count.
 | `src/seedbed.zig` | the authoring verbs and the named scenes |
 | `src/run.zig` | `loam-run` |
 | `src/capi.zig` | the C seam (`libloam.so`) |
-| `src/thresholds.zig` | the gate numbers, PROPOSED until struck; G13's are struck, with the prediction frozen beside them |
+| `src/thresholds.zig` | the gate numbers, PROPOSED until struck; G13's are struck, with the prediction frozen beside them; G14 (e)'s prediction frozen beside τ |
 | `src/tests.zig` | the gates, each with its named mutation |
 | `py/loam/` | the ctypes binding and the dump reader |
 | `py/tests/` | the Python gates |
+| `tools/` | `g13_predict.py` (the thin-feature prediction, frozen beside G13), `diff_traces.py` (the habit check), `read_dump.py` |
 | `tools/read_dump.py` | the cross-language dump reader (`zig build verify-dump`) |
 | `tools/g13_predict.py` | G13's theory: what the B-spline does to a thin capsule, before the sweep ran |
 | `tools/diff_traces.py` | where two front-trajectory traces part company: the habit check |

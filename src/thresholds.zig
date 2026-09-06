@@ -138,6 +138,37 @@ pub const ATTENTION_TAU_S: f32 = 3; // PROPOSED — the Phase 1 Activity level's
 pub const G14_BUDGET_FRACTION: f32 = 0.5; // PROPOSED
 pub const G14_MAX_DEVIATION: f32 = 0.05; // PROPOSED — of the unbudgeted inside count
 
+/// G14 (e) — THE RESIDUAL (Christian with Claude Chat, Sunday afternoon;
+/// pre-registered before the run, then built: the run read the
+/// prediction exactly, lags 19–20 against a bound of 20). The
+/// discretionary head is ordered by score = pending × (1 + lag/τ), where
+/// pending is the brick's attention accumulated by max since it was last
+/// evaluated (undecayed: the reader's decayed attention in the product
+/// rises at most 1.5× before it falls, and a carried brick could never
+/// catch a region ten times hotter) and lag = now − the fed time it has
+/// been owed since (`Snapshot.active_since`). τ is the price of fairness
+/// in fed seconds: a brick at attention a catches a region at R·a once
+/// lag ≥ (R − 1)·τ + R·dt, and a batch of n cold bricks crossing
+/// together is served over ⌈n / slots⌉ further steps. The gate: one
+/// region at R = 10× the other's attention under a budget the hot region
+/// alone fills; the coldest real brick is served within k steps, k
+/// predicted from the formula BEFORE the run; mutation: the lag term
+/// zeroed → the cold region is never served. "If k comes out long
+/// enough to see, τ is wrong, not the design."
+pub const LAG_TAU_S: f32 = 1.0; // PROPOSED — one sapling step
+pub const G14E_RATIO: f32 = 10; // PROPOSED — the hot region's attention over the cold's
+
+/// G14 (e)'s prediction: steps until a brick at attention a outranks a
+/// fresh brick at `ratio`·a (each fresh brick carries one step of lag
+/// itself), plus the steps a batch of `n_cold` equal cold bricks takes to
+/// pass through `slots` discretionary slots. Written from the formula,
+/// frozen beside the threshold; the run reads it.
+pub fn g14ePredictedSteps(dt_s: f32, ratio: f32, n_cold: usize, slots: usize) u32 {
+    const catch_up = (ratio - 1) * LAG_TAU_S / dt_s + ratio;
+    const batch: f32 = @ceil(@as(f32, @floatFromInt(n_cold)) / @as(f32, @floatFromInt(@max(slots, 1))));
+    return @intFromFloat(@ceil(catch_up) + batch);
+}
+
 /// G15 (Phase 2, P2.1b — pre-registered, not built): the budget is fed in
 /// WORK UNITS (R16), never milliseconds. (a) steps spread over calls of
 /// G15_UNITS publish the frozen reference exactly; (c) CUT at
@@ -177,5 +208,8 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// is; the planes, the fronts and the active set did not move). The
 /// ruling `f410e7b3…` (attention scored per channel over its range, the
 /// max across channels; the obligations and the budget on the snapshot,
-/// in the content hash — the budget is an input like the seed).
-pub const G1_REFERENCE: []const u8 = "f410e7b36d9ba40f1e2be01d75c2c2ba176b2b8086a68259f4935c330446b04f";
+/// in the content hash — the budget is an input like the seed). The
+/// residual `019f9e0a…` (R17: since when each active brick is owed rides
+/// the active set in the content hash, and a brick still owed accumulates
+/// its pending by max — the obligations list it replaces is gone).
+pub const G1_REFERENCE: []const u8 = "019f9e0a799614325854b9e2630c47e99492e050c119f04f39d64a8df5285ddf";

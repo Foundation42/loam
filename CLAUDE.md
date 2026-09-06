@@ -114,24 +114,32 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   a₀·exp(−(t − t₀)/τ) is computed where it is read
   (`Summary.attentionAt`, through `fmath.exp`); nothing maintains it.
 - **Attention and obligation are different things (Christian's ruling).**
-  Attention is a score of what will change next; obligation is a queue
-  of what must run regardless. Under `Policy.budget` the head IS the
-  step — operators and fronts — in two tiers: obligations in key order
-  (bricks hosting a live front, dormant included, then bricks the last
-  step carried, `Snapshot.obliged`), then the rest by attention. The
-  fronts' tier is NEVER cut (struck: a skipped front step is the
-  front's clock silently halved, and clocks are explicit channels,
-  never a side effect of the budget): what it exceeds the budget by is
-  `StepStats.overrun`, reported. The tail carries forward and fades only
-  when its attention is under EPSILON AND it hosts no front. The
-  backlog (`StepStats.backlog`, `World.overload_steps`) is a standing
-  number: under a sustained cut it grows until the head is all backlog
-  — D5's signal to slow the clock, not P2.1b's problem. The budget a
-  step ran under is on the snapshot and in the content hash: an input
-  like the seed, logged by `loam-run --trace`, replayed by
-  `--budget-schedule`, never derived from a clock at replay (G14 d).
-  G14 (a) recomputes the head from the snapshot alone; a change to the
-  order must keep that recomputable.
+  Attention is a score of what will change next; obligation is what
+  must run regardless. Under `Policy.budget` the head IS the step —
+  operators and fronts. First the bricks hosting a live front (dormant
+  included), in key order, NEVER cut (struck: a skipped front step is
+  the front's clock silently halved, and clocks are explicit channels,
+  never a side effect of the budget): what they exceed the budget by is
+  `StepStats.overrun`, reported. Then THE RESIDUAL (R17): the rest by
+  score = pending × (1 + lag/τ), pending the brick's attention
+  accumulated by max while it is owed and reset when evaluated
+  (undecayed — the reader's decayed attention in the product can never
+  catch a hot region), lag = now − `Snapshot.active_since` (aligned
+  with `active`, in the content hash; on the snapshot, not the brick,
+  because an evaluated brick that did not change is never cloned), τ =
+  `LAG_TAU_S`. Deferral costs: a brick at a catches a region at R·a
+  once lag ≥ (R − 1)τ + R·dt (G14 e, predicted before the run). The
+  guarantee is a fair distribution, not keeping up. The tail carries
+  forward with its since intact and fades only when its READER
+  attention is under EPSILON AND it hosts no front. The backlog
+  (`Snapshot.backlog`, `World.overload_steps`) is a standing number:
+  under a sustained cut it grows and lag rises everywhere — D5's signal
+  to slow the clock, not P2.1b's problem. The budget a step ran under
+  is on the snapshot and in the content hash: an input like the seed,
+  logged by `loam-run --trace`, replayed by `--budget-schedule`, never
+  derived from a clock at replay (G14 d). G14 (a) recomputes the head
+  from the snapshot alone; a change to the score must keep that
+  recomputable.
 - **Snapshots are immutable and refcounted.** A published brick is never
   handed out as `*Brick`. The commit clones what it changes; untouched
   subtrees are shared by identity (G4 checks identity, not equality).

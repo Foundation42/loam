@@ -5,7 +5,9 @@
 each brick's last change, in the summaries and the hash, ordering the
 step under a budget; G14 green and bitten, G1 re-baselined ("P2.1a —
 attention" below); RULED the same afternoon — "Attention and obligation
-are different things" (the entry of that name).
+are different things" (the entry of that name); then R17, the
+residual, built the same afternoon: deferral costs, G14 (e) read its
+prediction exactly ("R17 — the residual, built").
 Phase 2 opened the same evening: the first loam-grown thing on screen
 (matryoshka branch `loam`, "Renderer integration, beat 1" below).
 **P2.1 built Sunday 2026-09-06** — the continuous carrier: R7 and G13
@@ -1283,12 +1285,108 @@ fronts and healing lands later — publishes `475a18f4…`, and the
 unbudgeted run the frozen reference.
 
 **A residual of obligation (Christian and Claude Chat, the same
-afternoon; pre-registration to follow, not built).** Proposed in place
-of the tiers: score the discretionary head by f(attention, lag) with
-lag = now − the time the brick was last evaluated, so deferral costs
-something and staleness is bounded; fronts stay outside the score.
-Analysis and the proposal are in the brief beside P2.1b; the tiers
-stand, struck, until it is.
+afternoon; taken, and pre-registered as R17 and G14 (e) before the
+spade).** In place of the backlog tier: score the discretionary head
+by pending × (1 + lag/τ), lag = now − the fed time the brick has been
+owed since, so deferral costs something and staleness is bounded;
+fronts stay outside the score. Three things settled against the code
+before building: the product must take the PENDING magnitude undecayed
+(the reader's decayed attention in the product rises at most 1.5×
+before it falls — g(t) = e^(−t/τₐ)(1 + t/τ) peaks at t = τₐ − τ — so a
+carried brick could never catch a region ten times hotter), the fade
+rule therefore stays as struck rather than falling out, and the
+owed-since time rides the active set on the snapshot rather than the
+brick, because an evaluated brick that did not change is never cloned
+and a per-brick "last evaluated" would be stale exactly when it
+mattered. τ PROPOSED 1 s; the prediction k = ⌈(R − 1)τ/dt + R⌉ +
+⌈n_cold/slots⌉ frozen as `thresholds.g14ePredictedSteps`; the brief has
+Christian's statement of the guarantee — a fair distribution, not
+keeping up.
+
+## R17 — the residual, built (Sunday 2026-09-06, afternoon; G14 (e) green and bitten, G1 again)
+
+Christian, taking it: "Yeah, I think this makes more sense because then
+a fast changing area can't drag down the whole world. Well it can
+impose load, but the load distribution is still fair." And the
+guarantee, stated precisely, is in the brief as R17: a fair
+DISTRIBUTION — every brick with real pending change served within a
+bounded delay — not the world keeping up; more load than budget raises
+lag everywhere, visibly, on the transcript.
+
+**What replaced the backlog tier.** `Snapshot.active_since`, aligned
+with `active` and in the content hash: for every active brick, the fed
+time since which it has been owed — now if the commit that made the
+snapshot evaluated it, else what the previous snapshot held, else now.
+lag = now − since is the brick's clock running behind the world's. The
+discretionary head is ordered by score = pending × (1 + lag/τ), pending
+the brick's attention accumulated by max while it is owed and reset
+when it is evaluated, τ = `LAG_TAU_S` (PROPOSED 1 s). The fronts' bricks
+stay outside the score, first and never cut (struck). `Snapshot.obliged`
+is gone; the backlog is `Snapshot.backlog()`, the active bricks owed
+from before the snapshot's commit.
+
+**Three things settled against the code before building** (the entry
+above): the product takes the pending magnitude UNDECAYED — the
+reader's decayed attention in the product, g(t) = e^(−t/τₐ)(1 + t/τ),
+peaks at t = τₐ − τ at about 1.5× and falls, so a carried brick could
+never catch a region ten times hotter; the fade rule therefore stays as
+struck and does not fall out of the product; and the since-time rides
+the active set on the snapshot, not the brick, because an evaluated
+brick that did not change is never cloned. That last point bit once
+while building: a settled brick re-entering the active set accumulated
+its STALE pending — the attention it carried from when it was last
+looked at — and owed twice. Now a brick accumulates only while it is
+owed (active in the base and not in the head); anything else starts
+afresh.
+
+**G14 (e), pre-registered and read exactly.** The prediction, from the
+formula written before the run (`thresholds.g14ePredictedSteps`): a
+brick at pending a catches a fresh brick at R·a once lag ≥ (R − 1)τ +
+R·dt, each fresh brick carrying one step of lag itself, plus ⌈n_cold /
+slots⌉ steps for a batch crossing together — at R = 10, τ = 1 s, dt =
+1 s: 19 + 1 = 20 steps. The fixture: two 4×4×4-brick regions of UNIFORM
+change authored before every step on a channel with no range (light: a
+change scores as it is), the hot one at 0.01 a sample and the cold at
+0.001, no operator, no front, the budget each step the hot region's
+active count (its 64 bricks and the shell the frontier gave them, 160)
+so the hot region alone fills it. Result: 160 cold bricks served 480
+times in 60 steps — three passes — every one at a lag of 19 or 20
+steps; the cold region deferred at all (its least lag 19), never past
+the bound. Mutation, the lag term zeroed (`BudgetOrder.no_lag`): the
+cold region is served 0 times in 60 steps, the hot 9,440. The first
+fixture was two diffusing blobs, and it failed both ways: growth's
+range clamped the hot blob flat, and cold centre bricks outranked hot
+edge bricks on pending alone even without lag — the score working, not
+the claim; a claim about regions at a ratio needs regions at a ratio.
+
+**The rest of G14 under the residual, Debug, serial.** (a) 40 of 80
+steps cut, 960 carried, 7 faded, 0 front-steps skipped, 5,276
+evaluations, the head recomputed from the snapshot alone at every step
+(fronts first by key, then by score); ten steps at a budget of one:
+57 live front-steps, none skipped, an overrun of 43, the backlog at 67
+and ten consecutive steps over. (b) unchanged (the reader's attention
+is not the scheduler's). (c) invariance: 4,999 = 4,999 from 5,866
+evaluations against 6,820 (14% fewer; the tiers gave 22% — the residual
+serves the backlog sooner, which is the point); the queue mutation
+34.8% off, key order 36.2%. (d) the wounded sapling under the half
+budget `e8d636d7…` replayed from its record serial and over four
+threads; the record starved for three steps after the wound
+`c68a167b…`; unbudgeted the frozen reference. G1 re-baselined
+`f410e7b3…` → `019f9e0a…` (the since times in the content hash, the
+pending accumulated while owed, `obliged` gone).
+
+**The wounded sapling under the residual** (60 steps, wound at 20,
+Debug, serial; the reproducibility case): unbudgeted 3,125 inside and
+15 fronts; at half the active set 4,081 and 21, backlog 33 at the end,
+never over budget; at twelve bricks a step 3,812 and 15, backlog 66,
+59 consecutive steps over — the sustained cut the corollary names,
+with no front-step skipped and no overrun (the fronts fit in twelve),
+and the world's backlog rising instead: the signal, on a number.
+
+**Not done.** The lag-weighted pending over the active set as the
+single "how far behind" number Chat named (the backlog count and the
+consecutive-overload count stand in for it); τ's strike; P2.1b, whose
+cut bricks ride this score with lag ≥ one step by construction.
 
 ## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
 
