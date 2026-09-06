@@ -2723,6 +2723,33 @@ fog. Three shots settled it — the rim (drive 4, no spread), the fog
 (12, 0.9), and 6/0.8 between them, which is the committed default.
 All three numbers PROPOSED.
 
+THEN THE LEAK, and his eye again ("some of that cube's aura is
+lighting up down at the bottom, or side of the screen, and all the
+auras keep flickering ... it's like there is a fence/barrier
+missing"): TWO causes, both mine, both in the spread I had just
+added. (1) A mix of m at EVERY upsample level leaves the coarsest with
+m^(levels−1) — at 0.9 over six levels mip 5 carries two thirds, and
+mip 5 is a handful of texels across the whole screen, so the record
+became a near-global wash whose few texels swung with the sub-pixel
+jitter: the flicker. `bloom_up` now stops the alpha's descent above
+`AURA_MAX_LEVEL` (3), so the support is that level's blur and no
+wider, and the levels that flicker are the ones excluded. (2) THE
+DYNAMIC RENDER SCALE, which Christian named the moment it was
+described: the bloom chain is sized to the window, but only the
+top-left renderW×renderH of a full-res image is written this frame and
+the margin is the PREVIOUS frame's at another scale — the record was
+reading it, so an emitter's aura appeared at the frame's right and
+bottom edges and moved as the controller ramped. `bloom_down` clamps
+the record's read to the valid extent, pushed in the constants. The
+rgb path has the same exposure and is left alone: it lerps by a small
+scatter where the record is amplified by a knee, so the same stale
+margin is invisible there and glaring here — an amplifier finds every
+approximation upstream of it. THE MUTATION, at `MTR_RENDER_SCALE=70`:
+unbind the level and let the margin back in — the frame moves 0.016
+RMSE and the difference is a broad wash across a whole side of the
+frame with no emitter near it. Numbers now drive 5, gain 0.7, spread
+0.9, max level 3, all PROPOSED.
+
 RADIANT PARTICLES, the other half of his ask ("it needs solving for
 radiant particles as well"): `sprites.frag` writes the record too — a
 card's emission (its colour above one) times the coverage the blend
