@@ -99,6 +99,14 @@ pub const Params = struct {
     /// "P2.2 — the collar"), where the bend between rings has to be a
     /// number the scene chose.
     coil: f32 = 0.0,
+    /// The heading kept in the plane of the seed — no z component: a
+    /// crack running over a slab's face (the material seedbed, P2.3's
+    /// play; a front that carves rather than deposits).
+    planar: bool = false,
+    /// The capsule applied as a CUT rather than a join: the front
+    /// carves a groove of its radius through what is there. A crack.
+    /// Writes no provenance, as every cut.
+    carve: bool = false,
     // Branching: a slot whose |residual| exceeds bud_threshold × envelope
     // for bud_rings consecutive rings is a bud; a bud fires when the front
     // is old enough and its cooldown has run.
@@ -234,6 +242,7 @@ pub const Front = struct {
             switch (@typeInfo(f.type)) {
                 .float => try w.writeInt(u32, @bitCast(@as(f32, v)), .little),
                 .int => try w.writeInt(u32, @intCast(v), .little),
+                .bool => try w.writeInt(u32, @intFromBool(v), .little),
                 else => @compileError("params field " ++ f.name),
             }
         }

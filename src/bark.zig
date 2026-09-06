@@ -514,3 +514,178 @@ test "the principal frame of a tube is its axis and the direction around it" {
     try std.testing.expectApproxEqAbs(@as(f32, 0), fr.k_along, 1e-6);
     try std.testing.expectApproxEqAbs(1 / r, fr.k_across, 1e-6);
 }
+
+// ── The archetype: a relief grown once, frozen, sampled by footprint ─────
+//
+// The material seedbed (Christian's document, the play after P2.3): a
+// material archetype is a small loam world grown from processes —
+// M(x, t_f) = Φⁿ(M₀, E) — frozen, hashed, and sampled onto a surface
+// through what the surface gives at a hit: depth, frame, position. The
+// first archetype is bark plates: cracks carved into a slab's face by
+// fronts that steer away from every groove already there. What is
+// frozen here is the face's RELIEF — the carrier read on the face
+// plane, positive where a groove is, by the groove's depth — as a
+// grid with its gradient, tiled by mirroring so no edge shows, and
+// sampled bilinearly in the field's frame where the grain was.
+
+pub const Relief = struct {
+    res: u32,
+    /// The face's extent in the archetype's own lattice units.
+    extent: f32,
+    /// Height (a groove's depth, lattice units) and its gradient per
+    /// unit, res × res, v rows of u.
+    h: []f32,
+    du: []f32,
+    dv: []f32,
+    /// The archetype world's content hash: the frozen material's name.
+    hash: [32]u8,
+    max_depth: f32,
+
+    pub fn deinit(self: *Relief, gpa: std.mem.Allocator) void {
+        gpa.free(self.h);
+        gpa.free(self.du);
+        gpa.free(self.dv);
+    }
+
+    /// Bake the face `z = face` of world `w` over the square
+    /// `centre ± half` at `res` samples an edge: the carrier by the
+    /// spline and its gradient by the jet, clamped to what stands proud.
+    pub fn bake(gpa: std.mem.Allocator, w: *const World, centre: [2]f64, half: f64, face: f64, res: u32) !Relief {
+        const snap = w.published();
+        const n: usize = @as(usize, res) * res;
+        var out = Relief{ .res = res, .extent = @floatCast(2 * half), .h = try gpa.alloc(f32, n), .du = try gpa.alloc(f32, n), .dv = try gpa.alloc(f32, n), .hash = snap.contentHash(), .max_depth = 0 };
+        var v: u32 = 0;
+        while (v < res) : (v += 1) {
+            var u: u32 = 0;
+            while (u < res) : (u += 1) {
+                const p = [3]f64{
+                    centre[0] - half + (@as(f64, @floatFromInt(u)) + 0.5) / @as(f64, @floatFromInt(res)) * 2 * half,
+                    centre[1] - half + (@as(f64, @floatFromInt(v)) + 0.5) / @as(f64, @floatFromInt(res)) * 2 * half,
+                    face,
+                };
+                const i = @as(usize, v) * res + u;
+                if (snap.sampleJet(Channel.surface.bit(), p)) |jet| {
+                    const hgt = @max(0, jet.v);
+                    out.h[i] = hgt;
+                    out.du[i] = if (jet.v > 0) jet.grad[0] else 0;
+                    out.dv[i] = if (jet.v > 0) jet.grad[1] else 0;
+                    out.max_depth = @max(out.max_depth, hgt);
+                } else {
+                    out.h[i] = 0;
+                    out.du[i] = 0;
+                    out.dv[i] = 0;
+                }
+            }
+        }
+        return out;
+    }
+
+    /// The relief at (u, v) in the archetype's lattice units, mirrored
+    /// across every edge so the tiling has no seam: the height and its
+    /// gradient, bilinear.
+    pub fn at(self: *const Relief, u: f32, v: f32) Noise {
+        const e = self.extent;
+        // Mirror: fold onto [0, e) with the direction flipped on odd tiles.
+        var fu = @mod(u, 2 * e);
+        var su: f32 = 1;
+        if (fu >= e) {
+            fu = 2 * e - fu;
+            su = -1;
+        }
+        var fv = @mod(v, 2 * e);
+        var sv: f32 = 1;
+        if (fv >= e) {
+            fv = 2 * e - fv;
+            sv = -1;
+        }
+        const r: f32 = @floatFromInt(self.res);
+        const x = fu / e * r - 0.5;
+        const y = fv / e * r - 0.5;
+        const x0f = @floor(x);
+        const y0f = @floor(y);
+        const tx = x - x0f;
+        const ty = y - y0f;
+        const x0: i32 = @intFromFloat(x0f);
+        const y0: i32 = @intFromFloat(y0f);
+        const c00 = self.texel(x0, y0);
+        const c10 = self.texel(x0 + 1, y0);
+        const c01 = self.texel(x0, y0 + 1);
+        const c11 = self.texel(x0 + 1, y0 + 1);
+        const w00 = (1 - tx) * (1 - ty);
+        const w10 = tx * (1 - ty);
+        const w01 = (1 - tx) * ty;
+        const w11 = tx * ty;
+        return .{
+            .v = c00.v * w00 + c10.v * w10 + c01.v * w01 + c11.v * w11,
+            .du = su * (c00.du * w00 + c10.du * w10 + c01.du * w01 + c11.du * w11),
+            .dv = sv * (c00.dv * w00 + c10.dv * w10 + c01.dv * w01 + c11.dv * w11),
+        };
+    }
+
+    fn texel(self: *const Relief, x: i32, y: i32) Noise {
+        const r: i32 = @intCast(self.res);
+        // Clamp at the edge: the mirror handles the rest.
+        const cx: usize = @intCast(@min(r - 1, @max(0, x)));
+        const cy: usize = @intCast(@min(r - 1, @max(0, y)));
+        const i = cy * self.res + cx;
+        return .{ .v = self.h[i], .du = self.du[i], .dv = self.dv[i] };
+    }
+};
+
+/// A hit read with an archetype in the field's frame: the relief in
+/// place of the grain — `unit` the archetype's lattice unit in the
+/// reader's world units, `depth` how deep a full groove is, in the
+/// reader's world units. Nothing but the carrier is read of the tree.
+pub fn readArchetype(w: *const World, snap: *const Snapshot, p: [3]f64, n: [3]f32, footprint_w: f32, relief: *const Relief, unit: f32, depth: f32) Bark {
+    var out = Bark{ .normal = n, .bytes = thresholds.G12_SPONGE_BYTES };
+    const cell: f32 = @floatCast(w.domain.cell());
+    // The archetype's finest scale is the groove; it fades like a band.
+    const groove_w = 2 * seedbed_groove() * unit;
+    const wgt = thresholds.bandWeight(groove_w / cell, footprint_w / cell);
+    if (wgt <= 0) return out;
+    const b = leafAt(snap, p) orelse return out;
+    const jet = b.splineJet(Channel.surface.bit(), p);
+    out.bytes += thresholds.G12_SPONGE_BYTES;
+    const gl = @sqrt(jet.grad[0] * jet.grad[0] + jet.grad[1] * jet.grad[1] + jet.grad[2] * jet.grad[2]);
+    const fr = principalFrame(n, gl, jet.hess);
+    out.frame = fr;
+    const pw = [3]f32{ @floatCast(p[0]), @floatCast(p[1]), @floatCast(p[2]) };
+    // World metres → the archetype's units; the mirror tiling wraps.
+    const scale_l = unit / cell; // archetype unit in the reader's lattice units
+    const u = dot3(pw, fr.across) / scale_l;
+    const v = dot3(pw, fr.along) / scale_l;
+    const rl = relief.at(u, v);
+    // A full groove is `depth` deep, in the reader's lattice units.
+    const a = (depth / cell) / @max(relief.max_depth, 1e-6) * wgt;
+    out.height = -a * rl.v;
+    out.grad_uv = .{ -a * rl.du / scale_l, -a * rl.dv / scale_l };
+    var bent: [3]f32 = undefined;
+    inline for (0..3) |ax| bent[ax] = n[ax] - out.grad_uv[0] * fr.across[ax] - out.grad_uv[1] * fr.along[ax];
+    out.normal = normalize3(bent);
+    return out;
+}
+
+fn seedbed_groove() f32 {
+    return @import("seedbed.zig").PLATES_GROOVE;
+}
+
+test "the relief tiles by mirroring: continuous across every edge, and its gradient flips with it" {
+    const gpa = std.testing.allocator;
+    var r = Relief{ .res = 4, .extent = 4, .h = try gpa.alloc(f32, 16), .du = try gpa.alloc(f32, 16), .dv = try gpa.alloc(f32, 16), .hash = undefined, .max_depth = 1 };
+    defer r.deinit(gpa);
+    for (0..16) |i| {
+        r.h[i] = @floatFromInt(i % 4);
+        r.du[i] = 1;
+        r.dv[i] = 0;
+    }
+    // Just inside the right edge and just across it read the same
+    // height, and the slope's sign flips.
+    const a = r.at(3.99, 1);
+    const b = r.at(4.01, 1);
+    try std.testing.expectApproxEqAbs(a.v, b.v, 0.05);
+    try std.testing.expect(a.du > 0 and b.du < 0);
+    // Two tiles over is the tile again.
+    const c = r.at(1.3 + 8, 2.2);
+    const d = r.at(1.3, 2.2);
+    try std.testing.expectApproxEqAbs(c.v, d.v, 1e-6);
+}

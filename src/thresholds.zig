@@ -451,4 +451,7 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// lowered and a drop of 0.520 as before — and the chart at a read is
 /// the capsule's foot, exact. Five provenance planes where there were
 /// seven; nothing else moved).
-pub const G1_REFERENCE: []const u8 = "6b7f4a8f9a7f469526ae888fd789eef013d494c6f8362f58c6938bdd98447aa2";
+/// THE CRACK FRONT `364c3aa7…` (the material seedbed's play: `Params.planar`
+/// and `Params.carve` joined the front's canonical bytes — a crack keeps
+/// to its face and carves rather than deposits; nothing else moved).
+pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

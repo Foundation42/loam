@@ -2210,11 +2210,65 @@ rendered pixel-identical, which is the check that the seam moved and
 nothing else did. Marble is now a different entry and a different
 grain; the tree never knows.
 
+## The material seedbed, played (Sunday 2026-09-06, late night; "Time for the seedbed?")
+
+The first archetype is the one the tree wants and the machinery
+almost had: BARK PLATES, grown as cracks. Played on a committed base,
+no brief; what was built, and what it read.
+
+- **A crack front.** `Params.planar` keeps a front's heading in the
+  plane of its seed; `Params.carve` applies its capsule as a CUT (the
+  CSG difference with its own signed distance, as the wound's is)
+  rather than a join: a groove of the front's radius along its path,
+  no provenance written. Both in the front's canonical bytes, so G1
+  moved: `6b7f4a8f…` → `364c3aa7…`, the two params alone.
+- **A slab** (`seedbed.slabLattice`): a box joined into the carrier by
+  its own signed distance. The `plates` scene: a slab 64 wide and 12
+  deep with its face at z = 0, growth potential everywhere, and
+  PLATES_CRACKS fronts seeded on the face at seeded positions and
+  headings — radius 1.2, wander 0.12, `avoid_self` NEGATIVE so the
+  occupancy they read (the slab, less the grooves) steers them toward
+  material and away from every groove already there, `inhibit` 0.6 so
+  a crack that meets a groove stops at it (a T), length 72. Two
+  tunings by eye (14 cracks at wander 0.35 curled; 24 at 0.12 with
+  the stop read as plates), then left: the pattern is play.
+- **The relief** (`bark.Relief`): the face read by the spline at 256²
+  points over the slab, positive where a groove is by its depth, the
+  gradient beside it from the jet; tiled by MIRRORING across every
+  edge so no seam shows and no sign flip of the frame shows either
+  (unit-tested); named by the slab world's content hash. `loam-run
+  --scene plates --relief 256:file.pgm` writes it as a picture:
+  deepest groove 0.91 units, archetype `39aa6f1b…`.
+- **The attachment** (`bark.readArchetype`, and the shader): at a hit,
+  depth is φ, the frame is the Hessian's, position is the world's —
+  (u, v) = the frame's projections in the archetype's units, the
+  relief there in place of the grain, the normal bent by its gradient,
+  the grooves darkened by their depth, the whole fading by footprint
+  at the groove's scale. Nothing but the carrier is read of the tree.
+- **Matryoshka** (`--loam-bark plates`): the mount grows the plates
+  world at init (80 steps, the same hash as the CLI's — the archetype
+  is deterministic across the two doors), bakes the relief, uploads
+  it once to a third SSBO (binding 51: a 16-float header, then the
+  height and its two gradients, 786 KB); the brick header's twelfth
+  float says which source. `--loam-archetype-unit` (mm a unit) and
+  `--loam-archetype-depth` (mm a groove) are the scale knobs, 5 mm and
+  4 mm the defaults; rendered at 5, 10 and 20 mm a unit for
+  Christian's eye.
+
+What it says about the vision: the tree hands over three numbers at
+a hit and the archetype is a field grown elsewhere — swap the plates
+for a marble grown in a slab of its own and the tree never knows.
+What it does not yet do: the relief is one level (the fade is a band
+weight, not a mip chain), the tile is a mirror (a periodic growth
+would be seamless without it), and the archetype is a height field
+of a face, not the volume (a cut through the plates would show the
+slab, not the tree). 96 gates green.
+
 ### Open
 
-The material seedbed, the developed archetype first. `who` and
-`segment` packed to one plane, and `own` where `other` is far, are
-the next two of the seven-plane cost and were not needed tonight. The one-sided mask's
+The archetype's mip chain; a volumetric archetype (depth through φ);
+a periodic slab. `who` and `segment` packed to one plane, and `own`
+where `other` is far, are the next two of the seven-plane cost. The one-sided mask's
 error inside a collar, if a chart read there ever matters. The
 amplitudes, PROPOSED. The silhouette ensemble, recorded with its
 trigger (shimmer at a silhouette under the footprint cut). From

@@ -35,6 +35,7 @@ const usage =
     \\  --no-heal            mount no healing operator
     \\  --damage x0,y0,z0,x1,y1,z1@step   clear material in the box at step
     \\  --slice CH:AXIS:COORD:RES:FILE    write a PGM slice at the end (e.g. surface:z:0:128:out.pgm; the carrier is drawn as inside = 1)
+    \\  --relief RES:FILE     bake the plates' face as a relief (the material seedbed) and write it as a PGM, deepest groove white
     \\  --project CH:AXIS:RES:FILE        write a PGM max-projection along AXIS at the end
     \\  --dump FILE          write the snapshot as a struple map at the end
     \\  --ray ox,oy,oz,dx,dy,dz           count leaves a ray samples vs crosses at the end
@@ -76,6 +77,7 @@ const Opts = struct {
     heal: bool = true,
     damage: ?struct { lo: [3]f64, hi: [3]f64, step: u32 } = null,
     slices: std.ArrayListUnmanaged(Slice) = .{},
+    relief: ?struct { res: u32, path: []const u8 } = null,
     projections: std.ArrayListUnmanaged(Slice) = .{},
     dump: ?[]const u8 = null,
     ray: ?[6]f64 = null,
@@ -183,6 +185,10 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             const at = std.mem.indexOfScalar(u8, v, '@') orelse return error.BadDamage;
             const box = try parseVec(v[0..at], 6);
             o.damage = .{ .lo = .{ box[0], box[1], box[2] }, .hi = .{ box[3], box[4], box[5] }, .step = try std.fmt.parseInt(u32, v[at + 1 ..], 10) };
+        } else if (std.mem.eql(u8, a, "--relief")) {
+            const v = try next(args, &i);
+            const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadRelief;
+            o.relief = .{ .res = try std.fmt.parseInt(u32, v[0..colon], 10), .path = v[colon + 1 ..] };
         } else if (std.mem.eql(u8, a, "--slice")) {
             const v = try next(args, &i);
             var it = std.mem.splitScalar(u8, v, ':');
@@ -481,6 +487,19 @@ pub fn main() !void {
         if (sl.bit == Channel.surface.bit()) seedbed.occupancy(vals);
         try seedbed.writePgm(sl.path, sl.res, vals, 1.0);
         try stdout.print("slice {s} axis {d} at {d:.1} → {s}\n", .{ registry.name(sl.bit), sl.axis, sl.coord, sl.path });
+    }
+    if (opts.relief) |rl| {
+        // The material seedbed: the plates' face frozen as a relief — the
+        // groove depth at every point, its gradient beside it — and the
+        // archetype's name is the world's content hash.
+        const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
+        var relief = try loam.bark.Relief.bake(gpa, &world, .{ c[0], c[1] }, seedbed.PLATES_HALF, c[2], rl.res);
+        defer relief.deinit(gpa);
+        const vals = try gpa.alloc(f32, relief.h.len);
+        defer gpa.free(vals);
+        for (vals, relief.h) |*v, h| v.* = h / @max(relief.max_depth, 1e-6);
+        try seedbed.writePgm(rl.path, rl.res, vals, 1.0);
+        try stdout.print("relief {d}×{d} over ±{d:.0}, deepest groove {d:.2} units, archetype {s} → {s}\n", .{ rl.res, rl.res, seedbed.PLATES_HALF, relief.max_depth, std.fmt.fmtSliceHexLower(relief.hash[0..8]), rl.path });
     }
     for (opts.projections.items) |pr| {
         const vals = try seedbed.project(&world, gpa, pr.bit, pr.axis, .{ -64, -16, -64 }, .{ 64, 112, 64 }, pr.res, pr.res);

@@ -1590,6 +1590,8 @@ pub const World = struct {
         inline for (0..3) |a| {
             v[a] = @as(f64, p.tropism_light) * gl[a] + @as(f64, p.tropism_stimulus) * gs[a] - @as(f64, p.avoid_self) * gm[a] + @as(f64, p.persist) * f.dir[a] + @as(f64, p.wander) * nz[a];
         }
+        // A crack keeps to its face: no z in the heading.
+        if (p.planar) v[2] = 0;
         const vl = len3(v);
         const old_dir = f.dir;
         if (vl > 1e-9) f.dir = .{ v[0] / vl, v[1] / vl, v[2] / vl };
@@ -1833,6 +1835,7 @@ pub const World = struct {
             const alloc = sink.alloc;
             const existing = base.brickAt(key);
             var op: ?*Plane = null;
+            var cut_op: ?*Plane = null;
             var k: u32 = 0;
             while (k < brick.N) : (k += 1) {
                 const pz: i64 = @as(i64, o[2]) + @as(i64, k) * sp;
@@ -1864,6 +1867,13 @@ pub const World = struct {
                         if (!depositing) continue;
                         const phi = cap.signed(q);
                         if (phi >= band) continue;
+                        if (p.carve) {
+                            // The crack: the capsule as a cut, the CSG
+                            // difference with its own signed distance.
+                            if (cut_op == null) cut_op = try ru.surfaceOpMode(alloc, 0, f.id, .cut);
+                            cut_op.?[idx] = phi;
+                            continue;
+                        }
                         if (op == null) op = try ru.surfaceOpFront(alloc, k_collar, who, f.segment, f.prev_s, own_reach);
                         op.?[idx] = @max(phi, -band);
                         if (phi < 0) {

@@ -20,6 +20,7 @@ const operators = @import("operators.zig");
 const ray = @import("ray.zig");
 const update = @import("update.zig");
 const fmath = @import("fmath.zig");
+const rng = @import("rng.zig");
 
 const World = world_mod.World;
 const Key = lattice.Key;
@@ -193,6 +194,80 @@ pub fn bud(w: *World, parent: u32, slot: usize) !void {
     var sp = w.budSpawn(f, slot, f.prev_envelope);
     sp.params.length = 24;
     try w.spawnFront(sp);
+}
+
+/// Author a SLAB — the box `lo..hi` (lattice units) joined into the
+/// carrier by its own signed distance, on bricks at `gauge` within the
+/// band of its faces. The material seedbed's substrate: a face for
+/// cracks to run over. Queued; `apply` commits.
+pub fn slabLattice(w: *World, lo: [3]f64, hi: [3]f64, gauge: u5) !void {
+    const level: u5 = gauge + lattice.BRICK_LOG2;
+    const side: i64 = @as(i64, 1) << level;
+    const reach: f64 = channel.band(@as(u32, 1) << gauge);
+    var blo: [3]i64 = undefined;
+    var bhi: [3]i64 = undefined;
+    inline for (0..3) |a| {
+        blo[a] = @max(@as(i64, 0), tree.floorI(lo[a] - reach));
+        bhi[a] = @min(@as(i64, lattice.CELLS), tree.floorI(hi[a] + reach) + 1);
+    }
+    var keys = std.AutoArrayHashMapUnmanaged(u64, void){};
+    defer keys.deinit(w.gpa);
+    var cover = std.ArrayListUnmanaged(Key){};
+    defer cover.deinit(w.gpa);
+    var z = blo[2] - @mod(blo[2], side);
+    while (z < bhi[2]) : (z += side) {
+        var y = blo[1] - @mod(blo[1], side);
+        while (y < bhi[1]) : (y += side) {
+            var x = blo[0] - @mod(blo[0], side);
+            while (x < bhi[0]) : (x += side) {
+                cover.clearRetainingCapacity();
+                try w.published().coverCube(Key.ofBrick(gauge, .{ @intCast(x), @intCast(y), @intCast(z) }), w.gpa, &cover);
+                for (cover.items) |ck| try keys.put(w.gpa, ck.raw(), {});
+            }
+        }
+    }
+    const order = w.buffer.next_order;
+    w.buffer.next_order += 1;
+    for (keys.keys()) |raw| {
+        const key = Key.fromRaw(raw);
+        const ru = try w.author(key);
+        const alloc = w.buffer.arena.allocator();
+        const band = channel.band(key.spacing());
+        const o = key.origin();
+        const sp: i64 = key.spacing();
+        var op: ?*brick.Plane = null;
+        var kk: u32 = 0;
+        while (kk < brick.N) : (kk += 1) {
+            var j: u32 = 0;
+            while (j < brick.N) : (j += 1) {
+                var i: u32 = 0;
+                while (i < brick.N) : (i += 1) {
+                    const q = [3]f64{
+                        @floatFromInt(@as(i64, o[0]) + @as(i64, i) * sp),
+                        @floatFromInt(@as(i64, o[1]) + @as(i64, j) * sp),
+                        @floatFromInt(@as(i64, o[2]) + @as(i64, kk) * sp),
+                    };
+                    // Signed distance to the box: negative inside.
+                    var inside = true;
+                    var d_out: f64 = 0;
+                    var d_in: f64 = std.math.inf(f64);
+                    inline for (0..3) |a| {
+                        const below = lo[a] - q[a];
+                        const above = q[a] - hi[a];
+                        const outside = @max(below, above);
+                        if (outside > 0) {
+                            inside = false;
+                            d_out += outside * outside;
+                        } else d_in = @min(d_in, -outside);
+                    }
+                    const phi: f32 = @floatCast(if (inside) -d_in else @sqrt(d_out));
+                    if (phi >= band) continue;
+                    if (op == null) op = try ru.surfaceOp(alloc, 0, order);
+                    op.?[Brick.index(i, j, kk)] = @max(phi, -band);
+                }
+            }
+        }
+    }
 }
 
 /// Spawn a front at a world position with a heading. Queued; `apply` or
@@ -786,7 +861,19 @@ pub fn tropismEnsemble(gpa: std.mem.Allocator, n: u64, d: f64, coeff: f32, steps
 /// parent with the ring CA on and no steering, and a child budded from
 /// it by hand at JUNCTION_STEP (`bud`); and a tendril coiling about the
 /// vertical at a bend the scene chose, touching its own previous turn.
-pub const Preset = enum { sapling, blob, seams, diffusion, wound, junction, coil };
+pub const Preset = enum { sapling, blob, seams, diffusion, wound, junction, coil, plates };
+
+/// The material seedbed's first archetype (the play after P2.3): a slab
+/// PLATES_HALF units wide and PLATES_DEPTH deep with its face at z = 0,
+/// and PLATES_CRACKS crack fronts seeded on the face, carving grooves
+/// of PLATES_GROOVE and steering away from every groove already there
+/// (the occupancy they read, with the avoidance's sign turned). Run to
+/// PLATES_STEPS, the face is a field of plates.
+pub const PLATES_HALF: f64 = 32;
+pub const PLATES_DEPTH: f64 = 12;
+pub const PLATES_CRACKS: u32 = 24;
+pub const PLATES_GROOVE: f32 = 1.2;
+pub const PLATES_STEPS: u32 = 80;
 
 /// The step the junction scene buds its child at — the parent's twelfth
 /// ring, where its ring CA has had time to make bark.
@@ -875,6 +962,30 @@ pub const Scene = struct {
                 var params = self.straightParams();
                 params.length = 40;
                 try plantLattice(w, sceneToLattice(.{ 0, 0, 0 }), .{ 0, 1, 0 }, params);
+                try w.apply();
+            },
+            .plates => {
+                const c = sceneToLattice(.{ 0, 0, 0 });
+                try blobLattice(w, Channel.growth.bit(), c, 64, 1.0, 0);
+                try slabLattice(w, .{ c[0] - PLATES_HALF, c[1] - PLATES_HALF, c[2] - PLATES_DEPTH }, .{ c[0] + PLATES_HALF, c[1] + PLATES_HALF, c[2] }, 0);
+                try w.apply();
+                var params = self.straightParams();
+                params.radius = PLATES_GROOVE;
+                params.planar = true;
+                params.carve = true;
+                params.wander = 0.12;
+                params.avoid_self = -1.0; // toward material: away from every groove
+                params.inhibit = 0.6; // a crack that meets a groove stops there: a T
+                params.length = 72;
+                params.drift = 0;
+                var stream = rng.Stream.front(w.seed, 0, 0);
+                var i: u32 = 0;
+                while (i < PLATES_CRACKS) : (i += 1) {
+                    const x = c[0] + (stream.unit() * 2 - 1) * (PLATES_HALF - 4);
+                    const y = c[1] + (stream.unit() * 2 - 1) * (PLATES_HALF - 4);
+                    const ang = stream.unit() * 2 * std.math.pi;
+                    try plantLattice(w, .{ x, y, c[2] }, .{ fmath.cos(ang), fmath.sin(ang), 0 }, params);
+                }
                 try w.apply();
             },
             .coil => {
