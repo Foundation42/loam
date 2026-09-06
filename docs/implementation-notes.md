@@ -1003,7 +1003,7 @@ is left of a growing step is the seam-and-halo phase (14 ms of 28) and
 finalize (9 ms, the 11³ summary); the next two things to look at are
 building each changed brick's neighbourhood once a commit instead of
 once a pass (three passes now), and the summary's per-entry
-`blockPoint`. Not done: the day's frozen reference has moved four times
+`blockPoint`. (Both taken the same afternoon — "The step cost" below.) Not done: the day's frozen reference has moved four times
 and each was a reviewed event; this one moves it again.
 
 ## P2.1a — attention (Sunday 2026-09-06, afternoon; G14 green and bitten, G1 again)
@@ -1547,6 +1547,98 @@ schedule's replay is the same shape, unwritten); the D5 signal on
 lag-weighted pending; `World.inProgress` is the one addition after the
 suite that closed this entry ran, and the suite ran again for it.
 
+## τ struck, and the overlay's lag kept (Sunday 2026-09-06, afternoon)
+
+Christian, on P2.1b's table: "The bridge overlay reporting '59 behind'
+is the lag made visible, which is the D5 signal arriving before D5
+exists. Worth keeping that line exactly as it is." Kept: the
+`[loam]` line prints the units spent, the measured cost per unit and
+the steps behind fed time, and is not to be tidied. And R17's knob:
+"τ at one second of fed time: stamp it. Fed time rather than steps is
+the right unit, because the fairness bound then survives a change of
+dt. And there's a consequence coming that I like: once the clock
+channel exists, a stiff district accrues lag slowly in its own time,
+so it's content to wait, and a fast district isn't. Fairness inherits
+the clocks without anyone wiring it." `LAG_TAU_S` = 1 s, STRUCK. Order
+confirmed: step cost next, then the merge — and "the overlay's '40
+units a frame is two whole steps in sixty frames' is the number the
+step-cost beat has to explain: whether the unit is expensive or the
+count is small."
+
+## The step cost (Sunday 2026-09-06, afternoon)
+
+Christian, ordering it after P2.1b and before the merge: "The overlay's
+'40 units a frame is two whole steps in sixty frames' is the number the
+step-cost beat has to explain: whether the unit is expensive or the
+count is small." Measured before anything was touched, with two new
+instruments — units by phase (`StepStats.units_phase`, printed by
+`loam-run --phases` with the microseconds per unit of each shape) and
+the hash's share of finalize — Debug, serial, the sapling, seed 7:
+
+| phase, at step 80 | units | µs a unit | of the step |
+|---|---|---|---|
+| fronts | 11 | 130 | 1.4 ms |
+| operate | 34 | 0.3 | 0.01 |
+| apply | 32 | 47 | 1.5 |
+| frontier | 34 | 22 | 0.75 |
+| seams (collect 32+32+32, halo apply 33) | 130 | 113 | 14.8 |
+| finalize | 35 | 268, of which the hash 164 | 9.4 |
+| the step | ~300 | | 27 |
+
+So the answer: the count was small — the bridge's gate fed forty
+units a frame on purpose, against a step of three hundred — and the
+unit is cheap on average and uneven by three orders of magnitude, with
+two shapes expensive: a seam collect and a finalize. And the epoch
+step's 3,656 units were an accounting error: every brick the scene
+build touched was active, the step opened an empty region entry for
+each, and applied 3,652 no-ops as units. An entry with nothing in it —
+no mask, no materialise, no spawn — is not a unit now; the epoch step
+is three. G1 unmoved.
+
+Two candidates were named in "The steady state"; both taken, one
+measured first. **The neighbourhood, once a commit.** Over a hundred
+steps the seam phase was 1,307 ms of which 782 was building
+neighbourhoods — 60% — 18,906 of them, which is exactly one per
+collect unit once the scene build's own commit (3 × 3,652) is counted:
+each changed brick built its 3×3×3 cache of neighbouring leaves three
+times, for the seam pass's two walks and the halo's. Built once now,
+by whichever collect reaches it first, kept on the step's state, and
+REFRESHED before the second walk and the halo pass: every leaf is
+re-resolved through `liveOf` against the growing changed set, because
+a neighbour the last apply pass cloned must be read as its clone from
+then on — the cells and the view's bricks do not move, the scratch
+tree being built once, so the neighbourhood keeps the view brick
+behind each leaf (`origin`) and the refresh is a hash lookup a leaf.
+6,302 builds where there were 18,906; the seam phase 1,313 → 1,067 ms.
+Less than the builds removed (461 ms), because a cached neighbourhood
+carries its origins and is refreshed twice; the honest cost of reuse.
+**The summary's box, converted once.** Finalize's summary called
+`blockPoint` and widened the support box once per non-absent entry,
+1,331 entries a plane; it tracks the box in block coordinates now and
+converts the two corners once — the clamp to the cube is monotone per
+axis, so the box of the clamped points is the clamped box of the
+points. The summary's share of finalize 331 → 164 ms; P1.1 (the
+summary is tight), G6 and G10 unmoved, the hash unmoved.
+
+| over 100 steps | before | after | ReleaseSafe before → after |
+|---|---|---|---|
+| the step | 27.1 ms | 23.5 ms | 3.61 → 3.30 ms |
+| seams | 1,314 ms (builds 792) | 1,073 (builds 327) | 193 → 159 |
+| finalize | 857 ms (hash 508) | 673 (hash 509) | 95 → 98 |
+
+**What is left, and a question that is Christian's.** The hash is
+three quarters of finalize now — Blake3 over the 11³ block of every
+plane, 26 KB a brick, 164 µs in Debug and 22 in ReleaseSafe, a fifth
+of the whole step in either. Two ways down, both his to strike: hash
+the brick's own 9³ samples only (45% fewer bytes; the halo is a copy
+of the neighbours' own samples, hashed there, and `HaloStale` and G9
+are the halo's witnesses — but it changes what the Merkle hash covers,
+a contract), or a faster non-cryptographic hash for the leaves with
+Blake3 kept for the tree. Either moves the frozen reference. Not done.
+The seam collect itself — the walk of 386 boundary points with a
+holder lookup at each — is the other expensive shape, 100 µs a unit
+in Debug after the cache; the instrument says where to look next.
+
 ## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
 
 The deferred fill D1 named, paid for by P2.1a: the bridge re-packed
@@ -1656,6 +1748,12 @@ Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:
 
 Per phase at step 40 (Debug, serial): operate 0.02, fronts 0.24, apply
 1.3, frontier 1.5, seams 9.0, finalize 6.0, build 1.2, publish 1.5 ms.
+
+After "The step cost" (the same afternoon), the growing sapling at
+100 steps: Debug 23.5 ms a step (seams 1,073 ms and finalize 673 of
+2,373), ReleaseSafe 3.30 (seams 159, finalize 98, the hash 70). Units
+by phase and the microseconds of each are on every `loam-run --phases`
+line now.
 
 The attention walk's overhead (P2.1a, a standing number — it will drift
 as the tree grows): leaves examined per attentive brick, sapling seed 7

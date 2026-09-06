@@ -11,6 +11,7 @@
 //! are wall clock, printed beside the counts, and never reach the sim.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const loam = @import("loam");
 const common = @import("common");
 const jobs = common.jobs;
@@ -117,6 +118,11 @@ fn readSchedule(gpa: std.mem.Allocator, path: []const u8, out: *std.AutoHashMapU
         const budget = try std.fmt.parseInt(u32, it.next() orelse return error.BadSchedule, 10);
         try out.put(gpa, step, budget);
     }
+}
+
+fn perUnit(ns: u64, units: u64) f64 {
+    if (units == 0) return 0;
+    return @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(units)) / 1e3;
 }
 
 fn parseVec(s: []const u8, comptime n: usize) ![n]f64 {
@@ -411,12 +417,29 @@ pub fn main() !void {
             if (opts.phases) try stdout.print("           operate {d:.2}  fronts {d:.2}  apply {d:.2}  frontier {d:.2}  seams {d:.2}  finalize {d:.2}  build {d:.2}  publish {d:.2} ms\n", .{
                 @as(f64, @floatFromInt(s.ns_operate)) / 1e6, @as(f64, @floatFromInt(s.ns_fronts)) / 1e6, @as(f64, @floatFromInt(s.ns_apply)) / 1e6, @as(f64, @floatFromInt(s.ns_frontier)) / 1e6, @as(f64, @floatFromInt(s.ns_seams)) / 1e6, @as(f64, @floatFromInt(s.ns_finalize)) / 1e6, @as(f64, @floatFromInt(s.ns_build)) / 1e6, @as(f64, @floatFromInt(s.ns_publish)) / 1e6,
             });
+            if (opts.phases) {
+                // Units by phase, and the cost of one: the step-cost beat's
+                // instrument (R16: "each a unit of known shape").
+                const u = s.units_phase;
+                const P = loam.world.World.Phase;
+                const seam_units = u[@intFromEnum(P.scratch)] + u[@intFromEnum(P.seam1_collect)] + u[@intFromEnum(P.seam1_apply)] + u[@intFromEnum(P.seam2_collect)] + u[@intFromEnum(P.seam2_apply)] + u[@intFromEnum(P.halo_collect)] + u[@intFromEnum(P.halo_apply)];
+                try stdout.print("           units: fronts {d} operate {d} apply {d} frontier {d} seams {d} (collect {d}+{d}+{d}, apply {d}+{d}+{d}) finalize {d}; µs/unit: operate {d:.1} apply {d:.1} frontier {d:.1} seams {d:.1} finalize {d:.1} (of which hash {d:.1})\n", .{
+                    u[@intFromEnum(P.fronts)],                         u[@intFromEnum(P.operate)],                    u[@intFromEnum(P.apply)],                            u[@intFromEnum(P.frontier)],     seam_units,                                          u[@intFromEnum(P.seam1_collect)],                u[@intFromEnum(P.seam2_collect)], u[@intFromEnum(P.halo_collect)], u[@intFromEnum(P.seam1_apply)], u[@intFromEnum(P.seam2_apply)], u[@intFromEnum(P.halo_apply)], u[@intFromEnum(P.finalize)],
+                    perUnit(s.ns_operate, u[@intFromEnum(P.operate)]), perUnit(s.ns_apply, u[@intFromEnum(P.apply)]), perUnit(s.ns_frontier, u[@intFromEnum(P.frontier)]), perUnit(s.ns_seams, seam_units), perUnit(s.ns_finalize, u[@intFromEnum(P.finalize)]), perUnit(s.ns_hash, u[@intFromEnum(P.finalize)]),
+                });
+            }
         }
     }
     const snap = world.published();
     try stdout.print("done: {d} steps in {d:.1} ms ({d:.2} ms/step), {d} bricks, {d} nodes, {d} fronts, vid {d}\n", .{ opts.steps, total_ms, total_ms / @as(f64, @floatFromInt(opts.steps + 1)), snap.brick_count, snap.node_count, snap.fronts.len, snap.vid });
     try stdout.print("root_hash    {s}\ncontent_hash {s}\n", .{ loam.dump.hex(snap.rootHash()), loam.dump.hex(snap.contentHash()) });
     try stdout.print("inside {d}  growth {d:.3}  front-steps below the faithful floor {d} (refinement's demand)\n", .{ seedbed.insideCount(&world), seedbed.total(&world, Channel.growth.bit()), world.total.below_faithful });
+    if (opts.phases) {
+        const t = world.total;
+        const P = loam.world.World.Phase;
+        const collect_units = t.units_phase[@intFromEnum(P.seam1_collect)] + t.units_phase[@intFromEnum(P.seam2_collect)] + t.units_phase[@intFromEnum(P.halo_collect)];
+        try stdout.print("over the run ({s}): seams {d:.1} ms of which neighbourhood builds {d:.1} ms ({d} builds, {d:.1} µs each, {d} collect units); finalize {d:.1} ms of which hash {d:.1} ms\n", .{ @tagName(builtin.mode), @as(f64, @floatFromInt(t.ns_seams)) / 1e6, @as(f64, @floatFromInt(loam.world.World.nb_build_ns.load(.monotonic))) / 1e6, loam.world.World.nb_builds.load(.monotonic), perUnit(loam.world.World.nb_build_ns.load(.monotonic), loam.world.World.nb_builds.load(.monotonic)), collect_units, @as(f64, @floatFromInt(t.ns_finalize)) / 1e6, @as(f64, @floatFromInt(t.ns_hash)) / 1e6 });
+    }
     {
         // Where the world is changing, from the summaries alone (R15).
         var found = std.ArrayListUnmanaged(loam.lattice.Key){};

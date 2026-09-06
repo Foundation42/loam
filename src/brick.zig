@@ -57,6 +57,8 @@ pub const Brick = struct {
     summary: summary.Summary = .{},
     hash: [32]u8 = [_]u8{0} ** 32,
     refs: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
+    /// Instrumentation: nanoseconds the last `finalize` spent hashing.
+    last_hash_ns: u64 = 0,
 
     pub fn create(gpa: std.mem.Allocator, key: Key) !*Brick {
         const b = try gpa.create(Brick);
@@ -424,7 +426,9 @@ pub const Brick = struct {
             if (bit == 63) break;
         }
         self.summary = self.computeSummary();
+        var t = std.time.Timer.start() catch unreachable;
         self.hash = self.computeHash();
+        self.last_hash_ns = t.read();
     }
 
     /// Every sample the brick owns is the absent value.
@@ -466,6 +470,14 @@ pub const Brick = struct {
                 // bound from the interior alone would not be one. Support
                 // from a halo entry is clamped to the cube it influences.
                 var dmax: [3]f32 = .{ 0, 0, 0 };
+                // The support's box in BLOCK coordinates, converted once:
+                // the clamp to the cube is monotone per axis, so the box of
+                // the clamped points is the clamped box of the points (the
+                // step-cost beat: a `blockPoint` and a widen per entry was
+                // a third of the summary).
+                var blo: [3]u32 = .{ HN, HN, HN };
+                var bhi: [3]u32 = .{ 0, 0, 0 };
+                var any = false;
                 var bk: u32 = 0;
                 while (bk < HN) : (bk += 1) {
                     var bj: u32 = 0;
@@ -476,16 +488,31 @@ pub const Brick = struct {
                             const v = pl[idx];
                             if (range) |r| r.include(v);
                             if (!channel.isAbsent(bit, v, bd)) {
-                                const bp = self.blockPoint(.{ bi, bj, bk });
-                                var q: [3]u32 = undefined;
-                                inline for (0..3) |a| q[a] = @intCast(@min(@max(bp[a], @as(i64, o[a])), @as(i64, o[a]) + side));
-                                s.includePoint(q);
+                                any = true;
+                                if (bi < blo[0]) blo[0] = bi;
+                                if (bj < blo[1]) blo[1] = bj;
+                                if (bk < blo[2]) blo[2] = bk;
+                                if (bi > bhi[0]) bhi[0] = bi;
+                                if (bj > bhi[1]) bhi[1] = bj;
+                                if (bk > bhi[2]) bhi[2] = bk;
                             }
                             if (bi + 1 < HN) dmax[0] = @max(dmax[0], @abs(pl[idx + 1] - v));
                             if (bj + 1 < HN) dmax[1] = @max(dmax[1], @abs(pl[idx + HN] - v));
                             if (bk + 1 < HN) dmax[2] = @max(dmax[2], @abs(pl[idx + HN * HN] - v));
                         }
                     }
+                }
+                if (any) {
+                    const plo = self.blockPoint(blo);
+                    const phi = self.blockPoint(bhi);
+                    var qlo: [3]u32 = undefined;
+                    var qhi: [3]u32 = undefined;
+                    inline for (0..3) |a| {
+                        qlo[a] = @intCast(@min(@max(plo[a], @as(i64, o[a])), @as(i64, o[a]) + side));
+                        qhi[a] = @intCast(@min(@max(phi[a], @as(i64, o[a])), @as(i64, o[a]) + side));
+                    }
+                    s.includePoint(qlo);
+                    s.includePoint(qhi);
                 }
                 const lip = @sqrt(dmax[0] * dmax[0] + dmax[1] * dmax[1] + dmax[2] * dmax[2]) / sp;
                 s.max_gradient = @max(s.max_gradient, lip);

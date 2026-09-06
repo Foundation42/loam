@@ -167,6 +167,9 @@ pub const StepStats = struct {
     units_last_call: u64 = 0,
     calls: u64 = 0,
     units_finish: u64 = 0,
+    /// Units by phase (`Phase` order): with the phase's nanoseconds, the
+    /// cost of a unit of each shape — the step-cost beat's instrument.
+    units_phase: [15]u64 = [_]u64{0} ** 15,
     // Wall-clock nanoseconds per phase: instrumentation only, printed
     // beside the counts, never read by the sim.
     ns_operate: u64 = 0,
@@ -175,11 +178,20 @@ pub const StepStats = struct {
     ns_frontier: u64 = 0,
     ns_seams: u64 = 0,
     ns_finalize: u64 = 0,
+    /// Of finalize: the Merkle hash alone (Blake3 over every plane).
+    ns_hash: u64 = 0,
     ns_build: u64 = 0,
     ns_publish: u64 = 0,
 
     fn accumulate(self: *StepStats, o: StepStats) void {
-        inline for (std.meta.fields(StepStats)) |f| @field(self, f.name) += @field(o, f.name);
+        inline for (std.meta.fields(StepStats)) |f| {
+            switch (@typeInfo(f.type)) {
+                .array => for (&@field(self, f.name), @field(o, f.name)) |*a, b| {
+                    a.* += b;
+                },
+                else => @field(self, f.name) += @field(o, f.name),
+            }
+        }
     }
 };
 
@@ -392,6 +404,8 @@ pub const World = struct {
         /// Units performed by the call in progress — counted, not
         /// inferred from the budget, so a phase that overshoots is seen.
         performed: u64 = 0,
+        /// Units the running phase performed in this `runPhase` call.
+        phase_units: u64 = 0,
         timer: std.time.Timer,
         // begin
         all_keys: []Key = &.{},
@@ -429,6 +443,11 @@ pub const World = struct {
         // seams and halos
         scratch_root: ?*tree.Node = null,
         n0: usize = 0,
+        /// One neighbourhood per brick of the seam pass's `order[0..n0]`,
+        /// built by the first collect that reaches it and kept through the
+        /// second and the halo's (the step-cost beat: the build was 60% of
+        /// the seam phase, three times per brick).
+        nbs: []?Neighbourhood = &.{},
         lists: []WriteList = &.{},
         all: WriteList = .{},
         collect_cursor: usize = 0,
@@ -468,6 +487,8 @@ pub const World = struct {
         if (st.scratch_root) |r| r.release(gpa);
         for (st.lists) |*l| l.deinit(gpa);
         if (st.lists.len > 0) gpa.free(st.lists);
+        for (st.nbs) |*slot| if (slot.*) |*nb| nb.deinit(gpa);
+        if (st.nbs.len > 0) gpa.free(st.nbs);
         st.all.deinit(gpa);
         st.dirty.deinit(gpa);
         st.active_out.deinit(gpa);
@@ -713,6 +734,8 @@ pub const World = struct {
     /// phase is complete.
     fn runPhase(self: *World, st: *StepState, remaining: *u64) Error!bool {
         _ = st.timer.lap();
+        st.phase_units = 0;
+        defer self.stats.units_phase[@intFromEnum(st.phase)] += st.phase_units;
         const done = switch (st.phase) {
             .fronts => try self.runFronts(st, remaining),
             .operate => try self.runOperate(st, remaining),
@@ -744,6 +767,7 @@ pub const World = struct {
     fn spend(st: *StepState, remaining: *u64, n: u64) void {
         st.performed += n;
         remaining.* -|= n;
+        st.phase_units += n;
     }
 
     // Fronts, parallel into their sinks, one unit each — charged first,
@@ -809,7 +833,23 @@ pub const World = struct {
     fn runApply(self: *World, st: *StepState, remaining: *u64) Error!bool {
         const gpa = self.gpa;
         if (!st.apply_started) {
-            st.entries = try self.buffer.sorted(gpa);
+            // A unit is a brick applied: an entry opened for a head brick
+            // that no operator wrote to is nothing to apply (the epoch step
+            // after the scene build counted 3,652 of them as work).
+            const all_entries = try self.buffer.sorted(gpa);
+            defer gpa.free(all_entries);
+            var n: usize = 0;
+            for (all_entries) |ru| {
+                if (ru.mask != 0 or ru.materialise or ru.spawns.items.len > 0) n += 1;
+            }
+            st.entries = try gpa.alloc(*update.RegionUpdate, n);
+            var j: usize = 0;
+            for (all_entries) |ru| {
+                if (ru.mask != 0 or ru.materialise or ru.spawns.items.len > 0) {
+                    st.entries[j] = ru;
+                    j += 1;
+                }
+            }
             st.results = try gpa.alloc(?Changed, st.entries.len);
             for (st.results) |*r| r.* = null;
             st.results_live = true;
@@ -903,16 +943,22 @@ pub const World = struct {
             if (st.n0 == 0) return true;
             st.lists = try gpa.alloc(WriteList, st.n0);
             for (st.lists) |*l| l.* = .{};
+            if (pass == 1) {
+                st.nbs = try gpa.alloc(?Neighbourhood, st.n0);
+                for (st.nbs) |*slot| slot.* = null;
+            } else {
+                for (st.nbs) |*slot| if (slot.*) |*nb| nb.refresh(&st.changed);
+            }
         }
         if (st.n0 == 0) return true;
         const view = Snapshot{ .gpa = gpa, .vid = 0, .epoch = 0, .time_ns = 0, .seed = 0, .root = st.scratch_root };
         const take = takeOf(st.n0 - st.collect_cursor, remaining.*);
         if (pass == 0) {
-            var ctx = HaloCtx{ .world = self, .view = &view, .changed = &st.changed, .order = st.order.items[0..st.n0], .chunk = 1, .lists = st.lists, .failed = std.atomic.Value(bool).init(false) };
+            var ctx = HaloCtx{ .world = self, .view = &view, .changed = &st.changed, .order = st.order.items[0..st.n0], .chunk = 1, .lists = st.lists, .nbs = st.nbs, .failed = std.atomic.Value(bool).init(false) };
             parallelRangeFrom(st.sys, st.collect_cursor, st.collect_cursor + take, 4, HaloCtx, &ctx, haloCollectOne);
             if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
         } else {
-            var ctx = CollectCtx{ .world = self, .view = &view, .changed = &st.changed, .order = st.order.items[0..st.n0], .pass = pass, .chunk = 1, .lists = st.lists, .failed = std.atomic.Value(bool).init(false) };
+            var ctx = CollectCtx{ .world = self, .view = &view, .changed = &st.changed, .order = st.order.items[0..st.n0], .pass = pass, .chunk = 1, .lists = st.lists, .nbs = st.nbs, .failed = std.atomic.Value(bool).init(false) };
             parallelRangeFrom(st.sys, st.collect_cursor, st.collect_cursor + take, 4, CollectCtx, &ctx, collectOne);
             if (ctx.failed.load(.acquire)) return Error.OutOfMemory;
         }
@@ -961,6 +1007,7 @@ pub const World = struct {
             const take = takeOf(st.order.items.len - st.finalize_cursor, remaining.*);
             var fctx = FinalizeCtx{ .world = self, .base = st.base, .changed = &st.changed, .order = st.order.items, .now_ns = st.now.time_ns, .head = st.head_sorted };
             parallelRangeFrom(st.sys, st.finalize_cursor, st.finalize_cursor + take, 8, FinalizeCtx, &fctx, finalizeOne);
+            self.stats.ns_hash += fctx.hash_ns.load(.monotonic);
             st.finalize_cursor += take;
             spend(st, remaining, take);
             if (st.finalize_cursor < st.order.items.len) return false;
@@ -1971,7 +2018,7 @@ pub const World = struct {
         ctx.results[i] = .{ .b = nb, .old = old, .max_delta = max_delta, .attention = att, .materialised = old == null and ru.mask == 0, .rank = if (ru.mask != 0) 0 else 2 };
     }
 
-    const FinalizeCtx = struct { world: *World, base: *const Snapshot, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: []const u64, now_ns: u64, head: []const Key };
+    const FinalizeCtx = struct { world: *World, base: *const Snapshot, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: []const u64, now_ns: u64, head: []const Key, hash_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0) };
 
     /// The attention bookkeeping is written here and nowhere else (R15):
     /// the largest change that reached the brick this commit — its own
@@ -1989,6 +2036,7 @@ pub const World = struct {
         c.b.attention = if (owed) @max(c.b.attention, c.attention) else c.attention;
         c.b.changed_ns = ctx.now_ns;
         c.b.finalize(ctx.world.gpa);
+        _ = ctx.hash_ns.fetchAdd(c.b.last_hash_ns, .monotonic);
     }
 
     fn dedupKeys(gpa: std.mem.Allocator, sorted: []const Key) ![]Key {
@@ -2197,10 +2245,18 @@ pub const World = struct {
     /// leaf (same gauge or coarser) or leaves (finer) each holds. Every
     /// boundary point then finds its holders by key comparison instead of
     /// a tree descent — 26 descents per changed brick instead of 386×2.
+    /// Instrumentation: nanoseconds spent building neighbourhoods, and
+    /// how many were built — the step-cost beat's question.
+    pub var nb_build_ns = std.atomic.Value(u64).init(0);
+    pub var nb_builds = std.atomic.Value(u64).init(0);
+
     pub const Neighbourhood = struct {
         cells: [27]struct { start: u32, len: u32 },
         /// Resolved through `liveOf` once, so a point costs no lookups.
         leaves: std.ArrayListUnmanaged(Live) = .{},
+        /// The view's brick behind each leaf, so a cached neighbourhood
+        /// can be re-resolved after a pass clones a neighbour (`refresh`).
+        origin: std.ArrayListUnmanaged(*const Brick) = .{},
         raw: std.ArrayListUnmanaged(*const Brick) = .{},
 
         pub fn cellIndex(dx: i64, dy: i64, dz: i64) usize {
@@ -2208,8 +2264,14 @@ pub const World = struct {
         }
 
         pub fn build(gpa: std.mem.Allocator, changed: *const ChangedMap, view: *const Snapshot, b: *const Brick) !Neighbourhood {
+            var timer = std.time.Timer.start() catch unreachable;
+            defer {
+                _ = nb_build_ns.fetchAdd(timer.read(), .monotonic);
+                _ = nb_builds.fetchAdd(1, .monotonic);
+            }
             var nb = Neighbourhood{ .cells = undefined };
             errdefer nb.leaves.deinit(gpa);
+            errdefer nb.origin.deinit(gpa);
             errdefer nb.raw.deinit(gpa);
             const o = b.origin();
             const side: i64 = b.key.side();
@@ -2231,7 +2293,10 @@ pub const World = struct {
                         const nn = view.nodeAt(nk) orelse continue;
                         nb.raw.clearRetainingCapacity();
                         try Snapshot.leavesUnder(nn, gpa, &nb.raw);
-                        for (nb.raw.items) |h| try nb.leaves.append(gpa, liveOf(changed, h));
+                        for (nb.raw.items) |h| {
+                            try nb.leaves.append(gpa, liveOf(changed, h));
+                            try nb.origin.append(gpa, h);
+                        }
                         nb.cells[ci].len = @intCast(nb.leaves.items.len - start);
                     }
                 }
@@ -2241,7 +2306,18 @@ pub const World = struct {
 
         pub fn deinit(self: *Neighbourhood, gpa: std.mem.Allocator) void {
             self.leaves.deinit(gpa);
+            self.origin.deinit(gpa);
             self.raw.deinit(gpa);
+        }
+
+        /// Re-resolve every leaf through `liveOf`: a neighbour the last
+        /// apply pass cloned is read as its clone from now on. The cells
+        /// and the view bricks do not move between passes — the scratch
+        /// tree is built once — so a neighbourhood is built once per
+        /// commit and refreshed twice (the seam pass's second walk and the
+        /// halo pass), where it was built three times.
+        pub fn refresh(self: *Neighbourhood, changed: *const ChangedMap) void {
+            for (self.leaves.items, self.origin.items) |*l, h| l.* = liveOf(changed, h);
         }
 
         /// Every leaf whose closed cube holds surface point `p` of `b`,
@@ -2339,6 +2415,9 @@ pub const World = struct {
         /// One list per job chunk: `order[i]` writes into `lists[i / chunk]`,
         /// and a chunk runs on one thread.
         lists: []WriteList,
+        /// The commit's neighbourhood cache, one slot per brick of `order`;
+        /// a slot is written only by the job that owns its index.
+        nbs: []?Neighbourhood,
         failed: std.atomic.Value(bool),
     };
 
@@ -2356,8 +2435,8 @@ pub const World = struct {
         const c = ctx.changed.get(ctx.order[i]).?;
         const b = c.b;
         const bl = Live{ .b = b, .rank = c.rank };
-        var nb = try Neighbourhood.build(gpa, ctx.changed, ctx.view, b);
-        defer nb.deinit(gpa);
+        if (ctx.nbs[i] == null) ctx.nbs[i] = try Neighbourhood.build(gpa, ctx.changed, ctx.view, b);
+        const nb: *const Neighbourhood = &ctx.nbs[i].?;
         var hs: [8]Live = undefined;
         var k: u32 = 0;
         while (k < brick.N) : (k += 1) {
@@ -2470,6 +2549,9 @@ const HaloCtx = struct {
     order: []const u64,
     chunk: u32,
     lists: []World.WriteList,
+    /// The seam pass's neighbourhoods; a brick the seam pass cloned lies
+    /// past their end and builds its own.
+    nbs: []?World.Neighbourhood,
     failed: std.atomic.Value(bool),
 };
 
@@ -2660,8 +2742,15 @@ fn haloCollectBrick(ctx: *HaloCtx, i: usize) !void {
     const c = ctx.changed.get(ctx.order[i]).?;
     const b = c.b;
     const bl = World.Live{ .b = b, .rank = c.rank };
-    var nb = try World.Neighbourhood.build(gpa, ctx.changed, ctx.view, b);
-    defer nb.deinit(gpa);
+    var local: ?World.Neighbourhood = null;
+    defer if (local) |*l| l.deinit(gpa);
+    const nb: *const World.Neighbourhood = if (i < ctx.nbs.len) blk: {
+        if (ctx.nbs[i] == null) ctx.nbs[i] = try World.Neighbourhood.build(gpa, ctx.changed, ctx.view, b);
+        break :blk &ctx.nbs[i].?;
+    } else blk: {
+        local = try World.Neighbourhood.build(gpa, ctx.changed, ctx.view, b);
+        break :blk &local.?;
+    };
     const dirty = dirtyFaces(b, c.old);
     // B's own halo is recomputed when B is new, gained a plane, or has any
     // changed neighbour at all — per cell would miss an entry on the
@@ -2702,7 +2791,7 @@ fn haloCollectBrick(ctx: *HaloCtx, i: usize) !void {
                             while (bi < rx[1]) : (bi += 1) {
                                 const hb = [3]u32{ bi, bj, bk };
                                 if (!fast) {
-                                    try haloEmit(gpa, list, &nb, bl, b, hb);
+                                    try haloEmit(gpa, list, nb, bl, b, hb);
                                     continue;
                                 }
                                 // Same point in the neighbour's block: shifted a brick.
@@ -2755,7 +2844,7 @@ fn haloCollectBrick(ctx: *HaloCtx, i: usize) !void {
                                     if (!Brick.isHalo(.{ hi, hj, hk })) continue;
                                     const p = h.b.blockPoint(.{ hi, hj, hk });
                                     if (!b.key.holdsPoint(p)) continue;
-                                    try haloEmit(gpa, list, &nb, bl, h.b, .{ hi, hj, hk });
+                                    try haloEmit(gpa, list, nb, bl, h.b, .{ hi, hj, hk });
                                 }
                             }
                         }

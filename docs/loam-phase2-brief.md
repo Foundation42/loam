@@ -356,8 +356,13 @@ hot region plus the fronts exceed the budget, lag rises everywhere,
 and that's correct: the honest response to more load than budget is
 the world's clock slowing, visibly and on the transcript, not one
 region silently freezing while another runs." The one knob is τ
-(`LAG_TAU_S`, PROPOSED 1 s): a brick at a catches a region at R·a once
-lag ≥ (R − 1)τ + R·dt. Gate G14 (e), pre-registered: one region at R =
+(`LAG_TAU_S`, STRUCK at 1 s of FED time — Christian: "Fed time rather
+than steps is the right unit, because the fairness bound then survives
+a change of dt. And there's a consequence coming that I like: once the
+clock channel exists, a stiff district accrues lag slowly in its own
+time, so it's content to wait, and a fast district isn't. Fairness
+inherits the clocks without anyone wiring it."): a brick at a catches
+a region at R·a once lag ≥ (R − 1)τ + R·dt. Gate G14 (e), pre-registered: one region at R =
 ⟨10⟩× the other's attention under a budget the hot region alone
 fills; the coldest real brick is served within k steps, k from
 `thresholds.g14ePredictedSteps` before the run; mutation: the lag term

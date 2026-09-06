@@ -155,7 +155,7 @@ pub const G14_MAX_DEVIATION: f32 = 0.05; // PROPOSED — of the unbudgeted insid
 /// predicted from the formula BEFORE the run; mutation: the lag term
 /// zeroed → the cold region is never served. "If k comes out long
 /// enough to see, τ is wrong, not the design."
-pub const LAG_TAU_S: f32 = 1.0; // PROPOSED — one sapling step
+pub const LAG_TAU_S: f32 = 1.0; // STRUCK 2026-09-06 — one FED second, not one step: "the fairness bound then survives a change of dt" (Christian)
 pub const G14E_RATIO: f32 = 10; // PROPOSED — the hot region's attention over the cold's
 
 /// G14 (e)'s prediction: steps until a brick at attention a outranks a
