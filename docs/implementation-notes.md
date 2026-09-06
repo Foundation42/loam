@@ -1627,18 +1627,42 @@ summary is tight), G6 and G10 unmoved, the hash unmoved.
 | seams | 1,314 ms (builds 792) | 1,073 (builds 327) | 193 → 159 |
 | finalize | 857 ms (hash 508) | 673 (hash 509) | 95 → 98 |
 
-**What is left, and a question that is Christian's.** The hash is
-three quarters of finalize now — Blake3 over the 11³ block of every
-plane, 26 KB a brick, 164 µs in Debug and 22 in ReleaseSafe, a fifth
-of the whole step in either. Two ways down, both his to strike: hash
-the brick's own 9³ samples only (45% fewer bytes; the halo is a copy
-of the neighbours' own samples, hashed there, and `HaloStale` and G9
-are the halo's witnesses — but it changes what the Merkle hash covers,
-a contract), or a faster non-cryptographic hash for the leaves with
-Blake3 kept for the tree. Either moves the frozen reference. Not done.
-The seam collect itself — the walk of 386 boundary points with a
-holder lookup at each — is the other expensive shape, 100 µs a unit
-in Debug after the cache; the instrument says where to look next.
+**A unit is a count, never a time** (Christian, on the table: "units
+are uneven by three orders of magnitude, and that's fine because a
+unit is a count, not a time. The budget stays on the transcript as a
+count; the bridge picks how many to spend per frame from the measured
+cost, which is what it does. If anyone later makes a unit 'about
+10 µs' for tidiness, the transcript stops replaying across machines.
+Worth saying so nobody does.") Said, here and in the rules: the
+unevenness is the shape of the work, the count is what replays, and
+the cost of a unit is the host's measurement to feed a count from —
+never the unit's definition.
+
+**The hash covers the canonical samples** (the question above, ruled
+the same afternoon, "and not for speed"): a brick's identity is its
+key, mask, version, attention bookkeeping and its own 9³ samples of
+every plane. The halo is a copy of the neighbours' own samples,
+hashed in the bricks that own them; hashing it again was a derived
+thing in the identity — a second truth — which this house pays to
+remove. G9 and `HaloStale` are the witnesses that the copy is
+faithful. Blake3 kept: the pack's root hash is Blake3 over bytes, and
+a cheaper leaf hash would split the sim's identity from the pack's,
+"the one place two identities would be genuinely painful". The gate
+for the new contract is Christian's: one halo sample corrupted, the
+hash recomputed from the corrupted block is the same hash and the halo
+guard fires; one own sample corrupted, the hash moves. Mutation, by
+hand: the whole block hashed again — the hash moves under the halo
+corruption and the gate fails. Cost: the hash 509 → 293 ms over a
+hundred steps, 0.58 of what it was against (9/11)³ = 0.55 predicted
+(the rest is gathering the rows); finalize 673 → 462; the step 23.5 →
+21.7 ms Debug. G1 re-baselined as a reviewed event, `ef8ab912…` →
+`3fd87589…`, the fifth of the day and the first that changed what the
+hash means rather than what the world holds.
+
+What is left: the seam collect itself — the walk of 386 boundary
+points with a holder lookup at each — is the other expensive shape,
+100 µs a unit in Debug after the cache; the instrument says where to
+look next.
 
 ## The merge (Sunday 2026-09-06, afternoon)
 

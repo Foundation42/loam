@@ -222,5 +222,11 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// 19's deltas on the wound's bricks — every reference since the wound
 /// fixture was born carried that. The plain sapling's root hash is
 /// unchanged, `631a8a64…`, and the wound's seven fronts trace
-/// identically; only the wound's field values moved).
-pub const G1_REFERENCE: []const u8 = "ef8ab912342d66258c38490ea26001a1c103b0dd18692718c72169bf4d58b8d6";
+/// identically; only the wound's field values moved). The hash over the
+/// canonical samples `3fd87589…` (the step-cost beat, Christian: a
+/// brick's identity is its own 9³ samples and its bookkeeping — the halo
+/// is a copy of the neighbours' own samples, hashed where they are
+/// owned, and hashing it again was a second truth in the identity;
+/// `HaloStale` and G9 are the halo's witnesses, and a corrupted halo
+/// sample now leaves the hash where it is while the guard fires).
+pub const G1_REFERENCE: []const u8 = "3fd87589c8d5e3f15becdf713f61dc4c04ca0c706acc0d6e04eee9edbf44cd7b";

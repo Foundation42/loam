@@ -72,8 +72,20 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   step's hash (G15 a). `Snapshot.cut_at` is in the content hash; the
   units and calls ride on the snapshot and the trace. Operators read the
   fronts AS PUBLISHED (`base.fronts`): the front pass has moved the live
-  ones by the time they run. An authoring `finish` resets the buffer: a
-  second `apply` applies nothing.
+  ones by the time they run. Every `finish` consumes the buffer: a
+  second `apply` applies nothing. **A unit is a count, never a time.**
+  Units are uneven by three orders of magnitude and that is the shape
+  of the work; the count is what replays across machines, and the cost
+  of a unit is the host's measurement to feed a count from. Nobody
+  makes a unit "about 10 µs" for tidiness.
+- **A brick's hash covers its own 9³ samples, never the halo.** The
+  halo is a copy of the neighbours' own samples, hashed where they are
+  owned; hashing it again is a second truth in the identity. `HaloStale`
+  and G9 are the halo's witnesses: a corrupted halo sample leaves the
+  hash where it is and fires the guard (the gate "the hash covers the
+  canonical samples"). Blake3 stays, because the pack's root hash is
+  Blake3 over bytes and a cheaper leaf hash would split the sim's
+  identity from the pack's.
 - **Addresses are integers; values are f32; movers are f64.** Lattice
   points and Morton keys are integers on the 20-bit lattice (R2). Channel
   values are f32 with a fixed evaluation order. Front positions are f64

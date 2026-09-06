@@ -397,6 +397,77 @@ exactly what provenance at the nodes (front id, segment) makes possible,
 and P2.2 is where provenance arrives. The capsule chain may still win
 on simplicity for now; the choice is made in P2.2's brief, not here.
 
+*P2.2's brief — PROPOSED Sunday 2026-09-06 evening, for Christian's
+strike before the spade; nothing of it built.*
+
+**The collar: where two fronts meet.** The bench held two answers and
+this brief proposes a third that is smaller than either. The beads
+along a chain come from smooth-unioning a front's own consecutive
+capsules; the collar is wanted only where a CHILD's tube meets its
+parent. Provenance (R12) says which is which at every sample it
+touches — the front id of the capsule that wrote it — so the collar
+is gated by provenance, not by gradients and not by a spine: a
+capsule unions HARD (k = 0) into samples its own front wrote, and
+SMOOTH into samples another front wrote, with k the child's radius at
+the join — Christian's number with a biological referent, kept. No
+gradient is evaluated, the capsule chain stays, and R12a stands: the
+field remains canonical and provenance is read only to choose k. The
+gradient gate (1) is rejected: it needs ∇φ of the existing field at
+every sample a stamp reaches, and a threshold on an angle that has no
+referent. The swept spine (2) is deferred, with its tension named: a
+front re-evaluating its last segments must REPLACE its own recent
+deposit, and smooth union cannot be undone — either the carrier in a
+brick is recomposed from a stored list of contributions, which makes
+band 0 a re-derivable cache of the genealogy and contradicts R12a, or
+the tip's last segments are held provisional and off the field, which
+makes the tip invisible for as long as they are held. Neither is
+paid for by the beads it removes while the chain's k = 0 already
+removes them along a branch. The spine returns if the bark needs a
+continuous (s, θ) along a branch that the chain's charts cannot give.
+
+**Provenance.** Four channels written by the commit where a capsule's
+smin takes the sample — the nearer of the two fields wins the sample,
+which is exact away from the collar and the dominant contributor
+inside it: `who` (front id, integer in an f32 as Age is), `segment`
+(the ring index k of the sweep), `chart_s` and `chart_theta` (the
+front's (s, θ) at the sample's foot on the capsule's axis, per R12 the
+chart's coordinates, never a global). Rule `.set_by_winner`, a fourth
+rule beside add, set_once, touch and smin: written when, and only
+when, the surface op that carries it lowered the sample. One slot per
+sample in this beat; the band blend at a collar (R12's w_i ∝ exp(−kφ_i))
+needs the second contributor's φ too, which one slot cannot hold —
+named as the beat's known limit, with the two-slot form (dominant and
+runner-up with their φ) as the fill if the bark rotates where two
+charts meet, which is exactly what G12's second mutation watches.
+Provenance is optional history (R12a): a wound's cut writes none, the
+seams and halos copy it like any plane, healing's repair fronts write
+their own ids.
+
+**Bands 1–2 through the charts.** The front keeps its ring history (24
+slots a ring, the loft table); a band-1 query at a sample reads its
+provenance, finds the front and ring, and evaluates the ring's
+morphology at (chart_s, chart_theta): scars where a bud left, knots
+where a segment was cut. Band 2 the same from the ring's neighbours
+along s. Bands 3+ procedural from a per-material amplitude vector.
+Footprint-bandlimited: a query names the footprint and the class, and
+a Sponge-class query touches band 0 only (its gate below).
+
+**Gates.** G12 Collar: at a bud's junction, |∇φ| from the B-spline jet
+along a ring of probe points crossing the join is continuous to
+⟨1e-3⟩ per lattice unit of |∇φ| (PROPOSED — the polynomial smin is C1
+by construction, so the number is float slack, not a tolerance to
+tune), and the provenance-blended band-1 signal across the same ring
+has no jump above ⟨…⟩ (the threshold written from the ring morphology's
+range before the run, as G13's was). Mutations: hard min at the bud
+(`Params.collar = 0` for the child) → a crease, |∇φ| jumps; nearest-
+front ownership for the band (provenance ignored, the nearest front's
+chart taken) → the bark rotates where two charts meet. And the
+Sponge-class gate: a band-0 query gathers no provenance and no ring
+history (bytes counted, as G7 counts channel bytes), with "ignore the
+class" as the mutation. Thresholds PROPOSED in `thresholds.zig` before
+the spade; G1 re-baselined as a reviewed event (provenance planes are
+new planes: the hash moves).
+
 **P2.3 — the picture.** Bark from the bands; the close-up; the ensemble
 near the surface for the silhouettes if the footprint truncation leaves
 any (stable temporal sampling, spec Phase 2).

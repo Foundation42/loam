@@ -1107,6 +1107,57 @@ test "G14 (d) reproducibility: the budget is on the transcript — a run replaye
     std.debug.print("\nG14 (d) reproducibility: the wounded sapling under the half budget {s}… replayed from its record serial and over 4 threads; steps 21–23 at a budget of 1 instead of {d}, {d}, {d}: {s}…; unbudgeted the frozen reference\n", .{ loam.dump.hex(a.hash)[0..8], a.record[21].?, a.record[22].?, a.record[23].?, loam.dump.hex(d.hash)[0..8] });
 }
 
+test "the hash covers the canonical samples, not the halo: a corrupted halo sample leaves the hash where it is and the halo guard fires" {
+    // Christian, the step-cost beat: the halo is a copy of the neighbours'
+    // own samples, hashed where they are owned; hashing it again is a
+    // second truth in the identity. Mutation, by hand: hash the whole
+    // 11³ block again → the hash moves under the corruption.
+    const gpa = testing.allocator;
+    var g: GrownWorld = undefined;
+    try g.grow(gpa, 7, 20, null);
+    defer g.deinit();
+    const snap: *loam.Snapshot = @constCast(g.published());
+    try guards.check(snap);
+    const bs = try snap.bricks(gpa);
+    defer gpa.free(bs);
+    // A brick with a surface plane whose halo holds a value nearer than
+    // far: one the neighbours reach into.
+    var victim: ?*Brick = null;
+    var idx: usize = 0;
+    for (bs) |b| {
+        const pl = b.plane(Channel.surface.bit()) orelse continue;
+        const i = Brick.bindex(0, 5, 5);
+        if (pl[i] < b.band()) {
+            victim = @constCast(b);
+            idx = i;
+            break;
+        }
+    }
+    const v = victim.?;
+    const before = v.hash;
+    const pl = v.plane(Channel.surface.bit()).?;
+    const old = pl[idx];
+    pl[idx] = old - 0.5;
+    // The hash, recomputed from the corrupted block, is the same hash…
+    const scratch = try Brick.clone(gpa, v);
+    defer scratch.release(gpa);
+    scratch.finalize(gpa);
+    try testing.expectEqualSlices(u8, &before, &scratch.hash);
+    // …and the halo guard fires.
+    try testing.expectError(guards.Violation.HaloStale, guards.check(snap));
+    pl[idx] = old;
+    try guards.check(snap);
+    // A corrupted OWN sample, by contrast, moves the hash.
+    const own = Brick.index(4, 4, 4);
+    const old_own = pl[own];
+    pl[own] = old_own - 0.5;
+    const scratch2 = try Brick.clone(gpa, v);
+    defer scratch2.release(gpa);
+    scratch2.finalize(gpa);
+    try testing.expect(!std.mem.eql(u8, &before, &scratch2.hash));
+    pl[own] = old_own;
+}
+
 // ── P2.1b: the budget in work units — begin / work / cut / finish ────────
 
 test "apply twice: a second apply with nothing new authored applies nothing" {

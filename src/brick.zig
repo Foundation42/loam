@@ -524,6 +524,16 @@ pub const Brick = struct {
         return s;
     }
 
+    /// The brick's identity: its key, mask, version and attention
+    /// bookkeeping, and its own 9³ CANONICAL samples of every plane —
+    /// not the halo. The halo is a copy of the neighbours' own samples,
+    /// hashed in the bricks that own them; hashing it again was a
+    /// derived thing in the identity, a second truth, which this house
+    /// pays to remove (Christian, the step-cost beat). `HaloStale` and G9
+    /// are the halo's witnesses: a corrupted halo sample leaves this hash
+    /// where it is and fires the guard — the two have different jobs.
+    /// Blake3 kept, because the pack's root hash is Blake3 over bytes and
+    /// a cheaper leaf hash would split the sim's identity from the pack's.
     fn computeHash(self: *const Brick) [32]u8 {
         var h = Blake3.init(.{});
         const raw = self.key.raw();
@@ -532,7 +542,20 @@ pub const Brick = struct {
         h.update(std.mem.asBytes(&self.version));
         h.update(std.mem.asBytes(&self.attention));
         h.update(std.mem.asBytes(&self.changed_ns));
-        for (self.planes) |p| h.update(std.mem.sliceAsBytes(p[0..]));
+        var own: [INTERIOR]f32 = undefined;
+        for (self.planes) |p| {
+            var n: usize = 0;
+            var k: u32 = 0;
+            while (k < N) : (k += 1) {
+                var j: u32 = 0;
+                while (j < N) : (j += 1) {
+                    const row = bindex(1, j + 1, k + 1);
+                    @memcpy(own[n .. n + N], p[row .. row + N]);
+                    n += N;
+                }
+            }
+            h.update(std.mem.sliceAsBytes(own[0..]));
+        }
         var out: [32]u8 = undefined;
         h.final(&out);
         return out;
