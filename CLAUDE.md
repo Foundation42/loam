@@ -107,12 +107,24 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   the magnitude and fed time of its last change, `attention` and
   `changed_ns`, written in the commit's finalize and nowhere else, in
   its hash, merged by MAX on each field separately into the summaries.
-  a(t) = a₀·exp(−(t − t₀)/τ) is computed where it is read
+  The magnitude is per channel over that channel's range
+  (`channel.attentionScale`), the max across channels — a wound's
+  Damage 0 → 1 scores as a deposit does; in surface units alone a cut
+  scored half a deposit and was outranked by a clamp. a(t) =
+  a₀·exp(−(t − t₀)/τ) is computed where it is read
   (`Summary.attentionAt`, through `fmath.exp`); nothing maintains it.
-  Under `Policy.budget` the active set's head by attention IS the step
-  — operators and fronts — and the tail carries forward until its
-  attention fades under EPSILON. G14 (a) recomputes the head from the
-  summaries alone; a change to the scoring must keep that recomputable.
+- **Attention and obligation are different things (Christian's ruling).**
+  Attention is a score of what will change next; obligation is a queue
+  of what must run regardless. Under `Policy.budget` the head IS the
+  step — operators and fronts — in two tiers: obligations in key order
+  (bricks hosting a live front, then bricks the last step carried,
+  `Snapshot.obliged`), then the rest by attention. The tail carries
+  forward and fades only when its attention is under EPSILON AND it
+  hosts no front. The budget a step ran under is on the snapshot and in
+  the content hash: an input like the seed, logged by `loam-run
+  --trace`, never derived from a clock at replay. G14 (a) recomputes
+  the head from the snapshot alone; a change to the order must keep
+  that recomputable.
 - **Snapshots are immutable and refcounted.** A published brick is never
   handed out as `*Brick`. The commit clones what it changes; untouched
   subtrees are shared by identity (G4 checks identity, not equality).

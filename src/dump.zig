@@ -195,6 +195,10 @@ pub fn write(gpa: std.mem.Allocator, w: *const world_mod.World) ![]u8 {
     var dirty = std.ArrayList([]const u8).init(a);
     for (snap.dirty) |k| try dirty.append(try uint(a, k.raw()));
     try top.append(.{ try key(a, "dirty"), try array(a, dirty.items) });
+    var obliged = std.ArrayList([]const u8).init(a);
+    for (snap.obliged) |k| try obliged.append(try uint(a, k.raw()));
+    try top.append(.{ try key(a, "obliged"), try array(a, obliged.items) });
+    try top.append(.{ try key(a, "budget"), try int(a, if (snap.budget) |b| @as(i64, b) else -1) });
 
     var out = struple.Packer.init(gpa);
     errdefer out.deinit();

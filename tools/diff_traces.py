@@ -16,6 +16,8 @@ import sys, math
 def load(path):
     by = {}
     for line in open(path):
+        if line.startswith("#"):  # a step's budget line, on the transcript, not a front
+            continue
         f = line.split()
         if len(f) < 11: continue
         step, fid = int(f[0]), int(f[1])

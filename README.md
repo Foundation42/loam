@@ -52,12 +52,15 @@ matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --cam -13
 ```
 
 Every brick knows how much it last changed and when — attention, derived
-where it is read, never stepped — so a reader finds where the world is
-changing from the summaries alone, and a step under a budget spends its
-work where the change was largest (`loam-run --budget-fraction 0.5`
-grows the same sapling from half the evaluations). The bridge reads the
-same bookkeeping as its dirty set: a brick keeps its slot on the GPU and
-is re-uploaded only when it changed.
+where it is read, never stepped, scored per channel over its range — so
+a reader finds where the world is changing from the summaries alone, and
+a step under a budget spends its work in two tiers: what it owes (live
+fronts, then last step's backlog, a queue in key order) and what it
+wants (the rest by attention). `loam-run --budget-fraction 0.5` grows
+the same sapling from 22% fewer evaluations, and the budget rides on the
+snapshot's hash and the trace: an input like the seed. The bridge reads
+the same bookkeeping as its dirty set: a brick keeps its slot on the GPU
+and is re-uploaded only when it changed.
 
 The representation states what it can know — a structural feature of
 radius r belongs at a gauge with h ≤ r/2 (G13, struck by Christian from
@@ -82,7 +85,7 @@ floor").
 | G10 bound | the summary's Lipschitz bound is conservative | 19,800 random pairs, 0 exceed it; the old axis-only bound is exceeded 45 times |
 | G11 sphere trace | a march stepped by \|φ\|/L never lands inside or tunnels | 4096 rays against a dense march: 0 disagreements, 0 late, 0 overshoots; stepping 2\|φ\|/L overshoots 167 times in 1024 |
 | G1 again | replay with the new carrier | one frozen reference, from Zig, from Python, across processes, with any thread count; the sim owns its sin, cos and exp so no libm can move it |
-| G14 attention | the step's work follows where things are changing, and a reader sees it from the summaries | the evaluated set is the attention-ordered head of the active set, recomputed from the summaries at every step; a walk on the summaries finds exactly the attentive bricks (98 of 3652 at step 80, 264 leaves examined); the sapling under a budget of half its active set is the same tree; the head in key order loses 36% |
+| G14 attention | the step's work follows where things are changing, and a reader sees it from the summaries | the evaluated set is the head of the active set — obligations in key order, then by attention — recomputed from the snapshot at every step; a walk on the summaries finds exactly the attentive bricks (91 of 3652 at step 80, 264 leaves examined); the sapling under a budget of half its active set is the same tree from 22% fewer evaluations; the head in key order loses 36% |
 
 ### Phase 1, all eight gates
 

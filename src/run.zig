@@ -329,6 +329,10 @@ pub fn main() !void {
         const ms = @as(f64, @floatFromInt(timer.read())) / 1e6;
         total_ms += ms;
         if (trace_file) |f| {
+            // The step's budget on the transcript (Christian's ruling):
+            // an input like the seed, so a replay replays the record.
+            // `diff_traces.py` skips the line.
+            if (world.policy.budget) |b| try f.writer().print("# step {d} budget {d} head {d} carried {d} faded {d} skipped {d}\n", .{ step, b, world.evaluated.len, world.stats.carried, world.stats.faded, world.stats.fronts_skipped });
             // The front's state after the step, lattice units about the
             // scene origin: what a representation change must not move.
             const c: f64 = @floatFromInt(loam.lattice.CELLS / 2);
@@ -363,7 +367,7 @@ pub fn main() !void {
         defer found.deinit(gpa);
         var examined: usize = 0;
         try snap.attentive(snap.time_ns, loam.thresholds.EPSILON, loam.thresholds.ATTENTION_TAU_S, true, gpa, &found, &examined);
-        try stdout.print("attentive {d} of {d} bricks at the end (τ {d} s, floor {e:.0}; the walk examined {d} leaves); {d} carried, {d} faded, {d} front-steps skipped over the run\n", .{ found.items.len, snap.brick_count, loam.thresholds.ATTENTION_TAU_S, loam.thresholds.EPSILON, examined, world.total.carried, world.total.faded, world.total.fronts_skipped });
+        try stdout.print("attentive {d} of {d} bricks at the end (τ {d} s, floor {e:.0}; the walk examined {d} leaves, {d:.2} per attentive brick); {d} carried, {d} faded, {d} front-steps skipped over the run\n", .{ found.items.len, snap.brick_count, loam.thresholds.ATTENTION_TAU_S, loam.thresholds.EPSILON, examined, @as(f64, @floatFromInt(examined)) / @as(f64, @floatFromInt(@max(found.items.len, 1))), world.total.carried, world.total.faded, world.total.fronts_skipped });
     }
 
     if (opts.ray) |r| {

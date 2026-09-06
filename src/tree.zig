@@ -179,6 +179,17 @@ pub const Snapshot = struct {
     active: []Key = &.{},
     /// Bricks the commit that made this snapshot touched. Owned, sorted.
     dirty: []Key = &.{},
+    /// OBLIGATIONS (Christian's ruling, Sunday afternoon): bricks the
+    /// budget scheduled and did not finish — carried — which run first
+    /// next step, in key order, by construction and not by their score.
+    /// Owned, sorted. Live fronts' bricks are the other obligations and
+    /// are read from `fronts`.
+    obliged: []Key = &.{},
+    /// The budget the step that made this snapshot ran under, in bricks;
+    /// null is none. On the transcript because the world under a budget
+    /// is a different world: an input like the seed, in the content hash,
+    /// logged by `loam-run --trace`, never derived from a clock at replay.
+    budget: ?u32 = null,
 
     pub fn retain(self: *Snapshot) void {
         _ = self.refs.fetchAdd(1, .monotonic);
@@ -190,6 +201,7 @@ pub const Snapshot = struct {
             self.gpa.free(self.fronts);
             self.gpa.free(self.active);
             self.gpa.free(self.dirty);
+            self.gpa.free(self.obliged);
             self.gpa.destroy(self);
         }
     }
@@ -214,6 +226,12 @@ pub const Snapshot = struct {
             const raw = k.raw();
             h.update(std.mem.asBytes(&raw));
         }
+        for (self.obliged) |k| {
+            const raw = k.raw();
+            h.update(std.mem.asBytes(&raw));
+        }
+        const budget: u32 = self.budget orelse std.math.maxInt(u32);
+        h.update(std.mem.asBytes(&budget));
         var out: [32]u8 = undefined;
         h.final(&out);
         return out;

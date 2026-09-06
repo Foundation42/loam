@@ -91,6 +91,25 @@ pub fn isAbsent(bit: u6, v: f32, band_lu: f32) bool {
 
 /// A face sample that reaches across: above the change floor, or nearer
 /// than the band — the frontier's test.
+/// What a change in `bit` is measured against for ATTENTION (R15,
+/// Christian's ruling, Sunday afternoon: "score attention per channel,
+/// normalised by that channel's range, and take the max across
+/// channels"). A change of the whole range scores 1. The carrier's range
+/// is its band, both ways; a bounded channel's is its clamp's; a channel
+/// with no finite range scores its change as it is (scale 1, stated); the
+/// bookkeeping channels — Age a birth time, Activity a touch time — score
+/// nothing: their "delta" is a timestamp, and what they record the
+/// carrier's deposit already scored. Measured in surface units alone, a
+/// cut scored at most one band where a deposit scored two, and a wound
+/// was outranked by a clamp, not by importance.
+pub fn attentionScale(bit: u6, clamp: Clamp, band_lu: f32) f32 {
+    if (bit == Channel.surface.bit()) return 2 * band_lu;
+    return switch (rule(bit)) {
+        .touch, .set_once => std.math.inf(f32),
+        .add, .smin => clamp.range() orelse 1,
+    };
+}
+
 pub fn reaches(bit: u6, v: f32, band_lu: f32, eps: f32) bool {
     return if (bit == Channel.surface.bit()) v < band_lu else @abs(v) > eps;
 }
@@ -126,6 +145,12 @@ pub fn planeIndex(m: Mask, bit: u6) usize {
 pub const Clamp = struct {
     lo: f32 = -std.math.inf(f32),
     hi: f32 = std.math.inf(f32),
+
+    /// The range, where both ends are finite.
+    pub fn range(self: Clamp) ?f32 {
+        if (std.math.isInf(self.lo) or std.math.isInf(self.hi)) return null;
+        return self.hi - self.lo;
+    }
 
     pub fn apply(self: Clamp, v: f32) f32 {
         return @min(self.hi, @max(self.lo, v));

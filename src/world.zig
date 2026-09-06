@@ -86,18 +86,24 @@ pub const Policy = struct {
     /// value and the two holders of a face reconstruct from different
     /// coefficients — C0 at best. Never false outside a gate.
     halo: bool = true,
-    /// Bricks a step may evaluate (R15). Null is no limit. With one set,
-    /// the active set is ordered by attention at the step's fed time —
-    /// a₀·exp(−(now − t₀)/τ) from the snapshot's summaries, ties by key —
-    /// and the head of that order IS the step: its bricks' operators run
-    /// and its fronts move. The tail carries forward unevaluated, its
-    /// attention intact, until that attention decays under the change
-    /// floor (EPSILON) — what was not a change is not attention, and a
-    /// tail kept whatever its attention grew to every brick in the world
-    /// under a budget of twelve (a seam write of 1e-5 carried for ever).
-    /// A front in a carried brick does not move (the tips lag when the
-    /// head is chosen badly — G14 c's mutation); a live front's brick is
-    /// active by the front rule whatever its attention.
+    /// Bricks a step may evaluate (R15, R16). Null is no limit. With one
+    /// set the head of the active set IS the step — its bricks' operators
+    /// run and its fronts move — chosen in two tiers (Christian's ruling:
+    /// attention and obligation are different things; obligation is a
+    /// queue, not a score). Tier one, OBLIGATIONS in key order: bricks
+    /// hosting a live front, then bricks the last step carried — the
+    /// sim's own agents before its backlog, because at a budget of half
+    /// the active set the backlog is half the active set and a plain
+    /// queue moved every front every other step (G14 c read 38% off).
+    /// Tier two, the rest by ATTENTION at the step's fed time — a₀·exp(−(now −
+    /// t₀)/τ) from the summaries, ties by key. The tail carries forward
+    /// unevaluated and becomes next step's obligations, except that a
+    /// brick whose attention has decayed under the change floor AND
+    /// hosts no front FADES out (the fade rule: diffusion and decay are
+    /// contractions, a seam write of 1e-5 cannot grow into something that
+    /// mattered; a front can — and without it a budget of twelve carried
+    /// every brick in the world). A front in a carried brick does not
+    /// move: the tips lag when the head is chosen badly (G14 c).
     budget: ?u32 = null,
     /// How the head is chosen under a budget. `.key` is G14 (c)'s
     /// mutation, kept as an instrument (`loam-run --budget-order key`).
@@ -313,7 +319,7 @@ pub const World = struct {
     /// Commit whatever authoring has queued, as a step with no operators
     /// and no time. Publishes a new vid.
     pub fn apply(self: *World) Error!void {
-        try self.commit(.{ .frame = self.frame, .time_ns = self.time_ns }, self.head, false, &.{}, self.jobs);
+        try self.commit(.{ .frame = self.frame, .time_ns = self.time_ns }, self.head, false, &.{}, null, self.jobs);
     }
 
     // ── The step ─────────────────────────────────────────────────────────
@@ -364,6 +370,7 @@ pub const World = struct {
         // its head evaluated, its tail carried. Without one, the head is
         // the active set.
         const chosen = try self.chooseHead(base, active, now);
+        defer if (chosen.fronts.len > 0) gpa.free(chosen.fronts);
         gpa.free(self.evaluated);
         self.evaluated = chosen.head;
         const head: []const Key = chosen.head;
@@ -423,29 +430,50 @@ pub const World = struct {
         self.stats.ns_fronts = timer.lap();
 
         // 5. Commit and publish.
-        try self.commit(now, base, evaluated, carried, sys);
+        try self.commit(now, base, evaluated, carried, self.policy.budget, sys);
         self.total.accumulate(self.stats);
     }
 
-    const Head = struct { head: []Key, carried: []Key };
+    const Head = struct { head: []Key, carried: []Key, fronts: []Key };
+
+    /// The bricks hosting a live, non-dormant front: obligations. Owned,
+    /// sorted, unique.
+    fn frontBricks(self: *const World, gpa: std.mem.Allocator) ![]Key {
+        var list = std.ArrayListUnmanaged(Key){};
+        defer list.deinit(gpa);
+        for (self.fronts.items) |f| if (f.alive and !f.dormant) try list.append(gpa, f.brick);
+        std.mem.sort(Key, list.items, {}, Key.lessThan);
+        return dedupKeys(gpa, list.items);
+    }
 
     /// The bricks this step evaluates, owned: the active set as it is when
-    /// no budget is set or it fits; otherwise its head by attention at
-    /// `now` — descending, ties by key — and the tail, owned, to carry.
-    /// `.key` takes the head in Morton order instead: the mutation.
+    /// no budget is set or it fits; otherwise the head in two tiers — the
+    /// obligations (`base.obliged` and the live fronts' bricks) in key
+    /// order, then the rest by attention at `now`, descending, ties by
+    /// key — cut at the budget; and the tail, owned, to carry: what stays
+    /// attentive above the floor or hosts a front, the rest faded. `.key`
+    /// takes the first bricks in Morton order instead: G14 (c)'s mutation.
     fn chooseHead(self: *World, base: *const Snapshot, active: []const Key, now: Now) !Head {
         const gpa = self.gpa;
+        const fronts = try self.frontBricks(gpa);
+        errdefer gpa.free(fronts);
         const budget: usize = self.policy.budget orelse active.len;
-        if (active.len <= budget) return .{ .head = try gpa.dupe(Key, active), .carried = &.{} };
-        const Scored = struct { key: Key, a: f64 };
+        if (active.len <= budget) return .{ .head = try gpa.dupe(Key, active), .carried = &.{}, .fronts = fronts };
+        // tier 0: hosts a live front; 1: carried by the last step; 2: the rest.
+        const Scored = struct { key: Key, a: f64, tier: u8 };
         const scored = try gpa.alloc(Scored, active.len);
         defer gpa.free(scored);
         const tau: f64 = thresholds.ATTENTION_TAU_S;
-        for (active, 0..) |k, i| scored[i] = .{ .key = k, .a = attentionOf(base, k, now.time_ns, tau) };
+        for (active, 0..) |k, i| scored[i] = .{
+            .key = k,
+            .a = attentionOf(base, k, now.time_ns, tau),
+            .tier = if (keyInSorted(fronts, k)) 0 else if (keyInSorted(base.obliged, k)) 1 else 2,
+        };
         switch (self.policy.budget_order) {
             .attention => std.mem.sort(Scored, scored, {}, struct {
                 fn lt(_: void, x: Scored, y: Scored) bool {
-                    if (x.a != y.a) return x.a > y.a;
+                    if (x.tier != y.tier) return x.tier < y.tier;
+                    if (x.tier == 2 and x.a != y.a) return x.a > y.a;
                     return x.key.raw() < y.key.raw();
                 }
             }.lt),
@@ -454,22 +482,23 @@ pub const World = struct {
         const head = try gpa.alloc(Key, budget);
         errdefer gpa.free(head);
         for (scored[0..budget], 0..) |s, i| head[i] = s.key;
-        // The tail: carried while attentive above the floor, faded below it.
+        // The tail: carried while attentive above the floor or hosting a
+        // front, faded otherwise.
         const eps: f64 = thresholds.EPSILON;
         var kept: usize = 0;
         for (scored[budget..]) |s| {
-            if (s.a > eps) kept += 1;
+            if (s.a > eps or keyInSorted(fronts, s.key)) kept += 1;
         }
         self.stats.faded = active.len - budget - kept;
         const carried = try gpa.alloc(Key, kept);
         var j: usize = 0;
         for (scored[budget..]) |s| {
-            if (s.a > eps) {
+            if (s.a > eps or keyInSorted(fronts, s.key)) {
                 carried[j] = s.key;
                 j += 1;
             }
         }
-        return .{ .head = head, .carried = carried };
+        return .{ .head = head, .carried = carried, .fronts = fronts };
     }
 
     /// A brick's attention at fed time `now_ns` for τ, from its summary
@@ -1160,7 +1189,11 @@ pub const World = struct {
     const Changed = struct {
         b: *Brick,
         old: ?*const Brick,
+        /// The largest change in lattice value units: the active-set floor.
         max_delta: f32 = 0,
+        /// The largest change per channel, each over its `attentionScale`,
+        /// the max taken across channels: the brick's attention (R15).
+        attention: f32 = 0,
         materialised: bool = false,
         /// Seam precedence among equal gauges: 0 wrote deltas this
         /// commit, 1 was cloned by the seam pass or is unchanged, 2 was
@@ -1174,7 +1207,7 @@ pub const World = struct {
     /// brick of the head that did not change has settled. When it did not
     /// run — the epoch tick, an authoring apply — the active set carries
     /// forward; `carried` is the budget's tail, which carries either way.
-    fn commit(self: *World, now: Now, base: *const Snapshot, evaluated: bool, carried: []const Key, sys: ?*jobs.JobSystem) Error!void {
+    fn commit(self: *World, now: Now, base: *const Snapshot, evaluated: bool, carried: []const Key, budget: ?u32, sys: ?*jobs.JobSystem) Error!void {
         const gpa = self.gpa;
         const eps = thresholds.EPSILON;
         var timer = std.time.Timer.start() catch unreachable;
@@ -1322,6 +1355,12 @@ pub const World = struct {
         errdefer gpa.free(active_owned);
         const dirty_owned = try dedupKeys(gpa, dirty.items);
         errdefer gpa.free(dirty_owned);
+        // The carried bricks are next step's obligations, in key order.
+        const carried_sorted = try gpa.dupe(Key, carried);
+        defer gpa.free(carried_sorted);
+        std.mem.sort(Key, carried_sorted, {}, Key.lessThan);
+        const obliged_owned = try dedupKeys(gpa, carried_sorted);
+        errdefer gpa.free(obliged_owned);
         snap.* = .{
             .gpa = gpa,
             .vid = self.vid + 1,
@@ -1332,6 +1371,8 @@ pub const World = struct {
             .fronts = fronts_copy,
             .active = active_owned,
             .dirty = dirty_owned,
+            .obliged = obliged_owned,
+            .budget = budget,
         };
         const counts = snap.countNodes();
         snap.brick_count = counts.bricks;
@@ -1361,10 +1402,14 @@ pub const World = struct {
         };
         nb.version = if (old) |o| o.version + 1 else 1;
         var max_delta: f32 = 0;
+        var att: f32 = 0;
+        const nbd = nb.band();
         var bit: u6 = 0;
         while (true) : (bit += 1) {
             if (ru.deltas[bit]) |dp| {
                 const clamp = ctx.world.registry.clamp(bit);
+                const scale = channel.attentionScale(bit, clamp, nbd);
+                var bit_delta: f32 = 0;
                 const pl = nb.ensurePlane(gpa, bit) catch {
                     nb.release(gpa);
                     ctx.failed.store(true, .release);
@@ -1384,11 +1429,13 @@ pub const World = struct {
                                 .touch => if (d != 0) clamp.apply(d) else pl[idx],
                                 else => clamp.apply(pl[idx] + d),
                             };
-                            max_delta = @max(max_delta, @abs(nv - pl[idx]));
+                            bit_delta = @max(bit_delta, @abs(nv - pl[idx]));
                             pl[idx] = nv;
                         }
                     }
                 }
+                max_delta = @max(max_delta, bit_delta);
+                att = @max(att, bit_delta / scale);
             }
             if (bit == 63) break;
         }
@@ -1404,6 +1451,8 @@ pub const World = struct {
                 return;
             };
             const bd = nb.band();
+            const sscale = channel.attentionScale(sbit, ctx.world.registry.clamp(sbit), bd);
+            var sdelta: f32 = 0;
             for (ru.surface_ops.items) |op| {
                 var k: u32 = 0;
                 while (k < brick.N) : (k += 1) {
@@ -1418,24 +1467,27 @@ pub const World = struct {
                                 .join => channel.smin(pl[idx], d, op.k, bd),
                                 .cut => @max(pl[idx], -d),
                             }));
-                            max_delta = @max(max_delta, @abs(nv - pl[idx]));
+                            sdelta = @max(sdelta, @abs(nv - pl[idx]));
                             pl[idx] = nv;
                         }
                     }
                 }
             }
+            max_delta = @max(max_delta, sdelta);
+            att = @max(att, sdelta / sscale);
         }
-        ctx.results[i] = .{ .b = nb, .old = old, .max_delta = max_delta, .materialised = old == null and ru.mask == 0, .rank = if (ru.mask != 0) 0 else 2 };
+        ctx.results[i] = .{ .b = nb, .old = old, .max_delta = max_delta, .attention = att, .materialised = old == null and ru.mask == 0, .rank = if (ru.mask != 0) 0 else 2 };
     }
 
     const FinalizeCtx = struct { world: *World, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: []const u64, now_ns: u64 };
 
     /// The attention bookkeeping is written here and nowhere else (R15):
     /// the largest change that reached the brick this commit — its own
-    /// deltas and ops, a seam or halo write — and the commit's fed time.
+    /// deltas and ops, a seam or halo write — per channel over that
+    /// channel's range, the max across channels, and the commit's fed time.
     fn finalizeOne(ctx: *FinalizeCtx, i: usize) void {
         const c = ctx.changed.get(ctx.order[i]).?;
-        c.b.attention = c.max_delta;
+        c.b.attention = c.attention;
         c.b.changed_ns = ctx.now_ns;
         c.b.finalize(ctx.world.gpa);
     }
@@ -1866,6 +1918,8 @@ pub const World = struct {
                 break :blk nb;
             };
             var max_delta: f32 = 0;
+            var att: f32 = 0;
+            const mbd = mb.band();
             var last: ?SeamWrite = null;
             while (i < all.len and all[i].key == key) : (i += 1) {
                 const w = all[i];
@@ -1877,14 +1931,18 @@ pub const World = struct {
                     continue;
                 };
                 last = w;
-                const pl = try mb.ensurePlane(gpa, @intCast(w.bit));
+                const wbit: u6 = @intCast(w.bit);
+                const pl = try mb.ensurePlane(gpa, wbit);
                 const have = pl[w.idx];
                 pl[w.idx] = w.value;
-                max_delta = @max(max_delta, @abs(w.value - have));
+                const d = @abs(w.value - have);
+                max_delta = @max(max_delta, d);
+                att = @max(att, d / channel.attentionScale(wbit, self.registry.clamp(wbit), mbd));
                 self.stats.seam_writes += 1;
             }
             const cptr = changed.getPtr(key).?;
             cptr.max_delta = @max(cptr.max_delta, max_delta);
+            cptr.attention = @max(cptr.attention, att);
         }
     }
 

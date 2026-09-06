@@ -124,10 +124,13 @@ pub const G11_RAYS: u32 = 4096; // PROPOSED
 
 /// G14 (Phase 2, P2.1a, built Sunday 2026-09-06): attention is
 /// a(t) = a₀·exp(−(t − t₀)/τ) from a brick's last change (a₀, t₀), never
-/// stepped (R15). τ is a reader's choice; this is the sim's, for the
-/// active set's order under a budget (in the hash, through fmath.exp).
-/// The floor is the change floor, EPSILON: what was not a change is not
-/// attention, and G14 (b)'s walk rejects below it.
+/// stepped (R15); a₀ is the change per channel over that channel's range,
+/// the max across channels (Christian's ruling, Sunday afternoon), so a
+/// change of a whole range scores 1. τ is a reader's choice; this is the
+/// sim's, for the active set's order under a budget (in the hash, through
+/// fmath.exp). The floor is the change floor, EPSILON: what was not a
+/// change is not attention, G14 (b)'s walk rejects below it, and a
+/// carried brick hosting no front fades under it.
 pub const ATTENTION_TAU_S: f32 = 3; // PROPOSED — the Phase 1 Activity level's τ
 /// G14 (c): the budget the gate grows the sapling under, as a fraction of
 /// each step's active bricks, and how far the budgeted run's inside count
@@ -171,5 +174,8 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// edit ran; the suite caught it. Attention `e3068932…` (P2.1a: every
 /// changed brick carries the magnitude and fed time of its last change in
 /// its hash — it orders the step under a budget, so it is what the world
-/// is; the planes, the fronts and the active set did not move).
-pub const G1_REFERENCE: []const u8 = "e30689325efab72fd496fabddad0727bb391d5d89b4839ca83186da1c9b43f7c";
+/// is; the planes, the fronts and the active set did not move). The
+/// ruling `f410e7b3…` (attention scored per channel over its range, the
+/// max across channels; the obligations and the budget on the snapshot,
+/// in the content hash — the budget is an input like the seed).
+pub const G1_REFERENCE: []const u8 = "f410e7b36d9ba40f1e2be01d75c2c2ba176b2b8086a68259f4935c330446b04f";

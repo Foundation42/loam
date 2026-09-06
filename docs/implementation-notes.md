@@ -4,7 +4,8 @@
 **P2.1a built Sunday 2026-09-06, afternoon** — attention: derived from
 each brick's last change, in the summaries and the hash, ordering the
 step under a budget; G14 green and bitten, G1 re-baselined ("P2.1a —
-attention" below).
+attention" below); RULED the same afternoon — "Attention and obligation
+are different things" (the entry of that name).
 Phase 2 opened the same evening: the first loam-grown thing on screen
 (matryoshka branch `loam`, "Renderer integration, beat 1" below).
 **P2.1 built Sunday 2026-09-06** — the continuous carrier: R7 and G13
@@ -1135,6 +1136,87 @@ final line prints the attentive count and what the walk examined.
 D2's criterion. (The bridge's dirty-set upload from `changed_ns`: the
 next entry.)
 
+## Attention and obligation (Sunday 2026-09-06, afternoon — Christian's ruling on P2.1a)
+
+Christian, reading P2.1a's table and the two findings: "The two findings
+and the two rulings turn out to be one distinction, so I'd rule on the
+distinction rather than case by case. **Attention and obligation are
+different things.** Attention is 'how much changed here recently' and is
+a proxy for 'how much will change next', which is what the budget wants
+to spend on. Obligation is 'something here must run regardless': a live
+front, a cut brick that was scheduled and not finished. Obligation isn't
+a score; it's a queue." Four consequences, each built:
+
+1. **The fade rule, struck with an amendment.** A carried brick fades
+   when its attention has decayed under the floor AND it hosts no front
+   — "diffusion and decay are contractions, so a 1e-5 seam write can't
+   grow into something that mattered; a front can."
+
+2. **Two tiers in the head.** Obligations first, in key order, by
+   construction and not by their decayed score; then the rest by
+   attention up to the budget. "That also makes CUT mode's semantics say
+   what they mean." The carried bricks ride on the snapshot as
+   `Snapshot.obliged`; the live fronts' bricks are read from `fronts`.
+
+3. **Wound versus deposit was a denominator problem.** "Attention
+   measured in surface units saturates at the band clamp, so a cut is
+   worth at most one band while a deposit is worth two. The wound isn't
+   outranked by importance; it's outranked by a clamp." Attention is now
+   scored per channel over that channel's range, the max across
+   channels (`channel.attentionScale`: the carrier's range is its band
+   both ways; a bounded channel's is its clamp's; a channel with no
+   finite range scores its change as it is, stated; Age and Activity,
+   birth and touch times, score nothing — their delta is a timestamp).
+   A wound writes Damage 0 → 1 and scores 1, as a deposit does.
+
+4. **The budget is on the transcript.** "Under budget, the tree that
+   grows depends on the budget … the budget is now an input to the
+   world in the same way the seed is. So it has to be on the
+   transcript: a budget schedule in fed time, logged, never derived from
+   wall-clock at replay." `Snapshot.budget` — the count the step ran
+   under — is in the content hash beside `obliged`, in the dump, and on
+   `loam-run --trace` as a `# step N budget B head H carried C …` line
+   (`diff_traces.py` skips it). P2.1b's work units carry the rule from
+   the start: units measured, the budget consumed recorded, replay
+   replays the record.
+
+**One refinement inside tier one, from a measurement.** Built as a
+single queue — carried bricks and fronts' bricks together in key order
+— G14 (c) at a budget of half the active set read 6,898 inside against
+4,999, 38% off, with 386 front-steps skipped. The mechanism: at half
+the active set the carried half IS half the active set, so the backlog
+filled tier one every step and every front moved every other step, by
+key. Tier one is therefore the sim's own agents before its backlog:
+bricks hosting a live front, then bricks the last step carried, each
+in key order; tier two by attention. Both are obligations; the
+refinement is their order. With it, G14 (c) is the identical tree again
+(4,999 = 4,999) from 5,346 evaluations against 6,820 — 22% fewer — with
+5,272 carried, 24 faded and 141 front-steps skipped (dormant fronts in
+carried bricks). The wounded sapling at a fixed budget of twelve bricks
+a step now skips no front-step at all where it skipped 25.
+
+**G14 after the ruling.** (a) 40 of 80 steps cut, 788 carried, 14
+faded, 12 front-steps skipped, 5,107 evaluations, the head recomputed
+from the snapshot alone at every step (the recomputation now reads
+`obliged` and the fronts as the gate's tiers). (b) 91 of 3,652
+attentive at step 80, 264 leaves examined; 20 attentive 35 s later, 144
+examined — the later reader moved from 45 to 35 s because attention is
+at most about 1 now and nothing stays above the floor past τ·ln(1/ε) =
+41 s. The gate's mutations bite as before. G1 re-baselined `e3068932…`
+→ `f410e7b3…` (the scoring, and `obliged` and `budget` in the content
+hash). The wounded sapling, 60 steps, deterministic as before: 3,125
+inside and 15 fronts unbudgeted; 4,266 and 28 under the half budget
+(healing's evaluations of the wound land a step later, as tier one's
+backlog, and more repair fronts spawn before the first ones' passing
+resets the quiet clock); 3,355 and 11 at twelve a step. A different
+tree under each, as it should be with the budget on the transcript.
+
+**The walk's overhead, a standing number** (Christian: "worth logging
+the ratio as a standing number, since it's the walk's overhead and it
+will drift when the tree gets big"): leaves examined per attentive
+brick, G14 (b) prints it and `loam-run`'s last line prints it. In
+"Measurements" below.
+
 ## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
 
 The deferred fill D1 named, paid for by P2.1a: the bridge re-packed
@@ -1244,6 +1326,17 @@ Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:
 
 Per phase at step 40 (Debug, serial): operate 0.02, fronts 0.24, apply
 1.3, frontier 1.5, seams 9.0, finalize 6.0, build 1.2, publish 1.5 ms.
+
+The attention walk's overhead (P2.1a, a standing number — it will drift
+as the tree grows): leaves examined per attentive brick, sapling seed 7
+at step 80, τ = 3 s, floor 1e-6:
+
+| reader's time | attentive | examined | per attentive |
+|---|---|---|---|
+| at the step | 91 of 3652 | 264 | 2.90 |
+| 20 s later | 68 | 240 | 3.53 |
+| 35 s later | 20 | 144 | 7.20 |
+| wounded sapling, step 60 | 67 | 224 | 3.34 |
 With 16 threads apply, finalize and the seam pass all go parallel;
 ReleaseFast at 200 steps: 0.75 ms per step against 2.12 serial, the
 scene build 30 ms against 237.

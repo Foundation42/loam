@@ -700,24 +700,39 @@ fn budgetFor(w: *const World, fraction: f32) u32 {
 
 const HeadAndTail = struct { head: []loam.lattice.Key, carried: usize };
 
+fn hostsFront(snap: *const loam.Snapshot, k: loam.lattice.Key) bool {
+    for (snap.fronts) |f| if (f.alive and !f.dormant and f.brick.eql(k)) return true;
+    return false;
+}
+
+/// 0 hosts a live front, 1 was carried by the last step, 2 the rest.
+fn tierOf(snap: *const loam.Snapshot, k: loam.lattice.Key) u8 {
+    if (hostsFront(snap, k)) return 0;
+    for (snap.obliged) |o| if (o.eql(k)) return 1;
+    return 2;
+}
+
 /// What a step must evaluate, from the snapshot's bookkeeping alone: the
-/// active set by attention at `now_ns` descending, ties by key, cut at
-/// `budget` — the active set itself when it fits or there is no budget —
-/// and how many of the tail stay attentive above the floor (carried).
+/// obligations — the live fronts' bricks, then `obliged`, each in key
+/// order — then the rest by attention at `now_ns` descending, ties by
+/// key, cut at `budget` — the active set itself when it fits or there is
+/// no budget — and how many of the tail carry (attentive above the
+/// floor, or hosting a front).
 fn attentionHead(gpa: std.mem.Allocator, snap: *const loam.Snapshot, now_ns: u64, budget: ?usize) !HeadAndTail {
     const K = loam.lattice.Key;
     const b = budget orelse snap.active.len;
     if (snap.active.len <= b) return .{ .head = try gpa.dupe(K, snap.active), .carried = 0 };
-    const Scored = struct { key: K, a: f64 };
+    const Scored = struct { key: K, a: f64, tier: u8 };
     const scored = try gpa.alloc(Scored, snap.active.len);
     defer gpa.free(scored);
     for (snap.active, 0..) |k, i| {
         const a: f64 = if (snap.brickAt(k)) |br| br.summary.attentionAt(now_ns, thresholds.ATTENTION_TAU_S) else 0;
-        scored[i] = .{ .key = k, .a = a };
+        scored[i] = .{ .key = k, .a = a, .tier = tierOf(snap, k) };
     }
     std.mem.sort(Scored, scored, {}, struct {
         fn lt(_: void, x: Scored, y: Scored) bool {
-            if (x.a != y.a) return x.a > y.a;
+            if (x.tier != y.tier) return x.tier < y.tier;
+            if (x.tier == 2 and x.a != y.a) return x.a > y.a;
             return x.key.raw() < y.key.raw();
         }
     }.lt);
@@ -725,7 +740,7 @@ fn attentionHead(gpa: std.mem.Allocator, snap: *const loam.Snapshot, now_ns: u64
     for (scored[0..b], 0..) |s, i| out[i] = s.key;
     var carried: usize = 0;
     for (scored[b..]) |s| {
-        if (s.a > thresholds.EPSILON) carried += 1;
+        if (s.a > thresholds.EPSILON or hostsFront(snap, s.key)) carried += 1;
     }
     return .{ .head = out, .carried = carried };
 }
@@ -758,6 +773,10 @@ test "G14 (a): what a step evaluates is the attention-ordered head of the active
         try testing.expectEqual(g.world.evaluated.len * n_ops, g.world.stats.region_evals);
         try testing.expectEqual(ht.carried, g.world.stats.carried);
         try testing.expectEqual(before.active.len - g.world.evaluated.len - ht.carried, g.world.stats.faded);
+        // The carried bricks are the next snapshot's obligations, and the
+        // budget the step ran under is on it.
+        try testing.expectEqual(ht.carried, g.published().obliged.len);
+        try testing.expectEqual(budget, g.published().budget);
         if (before.active.len > g.world.evaluated.len) cut_steps += 1;
     }
     std.debug.print("\nG14 (a): 80 steps, the evaluated set recomputed from the summaries at every one; {d} steps cut by the budget, {d} bricks carried, {d} faded under the floor, {d} front-steps skipped, {d} evals\n", .{ cut_steps, g.world.total.carried, g.world.total.faded, g.world.total.fronts_skipped, g.world.total.region_evals });
@@ -798,7 +817,9 @@ test "G14 (b): a walk rejecting on the summaries' attention bound finds exactly 
     const floor: f64 = thresholds.EPSILON;
     var last_found: usize = 0;
     var last_examined: usize = 0;
-    for ([_]u64{ 0, 5, 20, 45 }) |later_s| {
+    // Attention is at most about 1 now (a change of a channel's whole
+    // range), so nothing stays attentive past τ·ln(1/floor) = 41 s.
+    for ([_]u64{ 0, 5, 20, 35 }) |later_s| {
         const t = snap.time_ns + later_s * std.time.ns_per_s;
         var found = std.ArrayListUnmanaged(K){};
         defer found.deinit(gpa);
@@ -820,7 +841,7 @@ test "G14 (b): a walk rejecting on the summaries' attention bound finds exactly 
             if (above) try expected.append(gpa, b.key);
         }
         try expectSameKeys(expected.items, found.items);
-        std.debug.print("\nG14 (b): {d} s after step 80, {d} of {d} bricks attentive above {e:.0} at τ = {d} s; the walk examined {d} leaves", .{ later_s, found.items.len, bs.len, floor, tau, examined });
+        std.debug.print("\nG14 (b): {d} s after step 80, {d} of {d} bricks attentive above {e:.0} at τ = {d} s; the walk examined {d} leaves ({d:.2} per attentive brick)", .{ later_s, found.items.len, bs.len, floor, tau, examined, @as(f64, @floatFromInt(examined)) / @as(f64, @floatFromInt(@max(found.items.len, 1))) });
         last_found = found.items.len;
         last_examined = examined;
     }
@@ -832,7 +853,7 @@ test "G14 (b): a walk rejecting on the summaries' attention bound finds exactly 
     var found = std.ArrayListUnmanaged(K){};
     defer found.deinit(gpa);
     var examined: usize = 0;
-    try snap.attentive(snap.time_ns + 45 * std.time.ns_per_s, floor, tau, false, gpa, &found, &examined);
+    try snap.attentive(snap.time_ns + 35 * std.time.ns_per_s, floor, tau, false, gpa, &found, &examined);
     try testing.expectEqual(bs.len, examined);
     try testing.expectEqual(last_found, found.items.len);
 }
