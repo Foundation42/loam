@@ -18,8 +18,6 @@ try loam.seedbed.blob(&world, loam.Channel.growth.bit(), .{ 0, 24, 0 }, 56, 1.0,
 try loam.seedbed.blob(&world, loam.Channel.light.bit(), .{ 40, 60, 0 }, 64, 1.0, 0);
 try loam.seedbed.plant(&world, .{ 0, 0, 0 }, .{ 0, 1, 0 }, .{ .tropism_light = 0.6, .length = 72 });
 try world.apply();
-var decay = loam.operators.Decay{ .bit = loam.Channel.activity.bit(), .tau = 3 };
-try world.addOperator(loam.operators.operatorOf(loam.operators.Decay, &decay));
 var t: u64 = 0;
 while (t <= 60) : (t += 1) try world.step(.{ .frame = t, .time_ns = t * std.time.ns_per_s }, null);
 const hash = world.published().rootHash();
@@ -32,7 +30,6 @@ import loam
 w = loam.World(seed=7)
 w.blob("growth", (0, 24, 0), 56); w.blob("light", (40, 60, 0), 64)
 w.plant((0, 0, 0), (0, 1, 0), length=72, tropism_light=0.6); w.apply()
-w.add_decay("activity", tau=3.0)
 w.run(60)
 print(w.root_hash().hex(), w.stats()["fronts"])
 ```
@@ -58,7 +55,15 @@ The representation states what it can know — a structural feature of
 radius r belongs at a gauge with h ≤ r/2 (G13, struck by Christian from
 `tools/g13_predict.py`'s theory before the sweep ran) — and the finest
 tips of the sapling's twigs are missing from the picture by exactly that
-ruling, the first customer of refinement.
+ruling, the first customer of refinement. And a change of representation
+did not move a front: `loam-run --trace` and `tools/diff_traces.py` put
+Phase 1's and Phase 2's front trajectories side by side from the same
+seed, and every read but self-avoidance agreed to a thousandth of a unit
+(the ledger, "The habit check"). And a front lays nothing thinner than
+the gauge's survival floor, r ≥ h, since a twig thinner than that loses
+its zero set under the B-spline; the steps it takes under the faithful
+floor, r < 2h, are counted as refinement's demand ("The survival
+floor").
 
 ### Phase 2.1, the carrier's gates
 
@@ -78,7 +83,7 @@ ruling, the first customer of refinement.
 | G2 growth | a seeded front builds persistent branching structure, no mesh | 19 branches; 7 components of young tissue at peak (1 with branching off); tissue never resets |
 | G3 tropism | matched ± stimulus pairs across 6 seeded directions produce a positive directional centroid response | 95% lower confidence bound > 0, every pair has the correct sign, mean response exceeds 3× natural wander RMS; zero-coefficient and reversed-gradient mutations both fail |
 | G4 repair | cutting tissue re-activates locally only | 78 bricks touched, 0 beyond two bricks of the wound; untouched bricks are the same pointers |
-| G5 dormancy | dormant tissue costs nothing | 14,972 evaluations where iterating every brick would be 584,320 |
+| G5 dormancy | dormant tissue costs nothing | a quiet step publishes nothing and costs nothing; Activity is a touch time, so nothing decays and nothing churns once the fronts stop |
 | G6 skip | a ray rejects subtrees from summaries alone | 12 of 64 crossed leaves sampled |
 | G7 narrow query | shadow queries do less work than primary | shadow gathers 25% of primary's channel bytes |
 | G8 snapshot safety | N readable while N+1 simulates | 10 full re-hashes of vid 22 while the writer reached 62, zero mismatches, no lock |
@@ -97,6 +102,7 @@ zig build run -- --scene wound --damage -10,18,-10,10,30,10@100 --steps 160 --ph
 zig build run -- --all-regions --steps 40   # the G5 mutation, as a number
 zig build run -- --threads 16 --steps 200 --phases      # the parallel phases over common's JobSystem; same hash
 zig build run -- --tropism-sweep 10,20,40   # G3's ensemble as a dose-response, one world per core
+zig build run -- --steps 160 --every 0 --trace fronts.txt   # every front, every step: the habit check's instrument
 python3 -m unittest discover -s py/tests    # after zig build
 zig build test                              # the gates
 ```
@@ -131,6 +137,7 @@ count.
 | `py/tests/` | the Python gates |
 | `tools/read_dump.py` | the cross-language dump reader (`zig build verify-dump`) |
 | `tools/g13_predict.py` | G13's theory: what the B-spline does to a thin capsule, before the sweep ran |
+| `tools/diff_traces.py` | where two front-trajectory traces part company: the habit check |
 | `docs/` | the spec, the brief, loop-loft, and the ledger |
 
 ## Depends on

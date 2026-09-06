@@ -408,7 +408,8 @@ pub fn components(gpa: std.mem.Allocator, values: []const f32, res: u32, thresho
 /// slivers of a point or three. Live tips each own one; the G2 instrument.
 pub fn youngComponents(w: *const World, gpa: std.mem.Allocator, phi_max: f32, window_s: f32, min_points: usize) !usize {
     const snap = w.published();
-    const now_s: f32 = @floatCast(@as(f64, @floatFromInt(snap.time_ns)) / 1e9);
+    // The world's clock, not the snapshot's: a quiet step publishes nothing.
+    const now_s: f32 = @floatCast(@as(f64, @floatFromInt(w.time_ns)) / 1e9);
     var points = std.AutoHashMapUnmanaged(u64, void){};
     defer points.deinit(gpa);
     const bs = try snap.bricks(gpa);
@@ -790,6 +791,11 @@ pub const Scene = struct {
     /// 0 turns branching off: G2's mutation.
     max_generation: u8 = 3,
     heal: bool = true,
+    /// Overrides for the habit check (`loam-run --avoid`, `--inhibit`):
+    /// null keeps the params' defaults.
+    avoid: ?f32 = null,
+    inhibit: ?f32 = null,
+    persist: ?f32 = null,
 
     pub fn build(self: *Scene, w: *World, preset: Preset) !void {
         switch (preset) {
@@ -831,10 +837,13 @@ pub const Scene = struct {
                 params.consume = self.consume;
                 params.max_generation = self.max_generation;
                 params.length = 72;
+                if (self.avoid) |a| params.avoid_self = a;
+                if (self.inhibit) |v| params.inhibit = v;
+                if (self.persist) |v| params.persist = v;
                 try plantLattice(w, sceneToLattice(.{ 0, 0, 0 }), .{ 0, 1, 0 }, params);
                 try w.apply();
-                self.decay[0] = .{ .bit = Channel.activity.bit(), .tau = 3 };
-                try w.addOperator(operators.operatorOf(operators.Decay, &self.decay[0]));
+                // No decay on Activity: it is a touch time now, and warmth is
+                // `now − Activity` wherever it is read.
                 if (self.heal) {
                     self.healing = .{};
                     self.healing.params = params;

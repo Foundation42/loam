@@ -100,6 +100,9 @@ pub const StepStats = struct {
     halo_writes: u64 = 0,
     spawns: u64 = 0,
     deaths: u64 = 0,
+    /// Front steps taken with an envelope under the gauge's FAITHFUL floor
+    /// (G13: r/h < 2) — the demand for refinement, counted, not met.
+    below_faithful: u64 = 0,
     diffusion_clamped: u64 = 0,
     active_out: u64 = 0,
     // Wall-clock nanoseconds per phase: instrumentation only, printed
@@ -299,10 +302,21 @@ pub const World = struct {
         self.frame = now.frame;
         self.epoch += 1;
         self.stats = .{};
-        self.buffer.reset();
 
         const base = self.head;
         const gpa = self.gpa;
+
+        // A QUIET step: nothing active, no front that could move, nothing
+        // queued. No operator would run and no front would deposit, so
+        // the commit would publish the same tree under a new vid — and a
+        // host reading the vid would re-pack it. Stop at source: the
+        // clock advances, the snapshot stands. (A dormant front wakes only
+        // when its brick is active, which it is not.)
+        if (self.isQuiet(base)) {
+            self.total.accumulate(self.stats);
+            return;
+        }
+        self.buffer.reset();
 
         // 1. The active set — every brick, under the mutation.
         var all_keys: []Key = &.{};
@@ -324,8 +338,13 @@ pub const World = struct {
         // 3. Operate: region-local, order-free.
         var timer = std.time.Timer.start() catch unreachable;
         const sys = js orelse self.jobs;
-        const evaluated = dt > 0 and self.operators.items.len > 0;
-        if (evaluated) {
+        // Time passed: the active set was looked at, whether or not any
+        // operator is mounted to look — a world with none has every brick
+        // settled, and must not carry its active set forward forever (the
+        // G4 mutation, healing unmounted, could never end its season once
+        // the sapling stopped mounting Decay).
+        const evaluated = dt > 0;
+        if (evaluated and self.operators.items.len > 0) {
             var ctx = OperateCtx{
                 .world = self,
                 .base = base,
@@ -358,6 +377,16 @@ pub const World = struct {
         self.total.accumulate(self.stats);
     }
 
+    /// Nothing for a step to do: no active brick, no live non-dormant
+    /// front, no spawn pending, nothing authored.
+    fn isQuiet(self: *const World, base: *const Snapshot) bool {
+        if (base.active.len != 0) return false;
+        if (self.pending_spawns.items.len != 0) return false;
+        if (self.buffer.regions.count() != 0) return false;
+        for (self.fronts.items) |f| if (f.alive and !f.dormant) return false;
+        return true;
+    }
+
     const OperateCtx = struct {
         world: *World,
         base: *const Snapshot,
@@ -385,6 +414,7 @@ pub const World = struct {
                 .brick = b,
                 .dt = ctx.dt,
                 .epoch = ctx.world.epoch,
+                .time_s = @floatCast(@as(f64, @floatFromInt(ctx.world.time_ns)) / 1e9),
                 .seed = ctx.world.seed,
                 .alloc = ctx.alloc,
                 .registry = &ctx.world.registry,
@@ -467,6 +497,7 @@ pub const World = struct {
         dormant: bool = false,
         died: bool = false,
         spawned: u64 = 0,
+        below_faithful: bool = false,
 
         fn region(self: *Sink, key: Key) !*update.RegionUpdate {
             const gop = try self.by_key.getOrPut(self.alloc, key.raw());
@@ -538,6 +569,7 @@ pub const World = struct {
             if (sk.stepped) self.stats.front_steps += 1;
             if (sk.dormant) self.stats.fronts_dormant += 1;
             if (sk.died) self.stats.deaths += 1;
+            if (sk.below_faithful) self.stats.below_faithful += 1;
             self.stats.spawns += sk.spawned;
             std.mem.sort(*update.RegionUpdate, sk.entries.items, {}, struct {
                 fn lt(_: void, a: *update.RegionUpdate, b: *update.RegionUpdate) bool {
@@ -556,18 +588,23 @@ pub const World = struct {
                     mask &= mask - 1;
                     const src = local.deltas[bit].?;
                     const dst = try ru.delta(self.buffer.arena.allocator(), bit);
-                    if (bit == Channel.age.bit()) {
+                    switch (channel.rule(bit)) {
                         // Birth time is written ONCE per sample per step: the
                         // serial pass let the first front's pending write
                         // stop the second's. Here the first in id order wins,
                         // which is the same front.
-                        for (dst, src) |*d, v| {
+                        .set_once => for (dst, src) |*d, v| {
                             if (v != 0 and d.* == 0) d.* = v;
-                        }
-                    } else {
-                        for (dst, src) |*d, v| {
+                        },
+                        // A touch time: every front this step writes the same
+                        // second, so the last in id order is the first.
+                        .touch => for (dst, src) |*d, v| {
+                            if (v != 0) d.* = v;
+                        },
+                        .add => for (dst, src) |*d, v| {
                             if (v != 0) d.* += v;
-                        }
+                        },
+                        .smin => unreachable, // ops, above
                     }
                 }
             }
@@ -593,16 +630,45 @@ pub const World = struct {
         return .{ f.pos[0] + f.dir[0] * (r + 1), f.pos[1] + f.dir[1] * (r + 1), f.pos[2] + f.dir[2] * (r + 1) };
     }
 
+    /// The ramp a front's deposition softens over, lattice units: the
+    /// Phase 1 material profile was 1 inside the ring and fell to 0 over
+    /// this distance outside it, and what a front READS of tissue is that
+    /// profile still (`occupancy`), so a change of representation did not
+    /// move a front (the habit check, P2.1).
+    pub const SOFT: f64 = 0.75;
+
+    /// What a front sees of tissue at `p`: the carrier as an occupancy —
+    /// 1 inside, 0 beyond `SOFT` outside, smooth between. Not the carrier
+    /// itself: its gradient is a unit vector everywhere in the band and
+    /// radially outward inside a tube, and reading that as self-avoidance
+    /// pushed every front off its own axis (the trunk 25 units away from
+    /// Phase 1's by step 160; with the read restored, 0.001).
+    pub fn occupancy(base: *const Snapshot, p: [3]f64) f32 {
+        return @floatCast(smooth(SOFT, -SOFT, base.sample(Channel.surface.bit(), p)));
+    }
+
+    /// Central-difference gradient of the occupancy at `p`, per lattice unit.
+    fn occupancyGradient(base: *const Snapshot, p: [3]f64, h: f64) [3]f64 {
+        var g: [3]f64 = undefined;
+        inline for (0..3) |a| {
+            var pp = p;
+            var pm = p;
+            pp[a] += h;
+            pm[a] -= h;
+            g[a] = (@as(f64, occupancy(base, pp)) - @as(f64, occupancy(base, pm))) / (2 * h);
+        }
+        return g;
+    }
+
     /// Growth potential one radius ahead of the front, and no tissue in
-    /// the way there (inhibition): the carrier one radius ahead is not
-    /// below `inhibit`. A front's own cap ends one radius short of that
+    /// the way there (inhibition): the occupancy one radius ahead is not
+    /// above `inhibit`. A front's own cap ends one radius short of that
     /// point, so it does not inhibit itself.
     fn canGrow(_: *World, base: *const Snapshot, f: *const Front) bool {
         const ahead = aheadOf(f);
         const g = base.sample(Channel.growth.bit(), ahead);
         if (g <= thresholds.EPSILON) return false;
-        const phi = base.sample(Channel.surface.bit(), ahead);
-        return phi >= f.params.inhibit;
+        return occupancy(base, ahead) <= f.params.inhibit;
     }
 
     fn stepFront(self: *World, base: *const Snapshot, f: *Front, dt: f64, sink: *Sink) !void {
@@ -613,12 +679,12 @@ pub const World = struct {
         const h: f64 = @max(1.0, @as(f64, p.radius) * 0.5);
         const gl = base.gradient(Channel.light.bit(), f.pos, h);
         const gs = base.gradient(Channel.stimulus.bit(), f.pos, h);
-        // The carrier rises away from tissue, so avoid-self follows +∇φ.
-        const gphi = base.gradient(Channel.surface.bit(), f.pos, h);
+        // Self-avoidance reads the occupancy, as Phase 1 read Material.
+        const gm = occupancyGradient(base, f.pos, h);
         const nz = [3]f64{ stream.gauss(), stream.gauss(), stream.gauss() };
         var v: [3]f64 = undefined;
         inline for (0..3) |a| {
-            v[a] = @as(f64, p.tropism_light) * gl[a] + @as(f64, p.tropism_stimulus) * gs[a] + @as(f64, p.avoid_self) * gphi[a] + @as(f64, p.persist) * f.dir[a] + @as(f64, p.wander) * nz[a];
+            v[a] = @as(f64, p.tropism_light) * gl[a] + @as(f64, p.tropism_stimulus) * gs[a] - @as(f64, p.avoid_self) * gm[a] + @as(f64, p.persist) * f.dir[a] + @as(f64, p.wander) * nz[a];
         }
         const vl = len3(v);
         const old_dir = f.dir;
@@ -648,6 +714,7 @@ pub const World = struct {
         const t: f32 = @floatCast(@min(1.0, f.s / @as(f64, p.length)));
         const envelope: f32 = p.radius * (1 - p.taper * t) * (1 + p.bulge * fmath.sinf(2 * std.math.pi * p.waves * t));
         ringStep(f, &stream, envelope);
+        if (envelope < thresholds.G13_FAITHFUL_R_OVER_H * @as(f32, @floatFromInt(@as(u32, 1) << self.policy.default_gauge))) sink.below_faithful = true;
 
         // Deposit the ring into the field; draw down the potential around it.
         const avail = base.sample(Channel.growth.bit(), aheadOf(f));
@@ -792,7 +859,7 @@ pub const World = struct {
         var rmax: f32 = 0;
         for (f.ring) |sl| rmax = @max(rmax, @abs(sl.r));
         for (f.prev_r) |r| rmax = @max(rmax, @abs(r));
-        const soft: f64 = 0.75;
+        const soft: f64 = SOFT;
         const band0: f64 = channel.band(@as(u32, 1) << self.policy.default_gauge);
         const reach: f64 = @as(f64, @max(envelope, f.prev_envelope) + rmax) + band0;
         const draw_r: f64 = 2.0 * @as(f64, p.radius);
@@ -805,7 +872,8 @@ pub const World = struct {
             lo[a] = @max(@as(i64, 0), tree.floorI(@min(f.pos[a], f.prev_pos[a]) - ext));
             hi[a] = @min(@as(i64, lattice.CELLS), tree.floorI(@max(f.pos[a], f.prev_pos[a]) + ext) + 1);
         }
-        const cap = Capsule.of(f, envelope);
+        const floor: f32 = if (p.min_radius > 0) p.min_radius else thresholds.G13_SURVIVE_R_OVER_H * @as(f32, @floatFromInt(@as(u32, 1) << self.policy.default_gauge));
+        const cap = Capsule.of(f, envelope, floor);
         const gpa = self.gpa;
 
         // Bricks under the box: what covers each default-gauge cube —
@@ -874,8 +942,11 @@ pub const World = struct {
                             const pending: f32 = if (ru.deltas[Channel.age.bit()]) |dp| dp[idx] else 0;
                             if (born == 0 and pending == 0) try ru.add(alloc, Channel.age.bit(), idx, now_s);
                         }
-                        const w: f32 = @floatCast(smooth(soft, -soft, phi));
-                        if (w > 0) try ru.add(alloc, Channel.activity.bit(), idx, w);
+                        // Touched now: the fed second, where the sweep reaches.
+                        if (phi < soft) {
+                            const ap = try ru.delta(alloc, Channel.activity.bit());
+                            ap[idx] = now_s;
+                        }
                     }
                 }
             }
@@ -903,8 +974,10 @@ pub const World = struct {
         roll1: f64,
         env1: f32,
         ring1: *const [front.SLOTS]front.Slot,
+        /// Nothing thinner than this is laid: the gauge's survival floor.
+        floor: f32,
 
-        fn of(f: *const Front, envelope: f32) Capsule {
+        fn of(f: *const Front, envelope: f32, floor: f32) Capsule {
             const axis = [3]f64{ f.pos[0] - f.prev_pos[0], f.pos[1] - f.prev_pos[1], f.pos[2] - f.prev_pos[2] };
             return .{
                 .p0 = f.prev_pos,
@@ -921,6 +994,7 @@ pub const World = struct {
                 .roll1 = f.roll,
                 .env1 = envelope,
                 .ring1 = &f.ring,
+                .floor = floor,
             };
         }
 
@@ -951,7 +1025,7 @@ pub const World = struct {
             const res: f32 = std.math.lerp(residual(self.r0.*, th0), residual(r1, th1), @as(f32, @floatCast(s)));
             // The residual fades to nothing on the axis.
             const fade: f32 = @floatCast(@min(1.0, rho / @max(0.5 * @as(f64, env), 1e-6)));
-            const r: f32 = @max(0.25, env + res * fade);
+            const r: f32 = @max(self.floor, env + res * fade);
             return @as(f32, @floatCast(rho)) - r;
         }
     };
@@ -1186,7 +1260,11 @@ pub const World = struct {
                         var ii: u32 = 0;
                         while (ii < brick.N) : (ii += 1) {
                             const idx = Brick.index(ii, j, k);
-                            const nv = clamp.apply(pl[idx] + dp[idx]);
+                            const d = dp[idx];
+                            const nv = switch (channel.rule(bit)) {
+                                .touch => if (d != 0) clamp.apply(d) else pl[idx],
+                                else => clamp.apply(pl[idx] + d),
+                            };
                             max_delta = @max(max_delta, @abs(nv - pl[idx]));
                             pl[idx] = nv;
                         }

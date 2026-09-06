@@ -38,6 +38,8 @@ pub const RegionContext = struct {
     brick: *const Brick,
     dt: f64,
     epoch: u64,
+    /// Fed time of this step, seconds — what a touch time is read against.
+    time_s: f32,
     seed: u64,
     alloc: std.mem.Allocator,
     registry: *const channel.Registry,
@@ -260,8 +262,10 @@ pub const Healing = struct {
     tissue: f32 = 0.0,
     /// Seconds for regrown tissue to clear its damage mark.
     clear_time: f32 = 4.0,
-    /// A front is asked for only where activity is below this.
-    quiet: f32 = 0.05,
+    /// A front is asked for only where no front has passed for this many
+    /// seconds (Activity is a touch time). Nine seconds is where the
+    /// Phase 1 level, decaying from 1 with τ = 3, fell under 0.05.
+    quiet_s: f32 = 9.0,
     /// The front template for repair.
     params: front.Params = .{},
 
@@ -308,7 +312,9 @@ pub const Healing = struct {
                     }
                     if (phi_near >= self.tissue) continue;
                     // Wound boundary: a front may start here, by the deepest tissue.
-                    if (phi_near < best_phi and b.get(Channel.activity.bit(), i, j, k) < self.quiet) {
+                    const touched = b.get(Channel.activity.bit(), i, j, k);
+                    const still = touched == 0 or ctx.time_s - touched > self.quiet_s;
+                    if (phi_near < best_phi and still) {
                         best_phi = phi_near;
                         best_idx = idx;
                         best_p = p;

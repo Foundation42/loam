@@ -70,6 +70,14 @@ code had to make.
   the read-ahead distance (R + 1), so the exhaustion rate is coupled to
   step size (speed·dt) and to gauge (samples per sphere). Harmless at
   fixed gauge; the first thing refinement changes underfoot.
+- **Activity is a touch time.** (Evening, "The steady state" below.) The
+  fed second a front last passed a sample, overwritten, read as `now −
+  Activity`. Rejected: the Phase 1 level under a Decay operator, which
+  kept bricks changing for forty steps after the last front stopped and
+  doubled the changed set during growth — a cost that never converged.
+- **A quiet step publishes nothing.** No active brick, no live front,
+  nothing queued: the clock advances and the snapshot stands. A host
+  keyed on the vid sees no change because there was none.
 - **Age is a birth time.** The Age channel holds the fed time (seconds)
   at which a sample was first laid; the age of tissue is `now − Age`.
   Rejected: accumulated deposit exposure (the first cut — it answered
@@ -811,11 +819,11 @@ when the profile is asked for. Not a crutch: Debug is what we iterate in.
 
 **What stays a node quantity** (R14): Growth, Age, Activity, Light,
 Stimulus, Damage unchanged; Material is no longer written by fronts and
-stays for volumes; the healing operator, inhibition and avoid-self read
-the carrier (inhibited where φ one radius ahead is below `inhibit`, now
-a distance defaulting to 0; avoid-self follows +∇φ). The sapling's habit
-changed with it — it grows more sideways, with long low branches — a
-scene question for Christian's eyes, not a gate's.
+stays for volumes; the healing operator reads the carrier. The first
+cut had inhibition and avoid-self read the carrier itself — and the
+sapling's habit changed with it, which Christian said should be pinned
+as a check rather than a look; "The habit check" below is that check,
+and the reads are restored to the occupancy of the carrier.
 
 **The look.** `matryoshka test_scene --loam -13,0,3 --loam-scale 0.06
 --loam-speed 20 --cam -13.77,3,5.31,0.78,-0.42 --fixed-dt --frames 480
@@ -823,6 +831,198 @@ scene question for Christian's eyes, not a gate's.
 no view-dependent spikes; smooth collars where the hard union joins;
 the shadow and the reflection; and the finest tips end in nothing,
 which G13 said before the code was written.
+
+## The habit check (Sunday 2026-09-06, evening)
+
+Christian, on the sapling growing sideways: "a representation change
+shouldn't move a front. If the tree's habit changed, some read the front
+does changed meaning." Pinned as a check, not a look. `loam-run --trace
+FILE` writes every front's position, heading and arc length after every
+step; `tools/diff_traces.py A B` reports, per front, the first step at
+which two traces part by more than a hundredth of a unit and how far
+apart they end. Phase 1 is a worktree at `1586b57` with the same flag
+patched in; both binaries ReleaseFast; seed 7, the sapling, 160 steps,
+`--consume 0.2` (the mount's).
+
+| reads | trunk parts at | trunk apart at step 71 | fronts |
+|---|---|---|---|
+| P2 as committed (self-avoidance on +∇φ, inhibition on φ) vs P1 | step 2 | 24.7 | 20 vs 12 |
+| both with self-avoidance off | never (0.001–0.007 over 14 fronts, births and lifetimes equal) | — | 14 vs 14 |
+| P2 with the self-read restored to the occupancy vs P1 | step 3 | 4.7 | 14 vs 12 |
+
+So every read but one kept its meaning through the change of carrier —
+light, potential, inhibition, the B-spline's smoother sampling of them,
+all to a thousandth — and the one that moved was SELF-AVOIDANCE. Phase 1
+read −a∇Material, and Material was a contact profile: 1 inside the ring,
+falling to 0 over 0.75 units outside, flat everywhere else. The carrier's
+gradient is a unit vector everywhere within the band — three cells, not
+three quarters of one — and radially OUTWARD inside a tube, so a front
+was pushed off its own axis and branches repelled one another from three
+cells away: the trunk went straight up (horizontal reach 18 against 30)
+and the crown sprawled (20 fronts against 12). Restored: what a front
+reads of tissue is `World.occupancy`, the carrier through the same
+ramp, 1 inside and 0 beyond `SOFT` = 0.75 outside; self-avoidance is
+−a∇occupancy and inhibition is occupancy one radius ahead above
+`inhibit` = 0.6, both Phase 1's meanings to the number. The trunk then
+tracks Phase 1's for the whole run, the same lean toward the light, the
+same height (57 against 58.5), and 13 branches against 9 in G2's scene.
+
+The residue — 4.7 units at step 71, from step 3 — is Phase 1's own
+artefact, and a persistence sweep says so: no constant added to the
+heading term brings the traces together (the trunk is nearest at 1.0 and
+parts further at every higher value; other fronts prefer other values).
+Phase 1 laid a DISC per ring, and the front read the gradient of its
+own last disc's tail at its own position — an axial push of about 0.17
+along the heading when the discs overlapped straight, and a turning
+force when they did not, scaled by the potential it found. The capsule's
+round cap surrounds the front and gives it nothing to read of itself.
+That is the better meaning — a front should not steer off tissue it laid
+a step ago — so it is kept, and recorded here as the one place Phase 2's
+habit differs from Phase 1's by intent. The frozen reference moves for
+the restored reads, `aff19f32…` → `9c83587f…`, a reviewed event.
+
+Instruments kept: `--trace`, `--avoid`, `--inhibit`, `--persist` on
+`loam-run`; `tools/diff_traces.py`. Merge is Christian's call, and now
+an understood one.
+
+## The survival floor (Sunday 2026-09-06, evening, Christian watching it grow)
+
+"I am still seeing visible gaps in the branches … Not rendering I don't
+think." Two candidates, separated with numbers before anything moved.
+The renderer: loam's own sphere tracer on the grown sapling, 4000 rays
+into the crown, at the shader's budget (96 steps, a hundredth of a
+sample) stalled on 19 rays and reported a miss — grazing rays converge
+linearly; at 192 steps and a fiftieth of a sample, none. Fixed in the
+shader; speckle, not gaps. The field: a twig at r/h near 1 carries a
+ring residual of up to a quarter of its radius, and where the residual
+dipped the radius under G13's survival floor (0.78h) the zero set
+vanished locally — the loss G13 predicted at the tips, along a twig's
+length instead. Christian was right that it was not rendering.
+
+The ruling, PROPOSED against Christian's own from the morning ("a
+structural feature of radius r belongs at a gauge with h ≤ r/2"): a
+front lays NOTHING THINNER THAN THE SURVIVAL FLOOR, `Params.min_radius`
+defaulting to G13_SURVIVE_R_OVER_H × h of the default gauge (1.0 at
+gauge 0) — the ring's radius is clamped there in `Capsule.signed`. The
+demand for a finer gauge is counted, not met: `StepStats.below_faithful`
+is the front steps taken with an envelope under the faithful floor (2h),
+and `loam-run` prints the total as "refinement's demand". Rejected for
+now: stopping a front whose envelope falls under the floor (the
+principled stand-in for refinement — the tree would lose almost every
+generation-3 twig in its first tenth, since 1.03 × (1 − 0.35t) reaches
+1.0 at t ≈ 0.08 — kept as the alternative Christian may strike). A
+happy coincidence recorded, not relied on: a twig clamped to r = h
+reconstructs 25% thinner (G13's row), 0.75h, close to the 0.67h the
+taper asked for. The frozen reference moves `9c83587f…` → `6677f35e…`.
+The habit check re-run against Phase 1 with the floor in: the trunk and
+the first-generation branches unchanged from the occupancy result; the
+thin fronts move, as they must, since their tubes are thicker than
+Phase 1 laid.
+
+## The steady state (Sunday 2026-09-06, evening)
+
+Christian: "What can we do about the step cost? Also, I notice even
+after the fields converge there still seems to be a cost at steady
+state, so we should fix that … stop it at source if none of the input
+parameters changed." Measured first, Debug, serial, seed 7, 400 steps:
+
+| phase of the run | active | changed a step | ms a step | of which |
+|---|---|---|---|---|
+| growth, step 80 | 94 | 103 | 91 | seams 46, finalize 32 |
+| fronts stopped, step 120 | 49 | 74 | 60 | seams 27, finalize 25 |
+| quiet, step 160 on | 0 | 0 | 0.07 | publish 0.05 |
+
+Two sources. The quiet cost was `publish`: every step made a new
+snapshot under a new vid — a walk of all 4441 nodes to count them, a
+copy of the fronts — and a host reading the vid re-packed the field
+for the GPU once a loam second for nothing. The larger one was the
+Activity channel: a level decaying with τ = 3 s under a Decay operator,
+which kept about fifty bricks changing for forty steps after the last
+front stopped (a change under the floor takes τ·ln(1/ε) = 41 steps to
+arrive), and during growth made most of the hundred changed bricks a
+step decaying, not growing — every one of them cloned, seamed, haloed,
+finalized and rebuilt into the tree.
+
+Both stopped at source. **A quiet step publishes nothing** (`World.
+isQuiet`): no active brick, no live non-dormant front, no spawn
+pending, nothing authored — then no operator would run and no front
+would deposit, the commit would republish the same tree, and a dormant
+front cannot wake since waking needs its brick active. The clock
+advances, the snapshot stands, the vid does not move, and the bridge
+does not repack. (`youngComponents` reads the world's clock, not the
+snapshot's.) **Activity is a touch time** (proposed, as Age is a birth
+time): the fed second a front last passed, written where its sweep
+reaches (`Rule.touch`: overwritten, every front this step writing the
+same second), read as `now − Activity` — the healing operator asks for
+a front where nothing has passed for `quiet_s` = 9 s, which is where the
+old level fell under 0.05. The sapling mounts no Decay; the decay gate
+keeps its closed form on Temperature. Nothing decays, so nothing churns.
+Node counts ride on the nodes (`Node.nodes`, `Node.bricks`), so a
+snapshot's counts are the root's.
+
+After, same run:
+
+| phase of the run | active | changed a step | ms a step |
+|---|---|---|---|
+| growth, step 80 | 34 | 35 | 28 |
+| fronts stopped, step 120 | 0 | 0 | 0.00 |
+| quiet | 0 | 0 | 0.00 |
+
+The gates on the touch time: G5 5,853 evaluations over 80 steps (of
+292,160 all-regions; one operator mounted now); G4 53 bricks touched, 0
+outside, 1,234 samples regrown, 40 fronts (healing asks for a front
+where nothing has passed for 9 s); G2 13 branches, 6 young-tissue
+components; G3 r̄ 26.19, lower 24.56, 6/6, σ₀ 7.51.
+
+A correction on the record. The suite run after the survival floor was
+read as green from its log's last line, which was the exit status of
+the `grep` it was piped through, not the build's; it had two failures —
+G1 against a stale reference, because the shell that carried the
+floor's re-baseline killed itself (its `pkill` matched its own command
+line) before the edit ran, and the G4 mutation. The suite after the
+steady state found both. The reference now carries every event; the
+G4 mutation's instrument counts samples of the carrier inside the box
+rather than the reconstruction, which smooths the cut's wall across a
+cell and read 18 points of tissue where the trunk ran along it; and a
+scene with no operator mounted counts as evaluated when time passes,
+so the G4 mutation's season can end. Lesson for the ledger: a suite is
+green when its summary line says so, never when a pipe exits zero.
+
+Growth three times cheaper, the tail gone, the steady state free. What
+is left of a growing step is the seam-and-halo phase (14 ms of 28) and
+finalize (9 ms, the 11³ summary); the next two things to look at are
+building each changed brick's neighbourhood once a commit instead of
+once a pass (three passes now), and the summary's per-entry
+`blockPoint`. Not done: the day's frozen reference has moved four times
+and each was a reviewed event; this one moves it again.
+
+## Attention pre-registered (Sunday 2026-09-06, evening)
+
+Christian: "a variance or attention score associated with the cells, so
+the step updates where things are changing — it would be like Box3D with
+sleeping states, but differentiable … it's worth doing now since it's
+load-bearing to the entire system. Pre-register it beside P2.2." Done in
+the brief as R15 and G14, beat P2.1a, ordered ahead of P2.2; the numbers
+PROPOSED in `thresholds.zig` before anything runs (τ = 3 s, the budget
+fraction ½, the deviation floor 5%). The design decision that matters is
+recorded there: attention is DERIVED from (a₀, t₀) — the magnitude and
+time of a brick's last change — never stepped, the touch-time trick a
+third time, so it has no tail and a quiet world stays quiet; the active
+set keeps its exact rule and attention orders it under a budget and
+feeds the readers (summaries, the render budget, D2's criterion).
+Nothing of it is built; the brief precedes the spade.
+
+And beside it, the same evening, the budget (R16, G15, P2.1b): Christian
+— "a budget policy for the updates to keep everything within a specific
+time cost. It's perfectly fine if it takes longer than a single frame
+update, as long as we can make it all restartable and carry on." The
+design decision recorded: the budget is FED in work units, as time is
+fed, never read from a clock — a wall-clock deadline inside the step
+would make the hash a property of the machine — and the step becomes
+`begin` / `work(units)` / `finish` with its state on the world, exact
+across any number of calls (SPREAD) because the phases are region-local
+already, with a CUT mode that commits the attention-ordered head and
+carries the rest forward. G15's numbers PROPOSED beside G14's.
 
 ## P1.7 — the seedbed (2026-09-06)
 

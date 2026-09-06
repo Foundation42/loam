@@ -26,7 +26,6 @@ def sapling(seed=7, steps=30):
     w.blob("light", (40, 60, 0), 64, 1.0)
     w.plant((0, 0, 0), (0, 1, 0), length=72, tropism_light=0.6)
     w.apply()
-    w.add_decay("activity", tau=3.0)
     w.add_healing()
     w.run(steps)
     return w

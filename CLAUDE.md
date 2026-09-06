@@ -96,6 +96,13 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   times while agreeing with itself at every thread count.
 - **Randomness is counter-based.** `rng.Stream` hashes (seed, who, epoch,
   counter); nothing draws sequentially, so parallel order cannot leak in.
+- **A quiet step publishes nothing.** No active brick, no live
+  non-dormant front, no spawn pending, nothing authored: `step` advances
+  the clock and returns; the vid stands. Activity is a TOUCH TIME (the
+  fed second a front last passed; `Rule.touch`), never a decaying level:
+  a decaying level kept fifty bricks changing for forty steps after the
+  last front stopped. Read warmth as `now − Activity`, with the world's
+  clock, not the snapshot's.
 - **Snapshots are immutable and refcounted.** A published brick is never
   handed out as `*Brick`. The commit clones what it changes; untouched
   subtrees are shared by identity (G4 checks identity, not equality).
@@ -119,6 +126,18 @@ brick at the same gauge, the general path for the void and for mixed
 gauges (an entry at the edge of a face slab is held by the next cell
 over) — and applies them sorted. They must agree, and the guard is the
 witness, not the cache.
+
+## A change of representation must not move a front
+
+What a front READS is a contract apart from what it deposits into.
+Self-avoidance and inhibition read `World.occupancy` — the carrier as
+Phase 1's Material profile, 1 inside and a 0.75-unit ramp outside —
+never the carrier's own gradient, which is a unit vector three cells out
+and pointed off the tube's axis inside it (the trunk moved 25 units by
+step 160 when it did). The check is `loam-run --trace` on both sides of
+a change and `tools/diff_traces.py` between them: every read that kept
+its meaning agrees to a thousandth of a unit, and the one that did not
+names itself by the first step it moved.
 
 ## Thresholds are Christian's
 

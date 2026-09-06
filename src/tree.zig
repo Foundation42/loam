@@ -42,6 +42,11 @@ pub const Node = struct {
     refs: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
     summary: Summary = .{},
     hash: [32]u8 = ZERO_HASH,
+    /// Nodes and bricks in this subtree, itself included — kept here so a
+    /// snapshot's counts are the root's, not a walk of the tree at every
+    /// publish (the quiet step's only cost, once).
+    nodes: u32 = 1,
+    bricks: u32 = 0,
     kind: union(enum) {
         inner: [8]?*Node,
         leaf: *Brick,
@@ -68,7 +73,7 @@ pub const Node = struct {
     /// A leaf over a brick the caller has already retained for it.
     fn makeLeaf(gpa: std.mem.Allocator, b: *Brick) !*Node {
         const n = try gpa.create(Node);
-        n.* = .{ .key = b.key, .summary = b.summary, .hash = b.hash, .kind = .{ .leaf = b } };
+        n.* = .{ .key = b.key, .summary = b.summary, .hash = b.hash, .kind = .{ .leaf = b }, .nodes = 1, .bricks = 1 };
         return n;
     }
 
@@ -79,17 +84,21 @@ pub const Node = struct {
         var h = Blake3.init(.{});
         const raw = key.raw();
         h.update(std.mem.asBytes(&raw));
+        var nodes: u32 = 1;
+        var bricks: u32 = 0;
         for (children) |c| {
             if (c) |cn| {
                 s = Summary.merge(s, cn.summary);
                 h.update(&cn.hash);
+                nodes += cn.nodes;
+                bricks += cn.bricks;
             } else {
                 h.update(&ZERO_HASH);
             }
         }
         var out: [32]u8 = undefined;
         h.final(&out);
-        n.* = .{ .key = key, .summary = s, .hash = out, .kind = .{ .inner = children } };
+        n.* = .{ .key = key, .summary = s, .hash = out, .kind = .{ .inner = children }, .nodes = nodes, .bricks = bricks };
         return n;
     }
 };
@@ -407,19 +416,10 @@ pub const Snapshot = struct {
         return list.toOwnedSlice();
     }
 
+    /// The root's counts: O(1), kept on every node at build.
     pub fn countNodes(self: *const Snapshot) struct { nodes: u32, bricks: u32 } {
-        var nodes: u32 = 0;
-        var leaves: u32 = 0;
-        if (self.root) |r| countRec(r, &nodes, &leaves);
-        return .{ .nodes = nodes, .bricks = leaves };
-    }
-
-    fn countRec(n: *const Node, nodes: *u32, leaves: *u32) void {
-        nodes.* += 1;
-        switch (n.kind) {
-            .leaf => leaves.* += 1,
-            .inner => |ch| for (ch) |c| if (c) |cn| countRec(cn, nodes, leaves),
-        }
+        const r = self.root orelse return .{ .nodes = 0, .bricks = 0 };
+        return .{ .nodes = r.nodes, .bricks = r.bricks };
     }
 };
 

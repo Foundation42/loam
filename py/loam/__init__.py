@@ -12,7 +12,6 @@ print the same hash.
     w.blob("light", (40, 60, 0), 64, 1.0)
     w.plant((0, 0, 0), (0, 1, 0), tropism_light=0.6)
     w.apply()
-    w.add_decay("activity", tau=3.0)
     for t in range(60):
         w.step(t, t * 1_000_000_000)
     print(w.root_hash().hex(), w.stats())

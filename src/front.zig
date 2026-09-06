@@ -66,11 +66,21 @@ pub const Params = struct {
     /// around the front — the resource a front uses up as it passes, so
     /// dormancy is exhaustion and a wound's restored potential is local.
     consume: f32 = 1.0,
-    /// The carrier one radius ahead below this — inside tissue — inhibits
-    /// the front. Potential is read at the same point: a front grows
-    /// into what is ahead of it, not what it stands in. Lattice units;
-    /// zero is the surface itself.
-    inhibit: f32 = 0.0,
+    /// Occupancy one radius ahead above this inhibits the front — the
+    /// carrier read as Phase 1 read Material: 1 inside, falling to 0 over
+    /// `World.SOFT` outside (`World.occupancy`). Potential is read at the
+    /// same point: a front grows into what is ahead of it, not what it
+    /// stands in.
+    inhibit: f32 = 0.6,
+    /// The thinnest tube a front lays, lattice units; 0 means the gauge's
+    /// SURVIVAL FLOOR from G13 (r/h ≥ 1, struck): below it the B-spline
+    /// loses the zero set, and a twig whose ring residual dipped under it
+    /// showed as gaps along its length — the representation telling the
+    /// truth about what the gauge can carry (Christian, watching it
+    /// grow: "visible gaps in the branches"). The ring's radius is
+    /// clamped at the floor; the demand for a finer gauge is counted
+    /// (`StepStats.below_faithful`), and refinement (D2) is where it goes.
+    min_radius: f32 = 0,
     /// Collar radius k of the front's smooth union (R10), lattice units.
     /// Zero — the hard union — in P2.1: a chain of a front's own capsules
     /// smooth-unioned with k > 0 dips k/4 at every joint (beads); the

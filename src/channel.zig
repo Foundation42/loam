@@ -65,12 +65,16 @@ pub fn band(spacing: u32) f32 {
 }
 
 /// How the commit merges a delta into a sample. Additive is the rule;
-/// Age is written once (a birth time); Surface is a smooth union with
-/// the collar radius carried on the op (R10).
-pub const Rule = enum { add, set_once, smin };
+/// Age is written once (a birth time); Activity is overwritten (a touch
+/// time: the fed second a front last passed, so "warm" is `now − Activity`
+/// and nothing decays — a decaying level kept fifty bricks changing for
+/// forty steps after the last front stopped); Surface is a smooth union
+/// with the collar radius carried on the op (R10).
+pub const Rule = enum { add, set_once, touch, smin };
 
 pub fn rule(bit: u6) Rule {
     if (bit == Channel.age.bit()) return .set_once;
+    if (bit == Channel.activity.bit()) return .touch;
     if (bit == Channel.surface.bit()) return .smin;
     return .add;
 }
@@ -157,8 +161,8 @@ pub const Registry = struct {
 
     fn defaultClamp(ch: Channel) Clamp {
         return switch (ch) {
-            .density, .extinction, .age, .temperature, .emission => .{ .lo = 0 },
-            .albedo, .roughness, .activity, .material, .damage, .growth => .{ .lo = 0, .hi = 1 },
+            .density, .extinction, .age, .activity, .temperature, .emission => .{ .lo = 0 },
+            .albedo, .roughness, .material, .damage, .growth => .{ .lo = 0, .hi = 1 },
             .light, .stimulus, .surface => .{},
             .velocity_x, .velocity_y, .velocity_z => .{},
         };
@@ -235,6 +239,7 @@ test "smin: exact where apart, at most k/4 below where equal, far is the identit
     try std.testing.expect(smin(0.2, 0.3, 1, bd) < 0.2);
     try std.testing.expectEqual(Rule.smin, rule(Channel.surface.bit()));
     try std.testing.expectEqual(Rule.set_once, rule(Channel.age.bit()));
+    try std.testing.expectEqual(Rule.touch, rule(Channel.activity.bit()));
     try std.testing.expectEqual(Rule.add, rule(Channel.growth.bit()));
     try std.testing.expect(isAbsent(Channel.surface.bit(), bd, bd) and !isAbsent(Channel.surface.bit(), 2.9, bd));
     try std.testing.expect(reaches(Channel.surface.bit(), 2.9, bd, 1e-6) and !reaches(Channel.surface.bit(), bd, bd, 1e-6));

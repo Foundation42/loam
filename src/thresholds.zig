@@ -122,6 +122,27 @@ pub const G9_TOL: f32 = 1e-5; // PROPOSED
 /// overshoots, zero late hits, in all of them.
 pub const G11_RAYS: u32 = 4096; // PROPOSED
 
+/// G14 (Phase 2, P2.1a — pre-registered, not built): attention is
+/// a(t) = a₀·exp(−(t − t₀)/τ) from a brick's last change (a₀, t₀), never
+/// stepped (R15). τ is a reader's choice; this is the sim's, for the
+/// active set's order under a budget and for the summaries. The floor is
+/// the change floor, EPSILON: what was not a change is not attention.
+pub const ATTENTION_TAU_S: f32 = 3; // PROPOSED — the Phase 1 Activity level's τ
+/// G14 (c): the budget the gate grows the sapling under, as a fraction of
+/// each step's active bricks, and how far the budgeted run's inside count
+/// may end from the unbudgeted run's.
+pub const G14_BUDGET_FRACTION: f32 = 0.5; // PROPOSED
+pub const G14_MAX_DEVIATION: f32 = 0.05; // PROPOSED — of the unbudgeted inside count
+
+/// G15 (Phase 2, P2.1b — pre-registered, not built): the budget is fed in
+/// WORK UNITS (R16), never milliseconds. (a) steps spread over calls of
+/// G15_UNITS publish the frozen reference exactly; (c) CUT at
+/// G15_CUT_FRACTION of a step's units ends within G15_MAX_DEVIATION of
+/// SPREAD.
+pub const G15_UNITS: u32 = 8; // PROPOSED — small enough that the wounded sapling's steps span many calls
+pub const G15_CUT_FRACTION: f32 = 0.5; // PROPOSED
+pub const G15_MAX_DEVIATION: f32 = 0.05; // PROPOSED — of SPREAD's inside count
+
 /// The change floor: a brick whose largest committed delta is below this
 /// is not active next step, and a boundary sample below it does not
 /// materialise a neighbour.
@@ -136,5 +157,15 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// `371e0e2d…`; review 2026-09-06 `74cc820b…` (Age became birth time);
 /// P2.1 `aff19f32…` (the carrier: fronts sweep capsules into `surface`,
 /// planes are 11³ blocks, the wound is a cut, fronts carry their
-/// previous ring).
-pub const G1_REFERENCE: []const u8 = "aff19f3260151289dfaa53e939f89a70fccf892760f1e6774aa32fa2b0c05211";
+/// previous ring); P2.1 habit check `9c83587f…` (the front's self-read
+/// restored to the occupancy of the carrier — 1 inside, a 0.75-unit ramp
+/// outside — as Phase 1 read Material; the carrier's own gradient had
+/// moved the trunk 25 units by step 160); the survival floor `6677f35e…`
+/// (a front lays nothing thinner than G13_SURVIVE_R_OVER_H × h — twigs
+/// whose ring residual dipped under it showed as gaps along their length);
+/// the steady state `5220c6f2…` (Activity a touch time, no Decay mounted,
+/// a quiet step publishing nothing; the wounded fixture spawns 7 fronts
+/// where the decaying level let 11). The floor's and the steady state's
+/// re-baselines were lost once to a shell that killed itself before its
+/// edit ran; the suite caught it.
+pub const G1_REFERENCE: []const u8 = "5220c6f21046e52b7410ff80b8663d8a95e079fe6c2baeda4358f5e431d0b5ea";

@@ -40,6 +40,10 @@ const usage =
     \\  --all-regions        iterate every brick, not the active set (the G5 mutation)
     \\  --active             print the active set at the end
     \\  --every N            print a line every N steps (default 10; 0 = none)
+    \\  --trace FILE         after every step, one line per front: step id alive dormant x y z dx dy dz s (lattice units)
+    \\  --avoid A            the front's self-avoidance coefficient (default 0.5)
+    \\  --inhibit I          the front's inhibition threshold (default the params')
+    \\  --persist P          the front's heading persistence (default 1)
     \\  --phases             print wall-clock per phase beside each line
     \\  --tropism-sweep D,D,…  the G3 ensemble at each stimulus displacement D (dose-response), then exit
     \\  --seeds N            seeds in the ensemble (default 6)
@@ -70,6 +74,10 @@ const Opts = struct {
     active: bool = false,
     every: u32 = 10,
     phases: bool = false,
+    trace: ?[]const u8 = null,
+    avoid: ?f32 = null,
+    inhibit: ?f32 = null,
+    persist: ?f32 = null,
     sweep: std.ArrayListUnmanaged(f64) = .{},
     seeds: u64 = 6,
     coeff: f32 = seedbed.TROPISM_COEFF,
@@ -189,6 +197,14 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             o.coeff = try std.fmt.parseFloat(f32, try next(args, &i));
         } else if (std.mem.eql(u8, a, "--every")) {
             o.every = try std.fmt.parseInt(u32, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--trace")) {
+            o.trace = try next(args, &i);
+        } else if (std.mem.eql(u8, a, "--avoid")) {
+            o.avoid = try std.fmt.parseFloat(f32, try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--inhibit")) {
+            o.inhibit = try std.fmt.parseFloat(f32, try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--persist")) {
+            o.persist = try std.fmt.parseFloat(f32, try next(args, &i));
         } else {
             std.debug.print("unknown flag: {s}\n", .{a});
             return error.UnknownFlag;
@@ -261,6 +277,12 @@ pub fn main() !void {
     scene.deposit = opts.deposit;
     scene.consume = opts.consume;
     scene.heal = opts.heal;
+    scene.avoid = opts.avoid;
+    scene.inhibit = opts.inhibit;
+    scene.persist = opts.persist;
+    var trace_file: ?std.fs.File = null;
+    if (opts.trace) |path| trace_file = try std.fs.cwd().createFile(path, .{});
+    defer if (trace_file) |f| f.close();
     var timer = try std.time.Timer.start();
     try scene.build(&world, opts.scene);
     const build_ms = @as(f64, @floatFromInt(timer.lap())) / 1e6;
@@ -284,6 +306,14 @@ pub fn main() !void {
         try world.step(.{ .frame = step, .time_ns = step * opts.dt_ms * std.time.ns_per_ms }, js);
         const ms = @as(f64, @floatFromInt(timer.read())) / 1e6;
         total_ms += ms;
+        if (trace_file) |f| {
+            // The front's state after the step, lattice units about the
+            // scene origin: what a representation change must not move.
+            const c: f64 = @floatFromInt(loam.lattice.CELLS / 2);
+            for (world.published().fronts) |fr| {
+                try f.writer().print("{d} {d} {d} {d} {d:.6} {d:.6} {d:.6} {d:.6} {d:.6} {d:.6} {d:.4}\n", .{ step, fr.id, @intFromBool(fr.alive), @intFromBool(fr.dormant), fr.pos[0] - c, fr.pos[1] - c, fr.pos[2] - c, fr.dir[0], fr.dir[1], fr.dir[2], fr.s });
+            }
+        }
         if (opts.every > 0 and (step % opts.every == 0 or step == opts.steps)) {
             const s = world.stats;
             var live: usize = 0;
@@ -303,7 +333,7 @@ pub fn main() !void {
     const snap = world.published();
     try stdout.print("done: {d} steps in {d:.1} ms ({d:.2} ms/step), {d} bricks, {d} nodes, {d} fronts, vid {d}\n", .{ opts.steps, total_ms, total_ms / @as(f64, @floatFromInt(opts.steps + 1)), snap.brick_count, snap.node_count, snap.fronts.len, snap.vid });
     try stdout.print("root_hash    {s}\ncontent_hash {s}\n", .{ loam.dump.hex(snap.rootHash()), loam.dump.hex(snap.contentHash()) });
-    try stdout.print("inside {d}  growth {d:.3}  activity {d:.3}\n", .{ seedbed.insideCount(&world), seedbed.total(&world, Channel.growth.bit()), seedbed.total(&world, Channel.activity.bit()) });
+    try stdout.print("inside {d}  growth {d:.3}  front-steps below the faithful floor {d} (refinement's demand)\n", .{ seedbed.insideCount(&world), seedbed.total(&world, Channel.growth.bit()), world.total.below_faithful });
 
     if (opts.ray) |r| {
         const c = try seedbed.rayCount(&world, .{ r[0], r[1], r[2] }, .{ r[3], r[4], r[5] }, Channel.surface.mask() | Channel.density.mask(), .primary);

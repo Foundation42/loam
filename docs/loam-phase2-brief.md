@@ -18,8 +18,8 @@ Status, Sunday 2026-09-06: **R7 STRUCK** and **G13 STRUCK** by Christian
 ("Strike both. Dig."), with the ruling he drew from the number — a
 structural feature of radius r belongs at a gauge with h ≤ r/2; below
 that the feature belongs at a finer gauge, not at a prefilter. P2.1 is
-built (the ledger, "P2.1 — the carrier"); R8–R14 stand as proposed
-against the code.
+built (the ledger, "P2.1 — the carrier"); R8–R14 stand, accepted as
+proposed the same day ("I'd let them stand").
 
 **R7 — Reconstruction: a scalar halo and a cubic B-spline.** Every
 channel stays one plane; a brick stores an 11³ block — its 9³ samples and
@@ -88,7 +88,62 @@ provenance, how some of it came to exist.
 
 **R14 — What stays a node quantity.** Growth, Age, Activity, Light,
 Stimulus, Damage: conserved, diffusing, additive, unchanged. Density and
-Extinction stay for volumes. The tree stops being a volume.
+Extinction stay for volumes. The tree stops being a volume. (Activity
+became a touch time on Sunday evening — the ledger, "The steady state".)
+
+**R15 — Attention is derived, never stepped.** (Christian, Sunday
+evening: "a variance or attention score associated with the cells, so
+the step updates where things are changing — like Box3D with sleeping
+states, but differentiable." Ordered ahead of P2.2: load-bearing to the
+entire system.) Every brick carries the MAGNITUDE of its last committed
+change and the fed second it landed, (a₀, t₀), written at commit from the
+change that reached it — its own deltas, or a seam or halo write from a
+neighbour, whichever was larger — and nowhere else. Attention at any
+moment is a(t) = a₀ · exp(−(t − t₀)/τ), computed where it is read.
+Nothing is stepped to maintain it: a quiet world stays quiet, and two
+readers may choose two τ. It lives in the snapshot's bookkeeping beside
+the active set, in the content hash (it decides what the next step
+does), not in the brick's planes. Merged by MAX up the tree into
+`Summary.attention`, so "where is the world changing" is answered from
+the walk alone, as G6 answers "where is there anything". Rejected: an
+exponential moving average stepped on every brick — the tail the touch
+time just removed, brought back as a scalar; a wake fraction handed to
+neighbours — the magnitude of what actually reached a neighbour is the
+honest graded wake, and the seam and halo writes already carry it. The
+active set stays what it is — changed above the floor, or a live front
+— since for local operators that rule is exact; attention orders the
+active set when a BUDGET is set, and is what readers see.
+
+**R16 — The budget is fed, in work units, and a step is resumable.**
+(Christian, Sunday evening: "a budget policy for the updates to keep
+everything within a specific time cost. It's perfectly fine if it takes
+longer than a single frame update, as long as we can make it all
+restartable and carry on.") Time is fed, never read (R6), and so is the
+budget: `work(units)` takes a count of UNITS — a brick evaluated, a
+brick applied, seamed, haloed or finalized, each a unit of known shape —
+never milliseconds. A host measures what a unit costs it and feeds the
+count its frame can afford; two hosts feeding the same counts publish
+the same hash, and the budget is an input to G1 like dt. A step becomes
+three calls — `begin(now)`, `work(units) → done?`, `finish()` — with its
+state (the update buffer, the changed set, the phase and its cursor)
+held on the world between them. The operate phase and the front pass
+are region-local and order-free already, so any subset in any order
+against the one base snapshot is exact; the commit's phases are per
+changed brick and chunk the same way, with their two sorted apply
+passes and the tree build the serial remainder; publish is one atomic
+swap at `finish`, and readers hold the old snapshot until then (R3, G8:
+the hazard slots were built for a next that takes its time). Two modes.
+SPREAD, the default: the step runs to completion across as many calls
+as it takes — exact, the same hash as one call, and the loam clock
+advances per STEP, so a world that cannot keep up with fed time simply
+lags, which is the host's cadence policy to feel. CUT: `finish` may be
+called with work undone — the bricks evaluated are the highest by
+attention (R15), the rest carry forward with their attention intact —
+Box3D's islands going to sleep under load, graded, and deterministic
+because the cut lands on a fed count. Rejected: a wall-clock deadline
+inside the step (the hash would depend on the machine); dropping the
+undone work (a brick skipped under a cut keeps its attention and is
+first next step).
 
 ## 2. Gates first (pre-registered)
 
@@ -103,6 +158,8 @@ that must bite.
 | G11 Sphere trace | a march stepped by \|φ\|/L never overshoots the zero set | for N random rays, the first sign change lies within one bisection tolerance of the hit; no hit missed that a dense march finds | 0 misses in ⟨4096⟩ rays | step by 2\|φ\|/L → overshoots |
 | G12 Collar | smooth union is smooth at a branch | \|∇φ\| continuous across the junction; provenance-blended band signal continuous | no jump above ⟨…⟩ | hard min → a crease; nearest-front ownership → the bark rotates |
 | G13 Thin feature (STRUCK) | sub-gauge structure survives the B-spline | a straight capsule across a radius sweep ⟨0.5 … 6⟩ r/h, nine axis offsets in the cell, three orientations: whether the zero set survives, and r_rec/r worst and best | (a) the instrument reads the prediction: survival matches, r_rec/r within ⟨1%⟩ of `tools/g13_predict.py`; (b) survives at r/h ≥ ⟨1.0⟩; (c) \|r_rec − r\|/r ≤ ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and thinner is refinement's problem | gauge doubled without refinement → vanishes at 1.0, thins 30% at 2.0 (bites b, c); control values half a cell off → ±40% at 2.0 (bites a, c); trilinear → survives lower, thins less (bites a only: the instrument's variation, recorded) |
+| G14 Attention | the step's work follows where things are changing, and a reader can see it without touching a brick | (a) evaluations == Σ ops over bricks with a(now) > floor, every step (G5 made graded); (b) a walk rejecting attention-zero subtrees from summaries alone visits exactly the bricks changed within τ·ln(a₀/floor) of now; (c) under a budget of ⟨50%⟩ of the step's active bricks, the ones evaluated are the highest-attention ones, and the sapling grown under budget ends within ⟨5%⟩ of the unbudgeted run's inside count | exact; exact; ⟨5%⟩ | (a) attention ignored → evaluations scale with the brick count; (b) attention not merged → the walk visits every brick; (c) budget taken in key order instead of attention order → the tips lag and the deviation exceeds the floor |
+| G15 Budget | a step spread over frames is the same step, and a call never exceeds its budget | (a) the wounded sapling stepped through `work(B)` in calls of ⟨B = 8⟩ units publishes the frozen reference — exactly; (b) no call performs more than B units, any phase; (c) under CUT at ⟨50%⟩ of each step's units the evaluated set is the attention-ordered head, and the run ends within ⟨5%⟩ of SPREAD's inside count | exact; exact; ⟨5%⟩ | (a) a chunk reading a brick another chunk already changed → the hash moves; (b) the seam and halo apply passes left unchunked → a call exceeds B; (c) the cut taken in key order → the deviation exceeds the floor |
 | G1 again | replay, end to end, with the new carrier | frozen reference, re-baselined as a reviewed event with old and new in the ledger | identical | commit order reversed |
 | The look | the trunk with no facets | the close-up at `--loam-scale 0.06` | Christian's eyes | — |
 
@@ -168,11 +225,56 @@ reconstruction is checked with before anything is grown on it — then
 G9, G10, G11, G1 re-baselined.
 The bridge and the shader move from `material` iso to `surface` zero.
 
+**P2.1a — attention** (pre-registered Sunday evening; ordered ahead of
+P2.2 by Christian). (a₀, t₀) per brick in the snapshot beside the active
+set, written at commit from the largest change that reached the brick;
+`Summary.attention` merged by max; `World.attention(key, now)` and a
+walk that rejects on it; `Policy.budget` — evaluations a step may
+spend, the active set ordered by attention when it is set, the rest
+carried forward unevaluated with their attention intact; the bridge's
+dirty-set upload from t₀ (the deferred fill D1 named, for free). Gate:
+G14 with its three mutations; G5 restated on it; G1 re-baselined as a
+reviewed event if the hash moves (it will: the bookkeeping is in it).
+What it feeds later: D2's criterion (refine where attention is high and
+the front's radius is under the faithful floor; coarsen where attention
+has been zero for a season), the render budget (samples where attention
+is high, temporal accumulation where it is zero), and a score a front
+or a controller can read.
+
+**P2.1b — the budget** (pre-registered the same evening; R16, G15). The
+step as `begin` / `work(units)` / `finish` with its state on the world;
+units defined per phase and counted (`StepStats.units`); the commit's
+per-brick phases behind a cursor; SPREAD and CUT; `loam-run --budget B`
+as the instrument (steps per fed second and calls per step printed);
+the bridge feeding a count per frame from a measured cost per unit,
+with its lag against fed time printed. Gate: G15 with its three
+mutations. G1 re-baselined only if the hash moves under SPREAD — it must
+not, and that is (a).
+
 **P2.2 — history and bands.** Provenance at deposition; ring history on
 the front; bands 1–2 through the charts, blended by collar weights; bands
 3+ procedural; footprint-bandlimited queries by class. Gates: G12; a
 Sponge-class query that touches band 0 only, with "ignore the class" as
 the mutation.
+
+*The collar, weighed before the spade (Christian, Sunday evening).* P2.1
+deposits a front's tube as a chain of capsules joined by the hard union,
+because a chain smooth-unioned with k > 0 beads: smin(a, a) = a − k/4 at
+every joint. That is a REPRESENTATION cost of building a branch out of
+capsules, not a lighting one, and two answers are on the bench for
+P2.2. (1) A gradient-gated collar: blend only where the two fields'
+gradients disagree, never along a tube — the local fix, k a tuning
+constant. (2) The loft never had joints along a branch; it had a spine.
+One swept tube per branch — the spine a spline through the ring centres,
+the radius a function of s — has no interior joins to bead, and the
+smooth union then happens only where a collar is real, at a bud, with
+k the child's radius at the join: a number with a biological referent,
+and G12 a gate on that rather than on a fix. Its cost: the tube's last
+few segments must be RE-EVALUATED as the spline extends, so the front
+replaces its own recent deposit instead of unioning into it — which is
+exactly what provenance at the nodes (front id, segment) makes possible,
+and P2.2 is where provenance arrives. The capsule chain may still win
+on simplicity for now; the choice is made in P2.2's brief, not here.
 
 **P2.3 — the picture.** Bark from the bands; the close-up; the ensemble
 near the surface for the silhouettes if the footprint truncation leaves
@@ -194,3 +296,4 @@ any (stable temporal sampling, spec Phase 2).
 | Unordered smooth union | R10, log-sum-exp | a scene where front order is the parallel merge's cost |
 | Hermite with stored gradients | R7 | P2.1's fetch count measured and found to matter |
 | Cross-gauge C1 | R9 | the same trigger as D2 |
+| Per-region cadence (a brick at low attention stepping every k steps with accumulated dt) | R15 | sub-cycling across a seam with conservation defended; not before D2 |

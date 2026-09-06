@@ -269,16 +269,16 @@ test "decay: v(t) = v₀·exp(−t/τ) exactly, whatever the step" {
     const gpa = testing.allocator;
     var w = try World.init(gpa, .{ .seed = 1 });
     defer w.deinit();
-    try seedbed.blob(&w, Channel.activity.bit(), .{ 0, 0, 0 }, 5, 1.0, 0);
+    try seedbed.blob(&w, Channel.temperature.bit(), .{ 0, 0, 0 }, 5, 1.0, 0);
     try w.apply();
-    var d = operators.Decay{ .bit = Channel.activity.bit(), .tau = 4.0 };
+    var d = operators.Decay{ .bit = Channel.temperature.bit(), .tau = 4.0 };
     try w.addOperator(operators.operatorOf(operators.Decay, &d));
     const p = w.domain.toLattice(.{ 0, 0, 0 });
-    const v0 = w.published().sample(Channel.activity.bit(), p);
+    const v0 = w.published().sample(Channel.temperature.bit(), p);
     try w.step(now(0), null);
     try w.step(.{ .frame = 1, .time_ns = 3 * std.time.ns_per_s }, null);
     try w.step(.{ .frame = 2, .time_ns = 10 * std.time.ns_per_s }, null);
-    const v = w.published().sample(Channel.activity.bit(), p);
+    const v = w.published().sample(Channel.temperature.bit(), p);
     try testing.expectApproxEqRel(v0 * @exp(-10.0 / 4.0), v, 1e-5);
     try guards.check(w.published());
 }
@@ -576,7 +576,11 @@ fn woundRun(gpa: std.mem.Allocator, g: *GrownWorld, heal: bool) !*loam.Snapshot 
     return before;
 }
 
-/// Lattice points in the world box where the carrier is inside.
+/// Lattice points in the world box whose SAMPLE of the carrier is inside
+/// — coefficients, not the reconstruction: the cut leaves every sample
+/// in the box at or above zero exactly, while the B-spline smooths the
+/// cut's wall across a cell and read 18 points of "tissue" inside the
+/// box where the trunk ran along it. What healing regrows is samples.
 fn tissueInBox(w: *const World, lo: [3]f64, hi: [3]f64) u64 {
     var n: u64 = 0;
     const snap = w.published();
@@ -586,7 +590,11 @@ fn tissueInBox(w: *const World, lo: [3]f64, hi: [3]f64) u64 {
         while (z <= hi[2]) : (z += 1) {
             var x = lo[0];
             while (x <= hi[0]) : (x += 1) {
-                if (snap.sample(Channel.surface.bit(), w.domain.toLattice(.{ x, y, z })) < 0) n += 1;
+                const q = w.domain.toLattice(.{ x, y, z });
+                const p = [3]i64{ tree.floorI(q[0]), tree.floorI(q[1]), tree.floorI(q[2]) };
+                const b = snap.findLeaf(p) orelse continue;
+                const l = b.localOf(p) orelse continue;
+                if (b.get(Channel.surface.bit(), l[0], l[1], l[2]) < 0) n += 1;
             }
         }
     }
