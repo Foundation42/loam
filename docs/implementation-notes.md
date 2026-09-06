@@ -2680,18 +2680,30 @@ the G-buffer at a third binding on the shared bloom layout, every
 level blurs the alpha beside the rgb), so at the end `bloom.a` is the
 emissive luma of the surfaces around a pixel at the bloom's radius,
 and post adds THE AURA: `AURA_GAIN × (1 − exp(−EMISSIVE_DRIVE ×
-bloom.a)) × bloom.rgb` — the pyramid's rgb near an emitter is the
-emitter's own blurred radiance, so what is added is its colour, fading
-with the record. Additive by design: the first build opened the
-energy-conserving scatter's gate by the record instead and moved the
+bloom.a)) × (bloom.rgb / luma(bloom.rgb))` — the record alone says how
+strong, the pyramid gives only the HUE, which near an emitter is the
+emitter's own. Additive by design: a first build opened the
+energy-conserving scatter's GATE by the record instead and moved the
 frame by 0.0003 RMSE — at the veil's fraction a gate cannot make a
-halo. Where the record is zero nothing is added: a frame with no
-emitter is byte for byte what it was. The marble's ember bands now
-warm the stone around them (RMSE 0.013 against the shot before; the
-crop shows the halo). Both numbers PROPOSED (4 and 0.5). Not yet: the
-raster sprites write no record, so a `light` spray has its splat and
-no aura — the follow-up is a writable env_diff in that pass.
-Recorded in matryoshka's architecture.md §7.8a.
+halo. Where the record is zero nothing is added.
+
+THE FINDING, and Christian's eye that got it ("I'm not really seeing
+any aura on the orange stripes, compared to that emissive cube"): the
+build after that multiplied the record's falloff by the pyramid's
+COLOUR, and since both fall off away from the emitter the product
+died within a few pixels — the added term was the vein itself, re-lit
+where it was already saturated, and nothing around it. ONE FALLOFF IS
+A GLOW; TWO MULTIPLIED IS AN OUTLINE. Found by painting the buffer to
+the screen: first `bloom.a` (the record is right — the ember bands and
+the scene's emissive prims, black everywhere else), then the added
+term alone (an orange band with a hard edge, which is the defect in
+one picture). With the hue normalised the term is the record's own
+profile and the bands warm the stone at the bloom's radius: RMSE
+0.029 against the shot before, against 0.013 for the build that did
+not read as a glow. His cube, for the comparison, is a light VOLUME —
+its neighbours get analytic irradiance, their bloom gate opens, and
+that is the halo he was measuring against. Numbers PROPOSED (drive 4,
+gain 0.6). Recorded in matryoshka's architecture.md §7.8a.
 
 ### Open
 
