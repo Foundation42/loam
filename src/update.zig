@@ -37,6 +37,10 @@ pub const Spawn = struct {
     parent: u32 = std.math.maxInt(u32),
     generation: u8 = 0,
     morphogens: [4]f32 = .{ 0, 0, 0, 0 },
+    /// The ring's residual at birth (`front.sheetProfile`), on the seed
+    /// ring and the first ring alike, so the first sweep is already
+    /// the shape; null is the round ring every front had before.
+    profile: ?[front.SLOTS]f32 = null,
 };
 
 /// One smooth-union operand for the surface channel: a plane of signed

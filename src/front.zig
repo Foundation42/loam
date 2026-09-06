@@ -147,6 +147,28 @@ pub const Ring = struct {
     }
 };
 
+/// A ring residual profile that makes the swept capsule a SHEET: the
+/// polar rectangle r(θ) = min(W/|cos θ|, T/|sin θ|), T the half-
+/// thickness across (θ = 90°, the binormal) and W the half-width in
+/// the plane (θ = 0, the ring's normal), as a residual over an
+/// envelope of T — so the thin side is the envelope itself and the
+/// residual is never negative, which keeps it clear of the fade the
+/// capsule applies to a residual near its axis. Held fixed by a front
+/// whose ring CA is off (heal, diffuse, noise, impulse all zero), a
+/// long wandering sweep of it is a vein of marble: a fracture filled.
+pub fn sheetProfile(half_thickness: f32, half_width: f32) [SLOTS]f32 {
+    var out: [SLOTS]f32 = undefined;
+    for (&out, 0..) |*r, i| {
+        const theta = 2 * std.math.pi * @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(SLOTS));
+        const c = @abs(@cos(theta));
+        const s = @abs(@sin(theta));
+        const wide: f32 = if (c < 1e-6) std.math.inf(f32) else half_width / c;
+        const thin: f32 = if (s < 1e-6) std.math.inf(f32) else half_thickness / s;
+        r.* = @min(wide, thin) - half_thickness;
+    }
+    return out;
+}
+
 pub const Front = struct {
     id: u32,
     parent: u32 = std.math.maxInt(u32),

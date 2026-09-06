@@ -2574,11 +2574,95 @@ packed set packs itself, seeding the long axis from the ring history
 (the bake knows every vein's direction; the descent found it anyway),
 the warm-start refit.
 
+## Sheet veins: the marble that is marble (Sunday 2026-09-06, late — Christian: "one thing I haven't seen yet is something like actual marble with thick continuous veins. Our current marble is more like flecks or streaks, but it is like that in the source.")
+
+It was like that in the source: 28 round crack fronts of radius 0.9
+that stop at the first vein they meet, so every vein is a short tube
+and a tube crossing the trunk's skin is a fleck. Real veining is a
+FRACTURE FILLED — a sheet that runs the block. A front sweeps whatever
+its ring is, and the ring's residual profile is a polar radius per
+slot, so a ring held as the polar rectangle r(θ) = min(W/|cos θ|,
+T/|sin θ|) — T across, W in the plane — is a sheet, and a long
+wandering sweep of it is a vein. `front.sheetProfile(T, W)` builds it
+as a residual over an envelope of T, never negative: the capsule fades
+a residual toward its axis (`fade` = ρ over half the envelope), which
+would have blunted a thin side written as a negative residual over a
+wide envelope; written the other way round the thin side IS the
+envelope and the fade never bites. `Spawn.profile` carries it to the
+front at birth — the ring and the seed ring alike, so the first sweep
+is already the shape (null is the round ring every front had, G1
+untouched) — and `seedbed.plantSheet` chooses the ring frame: `wide`
+is the ring's normal, θ = 0. The ring CA off (heal, diffuse, noise,
+impulse, taper, bulge all zero) holds the profile along the sweep; the
+frame transports along the wander, so the sheet twists gently as a
+fracture does. The bake's naming reach grew by the profile's largest
+residual (a sheet reaches W past its axis, not T).
+
+The finding on the way: `inhibit` = 0 is not "never inhibited" — a
+positive inhibit grows into occupancy at or below it, so zero is "only
+into pure air", and a sheet started inside matter never moved (the
+gate's first run: φ −3 everywhere). One is never inhibited: through
+matter and air alike. The first sheet gate said it in one line.
+
+The scene: `marble` is the sheets now — MARBLE_SHEETS 7 of MARBLE_THICK
+1 (the survival floor: 2 units thick) by MARBLE_WIDE 14 (28 wide),
+MARBLE_FAMILY 5 sharing one plane's normal scattered by a quarter (a
+family of sub-parallel fractures), 2 crossing them, every one started
+40 units outside the cube through a point inside it and swept
+MARBLE_LENGTH 110 with wander 0.10, never stopped, MARBLE_STEPS 110;
+the growth blob reaches the starts. The first night's scene is
+`flecks` (FLECKS_VEINS 28, FLECKS_VEIN 0.9, FLECKS_STEPS 90), kept
+beside it: "different archetypes for different use cases". The species
+rule is the scene's (`marbleSpecies(preset, seed, id)`, the expression
+carries the preset): the sheet marble's family is GRAPHITE — the
+classic stone, grey veins in white — and its two crossing veins are
+the accents, one GOLD running out to graphite along its length, one
+EMBER cooling along its, so the transitions are on continuous veins
+the eye can follow; the flecks keep their draw from the stream. The
+first seed drew five gold sheets of seven before the rule and looked
+like brass.
+
+The gate: "a sheet vein" — one straight sheet (T 1, W 6) along a slab:
+carved on the axis (φ 2.00) and four units out in the plane (1.28),
+base two and a half across (−1.53) and nine beyond the width (−2.72),
+the seed ring carrying the profile and the first sweep already a
+sheet; the mutation, the round ring of the same radius: the plane's
+point is base. The material-field gate is untouched (its slab is the
+flecks' rule).
+
+The marble on the tree, 8 mm a unit, close: continuous bands of grey
+wrapping the trunk, an ember band glowing orange at its root and
+cooling around the back, the gold one grey-gold where it enters. THIS
+IS MARBLE. The bands are broad on a trunk 37 units across — a sheet
+two thick crossing a cylinder obliquely is a band several times its
+thickness — and the unit is the knob for that (`--loam-archetype-unit
+5` for finer). The ember's radiance (6, 2.5, 0.7) that was a glint on
+a fleck is a beacon on a sheet: the palette is PROPOSED, and this is
+the number Christian will strike first.
+
+The set on sheets (256 anisotropic, 2,000 iterations): held-out RMS
+0.372 → 0.071, aspect median 6.4 — the descent made FLAT kernels for
+flat veins — against the flecks' 0.026 at the same count: four times
+the vein volume to cover (71,095 vein voxels in the pool against
+17,913). With the family grey: 256 kernels 0.066 (A 0.111), 1,024
+kernels 0.054 (A 0.085, 57 s, aspect median 4.0) — the second
+thousand kernels buy little, and the emissive's residual is 0.26: the
+ember sheet is a large bright structure with a sharp edge, and a
+Gaussian's edge is soft. The slices reproduce every sheet, softened;
+the tree through the 1,024 set against the volume's shot: RMSE 0.018
+of full scale, six times the flecks' 0.003 — the bands are there and
+where they were, their edges blurred and the ember's glow spread
+thinner. A sheet is the set's hard case: the flecks were sparse and
+small, the sheets are wide and sharp-edged, and what a sum of
+Gaussians cannot carry is an edge. For sheets the volume stays the
+reference and the set is the far LOD; a set that carries an edge
+would need a kernel with one (a sigmoid across the sheet's normal),
+which is the next shape if the far LOD is wanted sharp.
+
 ### Open
 
-Pruning and an aspect bound for the RBF set; the
-veins' morphology (sheets, so the along-vein transitions read on a
-tube); the archetype's mip chain; a periodic slab or cube; the palette,
+The palette on sheets (the ember's radiance first); pruning and an aspect bound for the RBF set; the
+archetype's mip chain; a periodic slab or cube; the palette,
 PROPOSED; the evaluated archetype (a second loam bank) with its
 trigger; the chart path for structured surface archetypes if the
 plates are wanted on a tube. `who` and `segment` packed to one plane,

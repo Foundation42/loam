@@ -54,7 +54,8 @@ matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-sc
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-collar 0         # the hard union, for a side-by-side
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-no-bark          # the carrier alone: the bark off
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-bark plates      # the material seedbed's plates, a relief in the field's frame
-matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-bark marble --loam-archetype-unit 8   # the marble: a material field sampled in world space
+matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-bark marble --loam-archetype-unit 8   # the marble: sheet veins, a material field sampled in world space
+matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-bark flecks --loam-archetype-unit 8   # the first marble: short round veins, flecks on the skin
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-rbf marble.lrbf --loam-archetype-unit 8   # the same marble from a packed RBF set (loam-run --rbf)
 ```
 
@@ -81,8 +82,11 @@ centimetres and half that), because bark does not get finer when the
 brick does.
 
 A material is a loam world of its own — the material seedbed. The
-marble is a cube of base veined by tunnelling fronts, grown once at
-the mount's init and frozen as a MATERIAL FIELD: beside φ every voxel
+marble is a cube of base veined by SHEET fronts — a ring held as a
+polar rectangle, thin across and wide in its plane, swept the length
+of the block through every vein it meets, most of them a family of
+sub-parallel fractures — grown once at the mount's init and frozen as
+a MATERIAL FIELD: beside φ every voxel
 carries the columns the archetype models — albedo, roughness,
 metallic, emissive — as the vein's material there, named from the
 ring history (a vein is a cut, and a cut writes no provenance), with a
@@ -93,7 +97,8 @@ mixes its material entry — the matrix, and the default for every
 column the archetype does not model — toward the columns by the vein's
 soft edge. The tree never knows; a cut through it shows the same
 veins. `loam-run --scene marble --volume 64:slice.ppm` writes the
-field's middle slice as a hit would read it. The same field packs
+field's middle slice as a hit would read it; `--scene flecks` is the
+first night's marble of short round veins, kept beside it. The same field packs
 into a set of radial basis functions fitted by gradient descent
 (`loam-run --scene marble --rbf 256:marble.lrbf`, a fifteen-second
 tool run): the entry is the bias, only the veins cost kernels, each

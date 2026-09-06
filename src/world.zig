@@ -1093,6 +1093,12 @@ pub const World = struct {
                 .prev_normal = s.normal,
                 .prev_envelope = s.params.radius,
             };
+            if (s.profile) |pr| {
+                for (0..front.SLOTS) |i| {
+                    f.ring[i].r = pr[i];
+                    f.prev_r[i] = pr[i];
+                }
+            }
             f.brick = self.brickUnder(base, f.pos);
             try self.fronts.append(gpa, f);
             // Ring zero: the seed, where the first sweep starts.

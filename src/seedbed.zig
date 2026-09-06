@@ -284,6 +284,18 @@ pub fn plantLattice(w: *World, pos: [3]f64, dir: [3]f64, params: front.Params) !
     try w.spawnFront(.{ .pos = pos, .dir = d, .normal = n, .params = params });
 }
 
+/// A front with its ring frame chosen — `wide` is the ring's normal,
+/// θ = 0, made perpendicular to the heading — and a ring profile held
+/// from birth: a sheet vein (`front.sheetProfile`).
+pub fn plantSheet(w: *World, pos: [3]f64, dir: [3]f64, wide: [3]f64, params: front.Params, profile: [front.SLOTS]f32) !void {
+    const d = world_mod.normalize(dir);
+    var n = wide;
+    const dn = n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
+    inline for (0..3) |a| n[a] -= dn * d[a];
+    n = world_mod.normalize(n);
+    try w.spawnFront(.{ .pos = pos, .dir = d, .normal = n, .params = params, .profile = profile });
+}
+
 /// The scene frame: lattice units about the lattice's centre. A scene is
 /// authored here whatever the domain — a host mounting loam at five
 /// centimetres a unit gets the seedbed's tree, not one 1120 units across.
@@ -880,7 +892,7 @@ pub fn tropismEnsemble(gpa: std.mem.Allocator, n: u64, d: f64, coeff: f32, steps
 /// parent with the ring CA on and no steering, and a child budded from
 /// it by hand at JUNCTION_STEP (`bud`); and a tendril coiling about the
 /// vertical at a bend the scene chose, touching its own previous turn.
-pub const Preset = enum { sapling, blob, seams, diffusion, wound, junction, coil, plates, marble };
+pub const Preset = enum { sapling, blob, seams, diffusion, wound, junction, coil, plates, marble, flecks };
 
 /// The material seedbed's first archetype (the play after P2.3): a slab
 /// PLATES_HALF units wide and PLATES_DEPTH deep with its face at z = 0,
@@ -896,15 +908,36 @@ pub const PLATES_STEPS: u32 = 80;
 
 /// The second archetype, volumetric (Christian: "a loam gradient field
 /// that is reasonably milky white with a black structure inside it"):
-/// a cube of base MARBLE_HALF units a side, MARBLE_VEINS crack fronts
-/// freed from any plane carving veins of MARBLE_VEIN through it,
-/// steering away from every vein already there and stopping where they
-/// meet one. The archetype is the cube's carrier: negative in the base,
-/// positive inside a vein, sampled at a hit's world position.
+/// a cube of base MARBLE_HALF units a side veined by carving fronts.
+/// The archetype is the cube's carrier: negative in the base, positive
+/// inside a vein, sampled at a hit's world position. Two morphologies:
+///
+/// FLECKS, the first (`flecks`): FLECKS_VEINS round crack fronts of
+/// radius FLECKS_VEIN freed from any plane, steering away from every
+/// vein already there and stopping where they meet one — short tubes,
+/// which read as flecks and streaks on a tube's skin (Christian: "our
+/// current marble is more like flecks or streaks, but it is like that
+/// in the source").
+///
+/// MARBLE (`marble`): "actual marble with thick continuous veins" —
+/// MARBLE_SHEETS SHEET fronts (`front.sheetProfile`: a ring held as a
+/// polar rectangle, MARBLE_THICK across and MARBLE_WIDE in the plane,
+/// the ring CA off), each started outside the cube and swept
+/// MARBLE_LENGTH through it so every vein runs the block; most share
+/// one plane's normal scattered a little — a family of sub-parallel
+/// fractures — and the rest cross them; never stopped by a vein they
+/// meet. The blend's softness at a vein's edge is MARBLE_VEIN for both.
 pub const MARBLE_HALF: f64 = 24;
-pub const MARBLE_VEINS: u32 = 28;
 pub const MARBLE_VEIN: f32 = 0.9;
-pub const MARBLE_STEPS: u32 = 90;
+pub const MARBLE_SHEETS: u32 = 7;
+pub const MARBLE_FAMILY: u32 = 5;
+pub const MARBLE_THICK: f32 = 1.0;
+pub const MARBLE_WIDE: f32 = 14;
+pub const MARBLE_LENGTH: f32 = 110;
+pub const MARBLE_STEPS: u32 = 110;
+pub const FLECKS_VEINS: u32 = 28;
+pub const FLECKS_VEIN: f32 = 0.9;
+pub const FLECKS_STEPS: u32 = 90;
 /// The bake stays inside the cube's faces by this much: the faces are
 /// the cube's own surface, and a tile that reached them wore a line of
 /// half-vein at every mirror.
@@ -926,7 +959,18 @@ pub const MARBLE_GRAPHITE = bark.Material{ .albedo = .{ 0.08, 0.07, 0.07 }, .rou
 pub const MARBLE_GOLD = bark.Material{ .albedo = .{ 1.0, 0.71, 0.29 }, .roughness = 0.25, .metallic = 1, .emissive = .{ 0, 0, 0 } };
 pub const MARBLE_EMBER = bark.Material{ .albedo = .{ 0.55, 0.16, 0.05 }, .roughness = 0.45, .metallic = 0, .emissive = .{ 6.0, 2.5, 0.7 } };
 
-pub fn marbleSpecies(seed: u64, id: u32) MarbleSpecies {
+/// Which vein is what. The SHEET marble is the classic stone: the
+/// family's veins grey (graphite), and the two that cross them the
+/// accents — one gold running out to graphite along its length, one
+/// ember cooling along its — so the transitions Christian asked for
+/// are on continuous veins the eye can follow. The flecks draw theirs
+/// from the stream, as the first night did.
+pub fn marbleSpecies(preset: Preset, seed: u64, id: u32) MarbleSpecies {
+    if (preset == .marble) {
+        if (id < MARBLE_FAMILY) return .graphite;
+        if (id == MARBLE_FAMILY) return .gold;
+        if (id == MARBLE_FAMILY + 1) return .ember;
+    }
     var s = rng.Stream.front(seed, id, MARBLE_SPECIES_EPOCH);
     return switch (s.below(10)) {
         0...4 => .graphite,
@@ -936,9 +980,9 @@ pub fn marbleSpecies(seed: u64, id: u32) MarbleSpecies {
 }
 
 /// The structure's material `u` of the way along vein `id`.
-pub fn marbleMaterial(seed: u64, id: u32, u: f32) bark.Material {
+pub fn marbleMaterial(preset: Preset, seed: u64, id: u32, u: f32) bark.Material {
     const uu = @min(1, @max(0, u));
-    return switch (marbleSpecies(seed, id)) {
+    return switch (marbleSpecies(preset, seed, id)) {
         .graphite => MARBLE_GRAPHITE,
         .gold => bark.Material.lerp(MARBLE_GOLD, MARBLE_GRAPHITE, uu * uu * (3 - 2 * uu)),
         .ember => blk: {
@@ -950,15 +994,19 @@ pub fn marbleMaterial(seed: u64, id: u32, u: f32) bark.Material {
     };
 }
 
-fn marbleAt(_: ?*const anyopaque, w: *const World, near: ?bark.Near, _: [3]f64, _: f32) bark.Material {
+const PRESET_MARBLE: Preset = .marble;
+const PRESET_FLECKS: Preset = .flecks;
+
+fn marbleAt(ctx: ?*const anyopaque, w: *const World, near: ?bark.Near, _: [3]f64, _: f32) bark.Material {
+    const preset: *const Preset = @ptrCast(@alignCast(ctx.?));
     const nr = near orelse return MARBLE_GRAPHITE;
-    return marbleMaterial(w.seed, nr.id, nr.u);
+    return marbleMaterial(preset.*, w.seed, nr.id, nr.u);
 }
 
 /// The marble's expression: every column, from the palette by the
 /// nearest vein's species and the arc position along it.
-pub fn marbleExpression() bark.Expression {
-    return .{ .columns = bark.ALL_COLUMNS, .at = marbleAt };
+pub fn marbleExpression(preset: Preset) bark.Expression {
+    return .{ .columns = bark.ALL_COLUMNS, .ctx = @ptrCast(if (preset == .marble) &PRESET_MARBLE else &PRESET_FLECKS), .at = marbleAt };
 }
 
 /// How far from a sweep the bake names voxels exactly: the vein's soft
@@ -1083,11 +1131,60 @@ pub const Scene = struct {
             },
             .marble => {
                 const c = sceneToLattice(.{ 0, 0, 0 });
+                // The growth blob reaches the sheets' starts outside the cube.
+                try blobLattice(w, Channel.growth.bit(), c, 96, 1.0, 0);
+                try slabLattice(w, .{ c[0] - MARBLE_HALF, c[1] - MARBLE_HALF, c[2] - MARBLE_HALF }, .{ c[0] + MARBLE_HALF, c[1] + MARBLE_HALF, c[2] + MARBLE_HALF }, 0);
+                try w.apply();
+                var params = self.straightParams();
+                params.radius = MARBLE_THICK;
+                params.carve = true;
+                params.wander = 0.10;
+                params.avoid_self = 0;
+                params.inhibit = 1; // never inhibited: a vein runs the block, through every vein it meets and the air beyond
+                params.length = MARBLE_LENGTH;
+                params.drift = 0;
+                // The ring CA off: the sheet's profile is held.
+                params.heal = 0;
+                params.noise = 0;
+                params.impulse = 0;
+                params.diffuse = 0;
+                params.taper = 0;
+                params.bulge = 0;
+                params.max_generation = 0;
+                const profile = front.sheetProfile(MARBLE_THICK, MARBLE_WIDE);
+                var stream = rng.Stream.front(w.seed, 2, 0);
+                const family = world_mod.normalize(.{ stream.gauss(), stream.gauss(), stream.gauss() });
+                var i: u32 = 0;
+                while (i < MARBLE_SHEETS) : (i += 1) {
+                    // The sheet's normal (its thin axis): the family's,
+                    // scattered, for most; anyone's for the rest.
+                    var m: [3]f64 = undefined;
+                    if (i < MARBLE_FAMILY) {
+                        inline for (0..3) |a| m[a] = family[a] + 0.25 * stream.gauss();
+                    } else {
+                        inline for (0..3) |a| m[a] = stream.gauss();
+                    }
+                    m = world_mod.normalize(m);
+                    // A heading in the sheet's plane; the wide axis across it.
+                    var d = [3]f64{ stream.gauss(), stream.gauss(), stream.gauss() };
+                    const dm = d[0] * m[0] + d[1] * m[1] + d[2] * m[2];
+                    inline for (0..3) |a| d[a] -= dm * m[a];
+                    d = world_mod.normalize(d);
+                    const wide = world_mod.normalize(world_mod.cross(m, d));
+                    // Through a point in the cube, from well outside it.
+                    var start: [3]f64 = undefined;
+                    inline for (0..3) |a| start[a] = c[a] + (stream.unit() * 2 - 1) * (MARBLE_HALF - 6) - d[a] * (MARBLE_HALF + 16);
+                    try plantSheet(w, start, d, wide, params, profile);
+                }
+                try w.apply();
+            },
+            .flecks => {
+                const c = sceneToLattice(.{ 0, 0, 0 });
                 try blobLattice(w, Channel.growth.bit(), c, 64, 1.0, 0);
                 try slabLattice(w, .{ c[0] - MARBLE_HALF, c[1] - MARBLE_HALF, c[2] - MARBLE_HALF }, .{ c[0] + MARBLE_HALF, c[1] + MARBLE_HALF, c[2] + MARBLE_HALF }, 0);
                 try w.apply();
                 var params = self.straightParams();
-                params.radius = MARBLE_VEIN;
+                params.radius = FLECKS_VEIN;
                 params.carve = true;
                 params.wander = 0.25;
                 params.avoid_self = -0.6; // toward the base: away from every vein and the faces
@@ -1096,7 +1193,7 @@ pub const Scene = struct {
                 params.drift = 0;
                 var stream = rng.Stream.front(w.seed, 1, 0);
                 var i: u32 = 0;
-                while (i < MARBLE_VEINS) : (i += 1) {
+                while (i < FLECKS_VEINS) : (i += 1) {
                     const x = c[0] + (stream.unit() * 2 - 1) * (MARBLE_HALF - 4);
                     const y = c[1] + (stream.unit() * 2 - 1) * (MARBLE_HALF - 4);
                     const z = c[2] + (stream.unit() * 2 - 1) * (MARBLE_HALF - 4);

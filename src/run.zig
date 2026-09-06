@@ -37,6 +37,7 @@ const usage =
     \\  --slice CH:AXIS:COORD:RES:FILE    write a PGM slice at the end (e.g. surface:z:0:128:out.pgm; the carrier is drawn as inside = 1)
     \\  --relief RES:FILE     bake the plates' face as a relief (the material seedbed) and write it as a PGM, deepest groove white
     \\  --volume RES:FILE     bake the marble's cube as a material field and write its middle slice as a PPM through a white entry
+    \\  --scene marble        the material seedbed's marble: sheet veins through a cube (flecks: the round-vein original)
     \\  --rbf N:FILE          fit N Gaussians to the marble's material field (baked at 64³) and write the set to FILE, its slice to FILE.ppm
     \\  --rbf-isotropic       hold the kernels spherical (the comparison; anisotropic is the default)
     \\  --project CH:AXIS:RES:FILE        write a PGM max-projection along AXIS at the end
@@ -521,7 +522,7 @@ pub fn main() !void {
         // The volumetric archetype: the marble's cube frozen as a grid,
         // the middle slice as a picture, the veins white.
         const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
-        var vol = try loam.bark.Volume.bake(gpa, &world, c, seedbed.MARBLE_BAKE_HALF, vo.res, seedbed.marbleExpression(), seedbed.marbleMargin(vo.res));
+        var vol = try loam.bark.Volume.bake(gpa, &world, c, seedbed.MARBLE_BAKE_HALF, vo.res, seedbed.marbleExpression(opts.scene), seedbed.marbleMargin(vo.res));
         defer vol.deinit(gpa);
         // The middle slice as a hit would read it through a white,
         // polished entry: the columns mixed in by the vein's edge, a
@@ -537,7 +538,7 @@ pub fn main() !void {
         };
         try seedbed.writePpm(vo.path, vo.res, rgb);
         var tally = [_]u32{0} ** 3;
-        for (0..world.fronts.items.len) |id| tally[@intFromEnum(seedbed.marbleSpecies(world.seed, @intCast(id)))] += 1;
+        for (0..world.fronts.items.len) |id| tally[@intFromEnum(seedbed.marbleSpecies(opts.scene, world.seed, @intCast(id)))] += 1;
         try stdout.print("volume {d}³ over ±{d:.0}, φ {d:.2}..{d:.2}, {d} floats a voxel (columns {b:0>4}), {d} voxels named by a capsule within {d:.2}, the rest in {d} passes; veins {d} graphite, {d} gold, {d} ember; archetype {s} → {s}\n", .{ vo.res, seedbed.MARBLE_BAKE_HALF, vol.min, vol.max, vol.stride, vol.columns, vol.named, seedbed.marbleMargin(vo.res), vol.passes, tally[0], tally[1], tally[2], std.fmt.fmtSliceHexLower(vol.hash[0..8]), vo.path });
     }
     if (opts.rbf) |rb| {
@@ -546,7 +547,7 @@ pub fn main() !void {
         // same slice through the set, for the eye beside the volume's.
         const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
         const res: u32 = 64;
-        var vol = try loam.bark.Volume.bake(gpa, &world, c, seedbed.MARBLE_BAKE_HALF, res, seedbed.marbleExpression(), seedbed.marbleMargin(res));
+        var vol = try loam.bark.Volume.bake(gpa, &world, c, seedbed.MARBLE_BAKE_HALF, res, seedbed.marbleExpression(opts.scene), seedbed.marbleMargin(res));
         defer vol.deinit(gpa);
         var fit_timer = try std.time.Timer.start();
         var fitted = try loam.rbf.fit(gpa, &vol, seedbed.MARBLE_VEIN, .{ .kernels = rb.kernels, .seed = opts.seed, .isotropic = opts.rbf_isotropic });

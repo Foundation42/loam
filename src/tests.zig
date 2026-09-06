@@ -2811,7 +2811,7 @@ fn veinRun(gpa: std.mem.Allocator, seed: u64, steps: u32) !World {
 /// arc position along it — the root's material everywhere.
 fn flatGold(_: ?*const anyopaque, w: *const World, near: ?bark.Near, _: [3]f64, _: f32) bark.Material {
     const nr = near orelse return seedbed.MARBLE_GRAPHITE;
-    return seedbed.marbleMaterial(w.seed, nr.id, 0);
+    return seedbed.marbleMaterial(.flecks, w.seed, nr.id, 0);
 }
 
 test "the material field names a carved vein from the ring history: a cut writes no provenance, the columns inside the vein are the cutter's species running along its arc, an absent column is the entry's, and a hit mixes the entry toward them by the vein's edge" {
@@ -2819,7 +2819,7 @@ test "the material field names a carved vein from the ring history: a cut writes
     // A seed whose first vein is gold: metallic at the root, graphite by
     // the tip — a transition the columns must carry along the vein.
     var seed: u64 = 0;
-    while (seedbed.marbleSpecies(seed, 0) != .gold) seed += 1;
+    while (seedbed.marbleSpecies(.flecks, seed, 0) != .gold) seed += 1;
     var w = try veinRun(gpa, seed, 24);
     defer w.deinit();
     const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
@@ -2830,7 +2830,7 @@ test "the material field names a carved vein from the ring history: a cut writes
     try testing.expectEqual(@as(f32, 0), snap.sample(Channel.who.bit(), c));
 
     const res: u32 = 32;
-    var vol = try bark.Volume.bake(gpa, &w, c, 16, res, seedbed.marbleExpression(), seedbed.marbleMargin(res));
+    var vol = try bark.Volume.bake(gpa, &w, c, 16, res, seedbed.marbleExpression(.flecks), seedbed.marbleMargin(res));
     defer vol.deinit(gpa);
     try testing.expectEqual(@as(u32, 9), vol.stride);
     try testing.expect(vol.named > 0);
@@ -2888,4 +2888,69 @@ test "the material field names a carved vein from the ring history: a cut writes
         if (rec[0] > 0) flat_last = rec[om];
     }
     try testing.expect(flat_last > 0.8);
+}
+
+/// A slab with one straight vein along +x, the ring held as `profile`
+/// (null: the round ring), `steps` steps.
+fn sheetRun(gpa: std.mem.Allocator, profile: ?[loam.front.SLOTS]f32, steps: u32) !World {
+    var w = try World.init(gpa, .{ .seed = 11 });
+    errdefer w.deinit();
+    const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
+    try seedbed.blobLattice(&w, Channel.growth.bit(), c, 32, 1.0, 0);
+    try seedbed.slabLattice(&w, .{ c[0] - 16, c[1] - 12, c[2] - 12 }, .{ c[0] + 16, c[1] + 12, c[2] + 12 }, 0);
+    try w.apply();
+    var params = loam.front.Params{};
+    params.tropism_light = 0;
+    params.tropism_stimulus = 0;
+    params.avoid_self = 0;
+    params.wander = 0;
+    params.drift = 0;
+    params.max_generation = 0;
+    params.radius = 1;
+    params.carve = true;
+    params.inhibit = 1; // never inhibited: through matter and air alike
+    params.length = 40;
+    params.heal = 0;
+    params.noise = 0;
+    params.impulse = 0;
+    params.diffuse = 0;
+    params.taper = 0;
+    params.bulge = 0;
+    if (profile) |pr| {
+        try seedbed.plantSheet(&w, .{ c[0] - 12, c[1], c[2] }, .{ 1, 0, 0 }, .{ 0, 1, 0 }, params, pr);
+    } else {
+        try seedbed.plantLattice(&w, .{ c[0] - 12, c[1], c[2] }, .{ 1, 0, 0 }, params);
+    }
+    try w.apply();
+    try run(&w, steps, null);
+    return w;
+}
+
+test "a sheet vein: a ring held as a polar rectangle sweeps a slab wide in its plane and thin across it, from the seed ring on; the round ring is a tube" {
+    const gpa = testing.allocator;
+    const profile = loam.front.sheetProfile(1, 6);
+    // The profile itself: nothing across, the width along.
+    try testing.expectApproxEqAbs(@as(f32, 5), profile[0], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0), profile[loam.front.SLOTS / 4], 1e-5);
+    var w = try sheetRun(gpa, profile, 24);
+    defer w.deinit();
+    const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
+    const snap = w.published();
+    const on_axis = snap.sample(Channel.surface.bit(), c);
+    const in_plane = snap.sample(Channel.surface.bit(), .{ c[0], c[1] + 4, c[2] });
+    const across = snap.sample(Channel.surface.bit(), .{ c[0], c[1], c[2] + 2.5 });
+    const beyond = snap.sample(Channel.surface.bit(), .{ c[0], c[1] + 9, c[2] });
+    std.debug.print("\nthe sheet: φ on the axis {d:.2}, 4 in the plane {d:.2}, 2.5 across {d:.2}, 9 beyond the width {d:.2}\n", .{ on_axis, in_plane, across, beyond });
+    try testing.expect(on_axis > 0 and in_plane > 0);
+    try testing.expect(across < 0 and beyond < 0);
+    // The seed ring carries the profile: the first sweep was a sheet.
+    try testing.expectEqual(profile[0], w.rings.items[0].items[0].r[0]);
+    const first = snap.sample(Channel.surface.bit(), .{ c[0] - 11, c[1] + 4, c[2] });
+    try testing.expect(first > 0);
+    // The mutation: the round ring of the same radius is a tube — the
+    // plane's point is base.
+    var t = try sheetRun(gpa, null, 24);
+    defer t.deinit();
+    const tube = t.published().sample(Channel.surface.bit(), .{ c[0], c[1] + 4, c[2] });
+    try testing.expect(tube < 0);
 }
