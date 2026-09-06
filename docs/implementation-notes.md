@@ -2705,6 +2705,24 @@ its neighbours get analytic irradiance, their bloom gate opens, and
 that is the halo he was measuring against. Numbers PROPOSED (drive 4,
 gain 0.6). Recorded in matryoshka's architecture.md §7.8a.
 
+THEN THE REACH, his next look ("it doesn't go into free space though,
+like it is using multiply instead of additive blending?"): it was
+additive all along — an amplified difference against the pre-aura
+frame showed the delta crossing the silhouette into the background,
+only too tight and too dim to read as a glow. The cause is the source's
+shape, not the blend: a vein a few pixels wide dilutes to almost
+nothing by the pyramid's coarse levels and comes back at a few per
+cent, so the aura hugged the vein like a rim light. THE RECORD NOW HAS
+ITS OWN SPREAD: `bloom_up` upsamples the alpha with
+`max(scatter, AURA_SPREAD)` — 0.9, so the wide level dominates — and
+the reach is the aura's property, not the look's scatter slider.
+`EMISSIVE_DRIVE` becomes the reach knob then (the tail in open space
+is small; the knee lifts it) and the two tune together: a steep knee
+on a wide record saturates the near field and the glow flattens into
+fog. Three shots settled it — the rim (drive 4, no spread), the fog
+(12, 0.9), and 6/0.8 between them, which is the committed default.
+All three numbers PROPOSED.
+
 RADIANT PARTICLES, the other half of his ask ("it needs solving for
 radiant particles as well"): `sprites.frag` writes the record too — a
 card's emission (its colour above one) times the coverage the blend
