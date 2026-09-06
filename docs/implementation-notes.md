@@ -511,6 +511,17 @@ with no new dependency, and substr is private where loam is public.
   (a max-projection, since a slice through a thin tube mostly misses
   it), `--dump`, `--ray`, `--all-regions`, `--active`, `--phases`. Every
   number a gate asserts can be printed here on the same scene.
+- **Looking at the tree** (after the parallel work; `--threads 16`,
+  220 steps, 0.7 ms a step): a trunk thick at the base, tapering,
+  bending toward the light, and a crown of branches near the top. Two
+  findings from looking. The side view along x was laid on its side —
+  `freeAxes` now puts y up for every view. And the branches were stubs:
+  at `consume = 1` the trunk empties a two-radius sphere around itself
+  in a step, so a bud born on its surface reads zero potential ahead and
+  goes dormant at birth. `--consume 0.2` gives the crown room (material
+  2628 → 3029, 12 fronts). A scene fact, exposed as a knob, not a
+  default changed: the sapling's default stays 1 and the frozen
+  reference with it.
 - **Three doors, one surface**: the Zig verbs in `seedbed.zig`, the C
   seam (`libloam.so`, `capi.zig`), the Python binding (`py/loam`, ctypes,
   stdlib only). `py-test` proves the Python-driven sapling and the

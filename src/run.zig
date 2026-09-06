@@ -30,6 +30,7 @@ const usage =
     \\  --tropism A          light tropism coefficient (default 0.6)
     \\  --stimulus-tropism B stimulus tropism coefficient (default 0)
     \\  --deposit D          material deposit rate (default 1)
+    \\  --consume C          potential drawn down per second around a front (default 1)
     \\  --no-heal            mount no healing operator
     \\  --damage x0,y0,z0,x1,y1,z1@step   clear material in the box at step
     \\  --slice CH:AXIS:COORD:RES:FILE    write a PGM slice at the end (e.g. material:z:0:128:out.pgm)
@@ -58,6 +59,7 @@ const Opts = struct {
     tropism: f32 = 0.6,
     stimulus_tropism: f32 = 0,
     deposit: f32 = 1,
+    consume: f32 = 1,
     heal: bool = true,
     damage: ?struct { lo: [3]f64, hi: [3]f64, step: u32 } = null,
     slices: std.ArrayListUnmanaged(Slice) = .{},
@@ -120,6 +122,8 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             o.stimulus_tropism = try std.fmt.parseFloat(f32, try next(args, &i));
         } else if (std.mem.eql(u8, a, "--deposit")) {
             o.deposit = try std.fmt.parseFloat(f32, try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--consume")) {
+            o.consume = try std.fmt.parseFloat(f32, try next(args, &i));
         } else if (std.mem.eql(u8, a, "--no-heal")) {
             o.heal = false;
         } else if (std.mem.eql(u8, a, "--damage")) {
@@ -255,6 +259,7 @@ pub fn main() !void {
     scene.tropism_light = opts.tropism;
     scene.tropism_stimulus = opts.stimulus_tropism;
     scene.deposit = opts.deposit;
+    scene.consume = opts.consume;
     scene.heal = opts.heal;
     var timer = try std.time.Timer.start();
     try scene.build(&world, opts.scene);

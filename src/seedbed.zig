@@ -190,11 +190,7 @@ pub fn clearChannel(w: *World, bit: u6) !void {
 pub fn slice(w: *const World, gpa: std.mem.Allocator, bit: u6, axis: u2, coord: f64, lo: [2]f64, hi: [2]f64, res: u32) ![]f32 {
     const out = try gpa.alloc(f32, @as(usize, res) * res);
     const snap = w.published();
-    const free: [2]u2 = switch (axis) {
-        0 => .{ 1, 2 },
-        1 => .{ 0, 2 },
-        else => .{ 0, 1 },
-    };
+    const free = freeAxes(axis);
     var v: u32 = 0;
     while (v < res) : (v += 1) {
         var u: u32 = 0;
@@ -209,6 +205,17 @@ pub fn slice(w: *const World, gpa: std.mem.Allocator, bit: u6, axis: u2, coord: 
     return out;
 }
 
+/// The two axes a slice or projection spans, (horizontal, vertical),
+/// chosen so a side view stands upright: along x → (z, y), along y →
+/// (x, z), along z → (x, y). (The first cut laid the x view on its side.)
+pub fn freeAxes(axis: u2) [2]u2 {
+    return switch (axis) {
+        0 => .{ 2, 1 },
+        1 => .{ 0, 2 },
+        else => .{ 0, 1 },
+    };
+}
+
 /// Max-projection of a channel along `axis` over the world box: the
 /// slice's honest sibling for a thin structure, which a single plane
 /// mostly misses. Row-major like `slice`.
@@ -216,11 +223,7 @@ pub fn project(w: *const World, gpa: std.mem.Allocator, bit: u6, axis: u2, lo: [
     const out = try gpa.alloc(f32, @as(usize, res) * res);
     @memset(out, 0);
     const snap = w.published();
-    const free: [2]u2 = switch (axis) {
-        0 => .{ 1, 2 },
-        1 => .{ 0, 2 },
-        else => .{ 0, 1 },
-    };
+    const free = freeAxes(axis);
     var v: u32 = 0;
     while (v < res) : (v += 1) {
         var u: u32 = 0;
@@ -589,6 +592,10 @@ pub const Scene = struct {
     tropism_light: f32 = 0.6,
     tropism_stimulus: f32 = 0.0,
     deposit: f32 = 1.0,
+    /// Potential drawn down per second around a front; the sapling's
+    /// default empties a two-radius sphere in a step, which is why its
+    /// buds are born into exhausted ground and stay stubs.
+    consume: f32 = 1.0,
     /// 0 turns branching off: G2's mutation.
     max_generation: u8 = 3,
     heal: bool = true,
@@ -630,6 +637,7 @@ pub const Scene = struct {
                 params.tropism_light = self.tropism_light;
                 params.tropism_stimulus = self.tropism_stimulus;
                 params.deposit = self.deposit;
+                params.consume = self.consume;
                 params.max_generation = self.max_generation;
                 params.length = 72;
                 try plant(w, .{ 0, 0, 0 }, .{ 0, 1, 0 }, params);
