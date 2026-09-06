@@ -260,7 +260,9 @@ pub const Brick = struct {
     /// Local coordinates of `p` in cells, clamped to the closed cube, with
     /// the cell index and fractional part per axis. A point on the far
     /// face is cell 7 at t = 1, so the block indices stay in range.
-    fn locate(self: *const Brick, p: [3]f64) struct { cell: [3]u32, t: [3]f32 } {
+    pub const Locate = struct { cell: [3]u32, t: [3]f32 };
+
+    pub fn locate(self: *const Brick, p: [3]f64) Locate {
         const o = self.origin();
         const s: f64 = @floatFromInt(self.spacing());
         var cell: [3]u32 = undefined;
@@ -439,6 +441,48 @@ pub const Brick = struct {
             .grad = .{ acc[1] / h, acc[2] / h, acc[3] / h },
             .hess = .{ acc[4] / h2, acc[5] / h2, acc[6] / h2, acc[7] / h2, acc[8] / h2, acc[9] / h2 },
         };
+    }
+
+    /// Value and gradient of the B-spline of `map(sample)` at `p` — the
+    /// same 64 coefficients, each passed through `map` first: how a
+    /// chart's θ is read as (cos θ, sin θ) (P2.3, G16 a). `map` the
+    /// identity is the plain spline's value and gradient.
+    pub const Jet1 = struct { v: f32, grad: [3]f32 };
+
+    pub fn splineJet1Mapped(self: *const Brick, pl: *const Plane, p: [3]f64, comptime map: fn (f32) f32) Jet1 {
+        const l = self.locate(p);
+        const bx = Basis.at(l.t[0]);
+        const by = Basis.at(l.t[1]);
+        const bz = Basis.at(l.t[2]);
+        const h: f32 = @floatFromInt(self.spacing());
+        var v: f32 = 0;
+        var gx: f32 = 0;
+        var gy: f32 = 0;
+        var gz: f32 = 0;
+        var dk: u32 = 0;
+        while (dk < 4) : (dk += 1) {
+            var s_ww: f32 = 0;
+            var s_dw: f32 = 0;
+            var s_wd: f32 = 0;
+            var dj: u32 = 0;
+            while (dj < 4) : (dj += 1) {
+                const row = bindex(l.cell[0], l.cell[1] + dj, l.cell[2] + dk);
+                const c0 = map(pl[row]);
+                const c1 = map(pl[row + 1]);
+                const c2 = map(pl[row + 2]);
+                const c3 = map(pl[row + 3]);
+                const si_w = c0 * bx.w[0] + c1 * bx.w[1] + c2 * bx.w[2] + c3 * bx.w[3];
+                const si_d = c0 * bx.dw[0] + c1 * bx.dw[1] + c2 * bx.dw[2] + c3 * bx.dw[3];
+                s_ww += si_w * by.w[dj];
+                s_dw += si_d * by.w[dj];
+                s_wd += si_w * by.dw[dj];
+            }
+            v += s_ww * bz.w[dk];
+            gx += s_dw * bz.w[dk];
+            gy += s_wd * bz.w[dk];
+            gz += s_ww * bz.dw[dk];
+        }
+        return .{ .v = v, .grad = .{ gx / h, gy / h, gz / h } };
     }
 
     // ── Finalize ─────────────────────────────────────────────────────────

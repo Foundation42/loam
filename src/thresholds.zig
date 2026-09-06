@@ -6,6 +6,8 @@
 //! reads its number from here and nowhere else, so striking one is one
 //! edit and one test run.
 
+const std = @import("std");
+
 /// G2: 3-D connected components of YOUNG material — Material > 0.3 and
 /// laid within the last G2_YOUNG_WINDOW_S seconds of fed time — at its
 /// highest over the run's checkpoints. Live tips each own one component
@@ -257,6 +259,131 @@ pub fn elbowTrigger(r: f32, h: f32) f32 {
     return h / r;
 }
 
+/// G16 (Phase 2, P2.3 — brief STRUCK Sunday 2026-09-06, night, with two
+/// amendments that are the same idea, and one unit): THE PICTURE. What a
+/// bark read touches at a hit, and at what footprint. A hit reads the
+/// CHART from the provenance planes — `who` nearest (an id between two
+/// ids is a third front), θ interpolated as (cos θ, sin θ) and recovered
+/// by atan2 (an angle interpolated across its wrap is a sliver of
+/// nonsense), s as it is (the B-spline has linear precision, so along
+/// a capsule's axis the interpolated s IS the arc; across a bend the
+/// spline smooths the kink and it is approximate — the tolerance
+/// covers it, and the ledger says approximate). G16_CHART_TOL is float
+/// slack, STRUCK. Bands 1–2 (the ring morphology, through the ring
+/// records at (who, segment)) and 3+ (procedural, keyed by (s, θ·r) so
+/// they stick to the tube) are evaluated BY FOOTPRINT (R13) — and they
+/// FADE, never cut (Christian: "a hard threshold pops: walk toward the
+/// trunk and band 1 switches on at one frame. That's the LOD pop. The
+/// mip rule: amplitude fades from scale = 2·footprint to scale =
+/// footprint, so the contribution is continuous in footprint, and
+/// bytes still fall monotonically because a band below its fade-out is
+/// never fetched." `bandWeight`). The scales are the representation's:
+/// band 1 the ring's slot pitch 2π·r/24, band 2 the ring pitch
+/// speed·dt, bands 3+ the amplitude vector's octaves — in WORLD units
+/// ("lattice unit changes meaning per gauge the day D2 lands, and bark
+/// shouldn't get finer because the brick did. Same value today,
+/// different name"). THE COLLAR: a seam in the grooves where `who`
+/// changes is a branch bark ridge, real — right for band 1; but band 3
+/// bends the normal, and a normal that jumps by a groove's phase at
+/// the collar reads as a crack. The two slots hold both φ, so the
+/// collar weight w ∝ exp(−kφ) is at the hit for free: inside G12's
+/// zone band 3+'s amplitude is scaled by (1 − w_runner-up), the collar
+/// smooth and bare, the ridge band 1's alone (`collarBare`).
+///
+/// THE PREDICTION, written before the run, G13-style (Christian: "if
+/// the measurement disagrees with that, the disagreement is the
+/// finding"): from the fade and the scales, in the default domain (a
+/// lattice unit a world unit), the sapling's trunk (r = 3): band 3's
+/// octaves 0.5 and 0.25 fade out at footprints 0.5 and 0.25; band 1
+/// (0.79) at 0.79; band 2 (1.0) at 1.0. So a CLOSE read (footprint
+/// under 0.125) touches all six provenance planes — who, chart_s,
+/// chart_theta for the chart, own, other, collar for the collar's
+/// weight — and the ring table; a MID read (0.5 to 1.0) touches three
+/// (who, chart_s, chart_theta) and the table, bands 1–2 alone, band 3
+/// gone; a FAR read (1.0 and beyond) touches none. Christian's sketch
+/// had the middle the other way (two planes, band 3 only): that needs
+/// the microstructure coarser than the ring pitch, and with the octaves
+/// struck at 0.5 and 0.25 it is finer — the middle regime is the bark's
+/// history without its grain. The run reads this table; a disagreement
+/// is the finding.
+///   (a) THE CHART IS CONTINUOUS ALONG A TUBE — probes on the parent's
+///       surface along a generator through the junction: s advances by
+///       the arc step to G16_CHART_TOL, θ by the frame's twist and no
+///       more; `who` changes only inside G12's zone; and the band-3-bent
+///       normal turns between neighbours by no more than the unbent
+///       normal's turn plus the bump's own bound (G16_BEND_SLOPE ×
+///       spacing). Mutations: θ interpolated as an angle → a 2π jump at
+///       the wrap; `who` interpolated → a third front's id; band 3 not
+///       faded at the collar → the bent normal jumps where `who` flips.
+///   (b) THE FOOTPRINT — one hit, footprints swept: the bands fetched
+///       are exactly those whose weight is above zero; bytes monotone
+///       non-increasing in footprint; a sponge 256 at every footprint;
+///       band 1's contribution continuous in footprint (its change
+///       between neighbouring footprints under the fade's own slope).
+///       Mutations: the footprint ignored → every hit pays for
+///       everything; the hard cut → band 1 jumps by its whole value.
+///   (c) THE NUMBER — the bridge's bytes per brick and the close-up's
+///       frame time beside the plain sapling's, in the ledger with the
+///       regime; the regression line re-measured.
+pub const G16_CHART_TOL: f32 = 1e-3; // STRUCK 2026-09-06 — float slack
+/// Within a collar's zone the chart is read over ONE front's samples
+/// (the spline masked by `who` and renormalised — R12: charts, not
+/// fields; unmasked, the parent's arc read 12.9 where it was 15), and
+/// a one-sided mask loses linear precision: the masked mean of the
+/// coefficients' positions is not the point. Its error is under the
+/// support's half-width, 2h; the ceiling here is a quarter of that,
+/// PROPOSED, and the measurement (0.07 lattice units in s, 0.04 rad in
+/// θ, the junction scene) is in the ledger — the seam's own width,
+/// where a ridge is anyway.
+pub const G16_MASK_BOUND: f32 = 0.5; // PROPOSED — lattice units of s, radians of θ, inside a collar's zone
+/// The mip rule: a band's weight at a footprint — 1 at twice the
+/// footprint and above, 0 at the footprint and below, linear between.
+pub fn bandWeight(scale: f32, footprint: f32) f32 {
+    if (footprint <= 0) return 1;
+    return @min(1, @max(0, (scale - footprint) / footprint));
+}
+/// The collar's bareness for bands 3+, from the two slots' smooth-union
+/// weights w ∝ exp(−kφ) (R12's weights, from the two-slot form for
+/// free): the winner's weight LESS the runner-up's, tanh(k(other −
+/// own)/2) — one where the runner-up is far, ZERO where the two are
+/// equal. Read literally, Christian's "(1 − w_runner-up)" is the
+/// winner's weight alone, one half at the crossing, and half the grain
+/// stayed at the seam (the fan read bare 0.513 where the fields were
+/// 0.026 apart); "smooth and bare" is the difference. His to strike.
+pub fn collarBare(own: f32, other: f32, k: f32, band_lu: f32) f32 {
+    if (other >= band_lu or k <= 0) return 1;
+    const x: f64 = @as(f64, k) * (@as(f64, other) - @as(f64, own));
+    return @floatCast(std.math.tanh(0.5 * x));
+}
+/// Bands 3+: the bark's octaves and their amplitudes, WORLD units. The
+/// octaves STRUCK at 0.5 and 0.25 (Christian: "same value today,
+/// different name"); the amplitudes PROPOSED — a groove a tenth of its
+/// octave deep, so the bump's slope is bounded by G16_BEND_SLOPE.
+pub const BARK_OCTAVES_W = [_]f32{ 0.5, 0.25 }; // STRUCK 2026-09-06, world units
+pub const BARK_AMPLITUDES_W = [_]f32{ 0.05, 0.025 }; // PROPOSED, world units
+/// The bump's largest slope, from the noise's construction: smoothstep
+/// value noise has |d/dx| ≤ 1.5·A/λ per octave, two tangents — the
+/// bound the bent normal's turn between neighbours is held to.
+pub fn bendSlope() f32 {
+    var s: f32 = 0;
+    for (BARK_OCTAVES_W, BARK_AMPLITUDES_W) |l, a| s += 1.5 * a / l;
+    return 2 * s;
+}
+/// Band 1's scale: the ring's slot pitch around a tube of radius r.
+pub fn band1Scale(r: f32) f32 {
+    return 2 * std.math.pi * r / 24.0;
+}
+/// What a read touches, predicted: footprint (world units, default
+/// domain), provenance planes, the ring table.
+pub const G16Prediction = struct { footprint: f32, planes: u8, table: bool };
+pub const G16_PREDICTED = [_]G16Prediction{
+    .{ .footprint = 0.1, .planes = 6, .table = true },
+    .{ .footprint = 0.3, .planes = 6, .table = true },
+    .{ .footprint = 0.6, .planes = 3, .table = true },
+    .{ .footprint = 0.9, .planes = 3, .table = true },
+    .{ .footprint = 1.2, .planes = 0, .table = false },
+};
+
 /// The change floor: a brick whose largest committed delta is below this
 /// is not active next step, and a boundary sample below it does not
 /// materialise a neighbour.
@@ -316,4 +443,11 @@ pub const EPSILON: f32 = 1e-6; // PROPOSED
 /// fixture's fronts move by a few hundredths of a unit in their first
 /// steps; under `--collar 0` the new build reproduces the previous
 /// commit's fronts to the last digit and its inside count exactly).
-pub const G1_REFERENCE: []const u8 = "d64a1b0f11dc0ba29253d73ddc789f0080e6ba4daf335a87e5f4033e4729a026";
+/// THE CHART'S FOOT `60b27f31…` (P2.3: `chart_s` and `chart_theta` are
+/// written from the UNCLAMPED foot — a sample in the cap behind a
+/// capsule's start reads the arc and the roll it lies beside, not the
+/// cap's; clamped, a ring whose bark bulged won samples behind it and
+/// the chart jumped by a ring along a straight tube. Only the two chart
+/// planes moved; the carrier, the slots, the fronts and the active set
+/// did not).
+pub const G1_REFERENCE: []const u8 = "60b27f31c737d31bd040c94089b36c8d398c5adee38082a7b68b9d7d9a78c53f";

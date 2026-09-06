@@ -16,6 +16,7 @@ run per edit makes the harness the activity rather than the work.
     zig build run -- --cut 0.5 --steps 40     # CUT: fronts, half the head, finish; the cut on the trace
     zig build run -- --scene junction --steps 40   # a bud junction: the collar's scene (G12); --collar 0 is the hard reference
     zig build run -- --scene coil --steps 80       # a coiling tendril: self-touch, the inner elbow
+    zig build test -Dtest-filter="G16"             # the picture's gates: what a hit reads (src/bark.zig)
     zig build run -- --help                   # loam-run, the seedbed
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
@@ -135,6 +136,30 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   the content hash; `Capsule.between` rebuilds any sweep from it with
   the front's own arithmetic, and G12 (b) reads every deposit back
   bit for bit. `--collar 0` reproduces the previous carrier exactly.
+- **What a hit reads is `src/bark.zig`, term for term with the shader
+  (P2.3, G16).** The CHART at a hit comes from the provenance planes:
+  `who` nearest — and where two fronts laid the neighbourhood, the one
+  whose field, rebuilt from the two slots (`own` where it won the
+  sample, `other` where it did not), is nearer at the hit, so the seam
+  is where the fields cross and never on the sample grid; s and θ by
+  the spline over THAT front's samples only, masked and renormalised
+  (charts are charts, not fields — unmasked, a parent's arc read 12.9
+  where it was 15), θ from the splines of cos θ and sin θ (an angle
+  interpolated across its wrap is nonsense). The chart is written from
+  the UNCLAMPED foot of the capsule, so a sample in a cap reads the arc
+  it lies beside. Bands are read by FOOTPRINT — the ray's width at the
+  hit, WORLD units — and FADE in over an octave (`thresholds.bandWeight`,
+  the mip rule: never a pop); a band under its footprint is never
+  fetched, so bytes fall with distance. Band 1 is the ring residual at
+  the chart from `World.rings`, band 2 its second difference along the
+  arc, bands 3+ value noise on (θ·r, s) at the material's octaves in
+  world units (`BARK_OCTAVES_W`, struck: bark does not get finer
+  because the brick did), bared at a collar by the DIFFERENCE of the
+  two slots' weights (`collarBare`, zero where they meet) so the grain's
+  phase never jumps where the chart switches; the ridge there is band
+  1's alone. A sponge reads band 0 and 256 bytes whatever the
+  footprint. The prediction of what a read touches is frozen beside the
+  threshold (`G16_PREDICTED`) and the gate reads it at every row.
 - **A plane is an 11³ block.** The brick's 9³ samples sit at block
   coordinates 1..9; the halo (0 and 10) is the neighbours' layer beyond
   each face, copied at commit by the halo pass. `Brick.index(i, j, k)`

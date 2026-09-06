@@ -34,7 +34,7 @@ w.run(60)
 print(w.root_hash().hex(), w.stats()["fronts"])
 ```
 
-## Status — Phase 2.2: the collar, provenance and the bands, on the continuous carrier
+## Status — Phase 2.3: the picture, on the continuous carrier with its collar and provenance
 
 Matter is the zero set of a continuous signed implicit, `surface`,
 stored in 11³ blocks (the brick's 9³ samples and one halo layer from the
@@ -52,6 +52,7 @@ matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --cam -13
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-scene junction   # a bud junction: the collar's scene
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-scene coil       # a coiling tendril: the self-touch
 matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-collar 0         # the hard union, for a side-by-side
+matryoshka test_scene --loam -13,0,3 --loam-scale 0.06 --loam-speed 20 --loam-no-bark          # the carrier alone: the bark off
 ```
 
 The mount grows the sapling unless `--loam-scene` names one of P2.2's
@@ -59,6 +60,18 @@ two scenes; `--loam-collar` is the collar as a fraction of the ring's
 radius, and zero is the fold the collar replaces. The difference is in
 the crotch of each fork and nowhere else, a fillet of the child's
 radius, so it is subtle by design.
+
+Up close the bark is there: every hit reads the chart of the front
+that laid it from the provenance planes, the ring's own relief at that
+chart darkens the grooves, and a procedural grain keyed to the chart
+bends the normal so it sticks to the tube and never swims. Each band
+fades in over an octave of the pixel's footprint rather than switching
+on, so walking toward the trunk pops nothing; far away a hit reads the
+carrier and nothing else. At a branch collar the grain goes bare where
+the two fronts' fields cross, so the ridge in the grooves is the
+bark's and no crack is the grain's. `--loam-no-bark` is the carrier
+alone; the bark's octaves are in metres (three centimetres and half
+that), because bark does not get finer when the brick does.
 
 Every brick knows how much it last changed and when — attention, derived
 where it is read, never stepped, scored per channel over its range — so
@@ -106,6 +119,7 @@ floor").
 
 | gate | claim | as measured (Debug, serial) |
 |---|---|---|
+| G16 the picture | a hit reads its chart from the provenance planes and the bands by footprint, and the bytes say so | along a tube the chart's arc advances by the arc to 1e-3 and θ by the roll; the chart switches fronts only inside a collar's zone and only where the two fields cross; the grain's bump is continuous across the collar and bare at the seam; bands fade in over an octave of footprint, never pop, and a band under its footprint is never fetched — six planes and the ring table up close, three and the table at mid range, none far, as predicted before the run; a sponge reads 256 bytes at any distance; θ as an angle is a radian off at the wrap, the footprint ignored pays for everything |
 | G12 collar | the smooth union happens where a child meets its parent and nowhere along a chain; the bark's bands read back through provenance | against the same scene under the hard union the collared junction is nowhere higher and lower only within the child's zone, by at most k/4 (468 samples, 0.520 against 0.525); a coil is collared where its turns touch and hard where its own recent capsules meet; band 1 read through each sample's chart rebuilds its deposit bit for bit (10,126 of 10,126) and a cut leaves the scar its provenance; a sponge-class query gathers 256 bytes and nothing of the history; "nothing is its own" beads the chain, "its own at any age" creases the coil |
 | G13 thin feature | sub-gauge structure survives the B-spline as theory predicts | survival and radius agree with the predictor to four decimals across three orientations and nine offsets; a capsule at r/h ≥ 1 survives, at r/h ≥ 2 its radius is within 4.6%; the gauge doubled loses it |
 | G9 continuity | the carrier is C2 across a same-gauge seam | 91,193 shared-face pairs, value, gradient and Hessian from both holders: exactly equal; no halo → they differ |
@@ -184,6 +198,7 @@ transcript (`--cut 0.5`).
 | `src/guards.zig` | every invariant, checkable; corrupted one by one in the self-test |
 | `src/dump.zig` | the snapshot as one canonical struple map |
 | `src/seedbed.zig` | the authoring verbs and the named scenes |
+| `src/bark.zig` | what a hit reads beyond the carrier: the chart, the bands by footprint, the grain — the shader's CPU reference, its bytes counted |
 | `src/run.zig` | `loam-run` |
 | `src/capi.zig` | the C seam (`libloam.so`) |
 | `src/thresholds.zig` | the gate numbers, PROPOSED until struck; G13's are struck, with the prediction frozen beside them; G14 (e)'s prediction frozen beside τ; the collar's reach derived beside G12 |

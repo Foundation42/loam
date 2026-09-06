@@ -164,6 +164,7 @@ that must bite.
 | G10 Bound | the summary's L is conservative | for every brick, max over probe pairs of \|φ(x) − φ(y)\|/‖x − y‖ ≤ L | ≤ L, exactly | L from finite differences instead of coefficients → a pair exceeds it |
 | G11 Sphere trace | a march stepped by \|φ\|/L never overshoots the zero set | for N random rays, the first sign change lies within one bisection tolerance of the hit; no hit missed that a dense march finds | 0 misses in ⟨4096⟩ rays | step by 2\|φ\|/L → overshoots |
 | G12 Collar (BUILT Sunday night, restated: the brief's \|∇φ\| is not an observable through a C2 reconstruction) | the collar is where a child meets its parent and nowhere along a chain; the bands reproduce the deposit | (a) against the hard union: nowhere higher, lower only within the child's zone, by at most k/4 — 468 samples, drop 0.520 against 0.525; the coil's self-touch collared; (b) band 1 through the provenance chart reproduces every deposit bit for bit — 10,126 of 10,126; a cut keeps the scar's provenance; (c) a sponge query gathers 256 bytes, a bark query 720 and up | 0 higher; 0 outside; ≤ k/4; exact; = 256 | `.none` → beads along the chain (5813 outside); `.own` → the coil's self-touch hard (0 lower); θ in the wrong frame → chart mismatches; the class ignored → the sponge pays |
+| G16 The picture (BUILT Sunday night; P2.3) | what a hit reads, and at what footprint | (a) the chart along a tube: s by the arc to 1e-3, θ by the roll, `who` changing only inside a collar's zone; across the collar the grain's bent normal continuous and bare at the seam; (b) the bands by footprint: fetched iff weighted, bytes monotone, a sponge 256, band 1 continuous in footprint, the read at each predicted footprint as predicted (6 planes and the table close, 3 and the table mid, none far) | 1e-3 STRUCK; bare ≤ tanh(k·sep); monotone; = 256; ≤ the fade's slope | θ as an angle → 1.05 rad off at the wrap; `who` interpolated → non-integer ids; band 3 not faded → the grain 100% at the seam; the footprint ignored → every read pays; the hard cut → band 1 jumps whole |
 | G13 Thin feature (STRUCK) | sub-gauge structure survives the B-spline | a straight capsule across a radius sweep ⟨0.5 … 6⟩ r/h, nine axis offsets in the cell, three orientations: whether the zero set survives, and r_rec/r worst and best | (a) the instrument reads the prediction: survival matches, r_rec/r within ⟨1%⟩ of `tools/g13_predict.py`; (b) survives at r/h ≥ ⟨1.0⟩; (c) \|r_rec − r\|/r ≤ ⟨5%⟩ at r/h ≥ ⟨2.0⟩, and thinner is refinement's problem | gauge doubled without refinement → vanishes at 1.0, thins 30% at 2.0 (bites b, c); control values half a cell off → ±40% at 2.0 (bites a, c); trilinear → survives lower, thins less (bites a only: the instrument's variation, recorded) |
 | G14 Attention (built Sunday afternoon; (a) restated at build, the head in two tiers by the ruling, (c) named invariance and (d) reproducibility added by the ruling, see the ledger) | the step's work follows where things are changing, and a reader can see it without touching a brick | (a) the evaluated set is the head of the active set — the fronts' bricks never cut, then the backlog, both in key order, then by attention — recomputable from the published snapshot alone, evaluations == ops × its size, and no front step skipped under any budget with the overrun reported, every step (G5 made graded); (d) the budget is on the transcript: a run replayed from its recorded per-step budgets publishes the same content hash, serial and over the job system, and a record altered where it bites does not; (b) a walk rejecting attention-zero subtrees from summaries alone visits exactly the bricks changed within τ·ln(a₀/floor) of now; (c) under a budget of ⟨50%⟩ of the step's active bricks, the ones evaluated are the highest-attention ones, and the sapling grown under budget ends within ⟨5%⟩ of the unbudgeted run's inside count | exact; exact; ⟨5%⟩ | (a) attention ignored → evaluations scale with the brick count; (b) attention not merged → the walk visits every brick; (c) budget taken in key order instead of attention order → the tips lag and the deviation exceeds the floor |
 | G14 (e) The residual (pre-registered Sunday afternoon, then built: lags 19–20 against a bound of 20, the cold region never served without the lag term) | deferral costs, so no brick with real pending change starves under a hot region | two diffusing regions, one at ⟨10⟩× the other's attention, under a budget the hot region alone fills: the longest lag at which any cold brick is evaluated, against the prediction from τ | ≤ k = ⌈(R − 1)·τ/dt + R⌉ + ⌈n_cold / slots⌉, from `g14ePredictedSteps` before the run; and the cold region IS deferred (its least lag > one step) | the lag term zeroed → the cold region is never served in the run |
@@ -517,7 +518,65 @@ near the surface for the silhouettes if the footprint truncation leaves
 any (stable temporal sampling, spec Phase 2).
 
 *P2.3's brief — proposed Sunday 2026-09-06, night, after the ruling
-"P2.3 first, 5.18 ms pinned"; PROPOSED, for Christian's strike.*
+"P2.3 first, 5.18 ms pinned"; STRUCK by Christian the same night, "with
+two amendments that are both the same idea, and one unit", verbatim:*
+
+*"**Fade, don't cut.** 'A band is evaluated only if its scale is at
+least the footprint' is a hard threshold, and a hard threshold pops:
+walk toward the trunk and band 1 switches on at one frame. That's the
+LOD pop, the aliasing you took TAA out to stop. The fix is the mip
+rule: amplitude fades from scale = 2·footprint to scale = footprint, so
+the contribution is continuous in footprint, and bytes still fall
+monotonically because a band below its fade-out is never fetched. G16
+(b) gets a second clause, the band-1 contribution continuous in
+footprint, with the hard cut as the mutation. It's the same discipline
+as coverage from the field gradient in the AA work: no sample ever
+arrives all at once."*
+
+*"**The collar seam is right for band 1 and wrong for band 3.** A
+branch bark ridge is real, so a seam in the grooves where `who` changes
+is defensible. But band 3 bends the normal, and a normal that jumps by
+a groove's phase at the collar reads as a crack. You don't need chart
+blending to avoid it, and Astra's point stands that charts from two
+fronts can't be blended anyway: the two slots already hold both φ, so
+the collar weight w ∝ exp(−kφ) is available at the hit for free.
+Inside G12's zone, scale band 3+ amplitude by (1 − w_runner-up) so the
+collar is smooth and bare and the ridge is band 1's alone. Add to G16
+(a): the bent normal is continuous across the collar, mutation band 3
+not faded."*
+
+*"**Units.** The bark octaves at 0.5 and 0.25 should be in world
+units, not lattice units, because 'lattice unit' changes meaning per
+gauge the day D2 lands, and bark shouldn't get finer because the brick
+did. Same value today, different name."*
+
+*"Two smaller things. 'The arc interpolates exactly' is true along a
+capsule's axis, where s is linear in x, and approximate across a bend,
+where the B-spline smooths the kink; the tolerance covers it, but the
+ledger should say approximate. And the fact the beat exists to produce
+deserves a prediction written before the run, G13-style: at close-up
+footprint a bark read touches four provenance planes plus the ring
+table, at mid footprint two (s, θ for band 3 only), at far none. If the
+measurement disagrees with that, the disagreement is the finding. 1e-3
+as float slack and the stride as the number stand. Dig."*
+
+*BUILT the same night (the ledger, "P2.3 — the picture"): the gate read
+the prediction at every row; four defects found and closed on the way
+(the chart's foot clamped, the spline mixing two fronts' charts, the
+seam on the sample grid, "bare" read literally at one half) — each
+with its number there. The stride went to 10652, not the struck 6664:
+the collar's weight at the hit reads the two slots and their k; a
+one-plane bake is the named alternative. The prediction is frozen in
+`thresholds.zig` (`G16_PREDICTED`) from
+the fade and the struck scales before the run, and it differs from the
+sketch in the middle: with band 3's octaves at 0.5 and 0.25 world
+units the microstructure is finer than the ring pitch, so a mid
+footprint reads bands 1–2 (three planes and the table) and no band 3;
+the reverse needs the grain coarser than the rings. The run reads the
+table; a disagreement is the finding. The stride: the collar weight at
+the hit reads the two slots and their k, so the pack carries them —
+three planes beyond the struck five, 6664 → 10652, with a one-plane
+bake of the weight as the named alternative.*
 
 **The fact this beat exists to produce.** Which planes a bark read
 touches at a hit, and at what footprint. Everything below is arranged

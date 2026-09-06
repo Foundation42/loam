@@ -1,6 +1,11 @@
 # Implementation notes — the ledger
 
 **Status:** Phase 1 built, 2026-09-06: P1.1–P1.7, G1–G8 green and bitten.
+**P2.3 built Sunday 2026-09-06, night** — what a hit reads: the chart
+from the provenance planes (masked, the seam where two fields cross),
+the bands by footprint fading in over an octave, the grain bare at a
+collar, on the GPU with the ring table; G16 green and bitten, the
+prediction read at every row ("P2.3 — the picture" below).
 **P2.2 built Sunday 2026-09-06, night** — the collar gated by
 provenance with the two-slot fill, the bands through the ring history,
 G12 bit-exact and bitten, the inner elbow measured ("P2.2 — the collar,
@@ -1918,6 +1923,130 @@ a three-way junction. The coil's inner wall. `elbowTrigger`, for
 Christian: the measured excess against h/r. The arc window against his
 count of segments. From before: a units-schedule replay; the D5 signal
 on lag-weighted pending; the shared sapling fixture.
+
+## P2.3 — the picture: what a hit reads (Sunday 2026-09-06, night; G16 green and bitten, G1 again)
+
+Built from the brief as struck — fade, don't cut; the collar seam right
+for band 1 and wrong for band 3; the octaves in world units; the arc
+approximate across a bend; a prediction before the run — with the
+prediction frozen first (`thresholds.G16_PREDICTED`) and then read by
+the gate at every row. What a hit reads is `src/bark.zig`, the CPU
+reference of the shader term for term, with the planes and bytes it
+touches counted; the shader is matryoshka's `loamBark`.
+
+**The prediction, and where it differed from the sketch.** Written
+from the fade and the struck scales before anything ran: a close read
+(footprint under 0.125) touches six provenance planes — who, chart_s,
+chart_theta for the chart, own, other, collar for the collar's weight —
+and the ring table; a mid read (0.5 to 1.0) three (who, chart_s,
+chart_theta) and the table, bands 1–2 alone; a far read (1.0 and
+beyond) none. Christian's sketch had the middle the other way (two
+planes, band 3 only): that needs the microstructure coarser than the
+ring pitch, and with the octaves struck at 0.5 and 0.25 it is finer —
+the middle regime is the bark's history without its grain. The run
+read the table at every row: 6 and the table at 0.1 and 0.3, 3 and the
+table at 0.6 and 0.9, none at 1.2 — as predicted. Inside a collar the
+count is different and was not in the table: five for the chart alone
+(own and other decide the seam, below), six with the collar for the
+grain.
+
+**Four things the gate found before it passed, each a real defect.**
+
+1. *The chart's foot was clamped.* A sample in the cap behind a
+   capsule's start read the cap's s and roll, not the arc it lay
+   beside; a ring whose bark bulged won samples axially behind it (its
+   cap nearer than the previous capsule's side), and the chart jumped
+   by up to a ring along a STRAIGHT tube — |Δs − Δarc| 0.15 against
+   1e-3 on the far side, and θ 0.0185 off (the drift over a ring). The
+   foot is unclamped for the chart (`Capsule.chartS`, `chartTheta`
+   through `s_raw`) and clamped for the distance as before; the far
+   side then reads 1.5e-5, 3e-7, 5e-7. G1 moved for it.
+2. *The spline mixed two fronts' charts.* Read over all 64
+   coefficients, `chart_s` beside a junction interpolated the parent's
+   arc with the child's and read 12.9 where the arc was 15. The chart
+   is read over ONE front's samples — the spline masked by `who` and
+   renormalised, a partition of unity over one chart — which is what
+   R12's "charts, not fields" means at a read. Its cost: a one-sided
+   mask loses linear precision, and inside a collar's zone the chart is
+   off by up to 0.080 in s and 0.060 rad in θ (the junction scene),
+   under a ceiling of half a unit (`G16_MASK_BOUND`, PROPOSED; the
+   theory bound is the support's half-width, 2h) and printed, not
+   float slack. The seam's own width, where a ridge is anyway.
+3. *`who` nearest put the seam on the sample grid.* The chart switched
+   where the nearest sample's owner changed, up to most of a sample
+   from where the two fields cross, and the grain was 86% present at
+   the switch. The two-slot form fixes it: each front's field can be
+   rebuilt at the hit from the slots (its distance is `own` where it
+   won a sample and `other` where it did not — `bark.fieldOf`), the hit
+   belongs to the nearer, and the seam is the crossing. At the flip
+   the fields were 0.026 apart.
+4. *"Bare" read literally left half the grain.* (1 − w_runner-up) is
+   the winner's smooth-union weight, one half where the two fields are
+   equal; the fan read bare 0.513 at the crossing. `collarBare` is the
+   DIFFERENCE of the two weights, tanh(k(other − own)/2): zero at the
+   crossing, one away from any collar. Christian's amendment read as
+   its intent, "smooth and bare"; his to strike.
+
+### G16, as it stands (ReleaseSafe, serial; the junction scene)
+
+| gate | measure | value | threshold | mutation | bit? |
+|---|---|---|---|---|---|
+| G16 (a) the chart along a tube | probes every quarter unit along the parent's far generator (θ at π) and its junction generator (θ at the wrap): s against the arc, θ against the roll's drift and against the chart itself; `who` where it changes | far: 94 pairs, |Δs − Δarc| 1.5e-5, |Δθ + drift·Δarc| 3.0e-7, |θ − chart| 4.8e-7; junction side outside the zone: 51 pairs, 2.5e-5, 3.6e-6, 5.3e-6; inside: 33 pairs, 0.080 and 0.060; `who` changes twice, 23 child-owned hits, 0 outside G12's zone; non-integer `who` 0 | 1e-3 (STRUCK, float slack); inside the zone 0.5 (PROPOSED ceiling); 0 outside; 0 | θ as an angle → 1.047 rad off at the wrap; `who` interpolated → 45 non-integer ids | yes; yes |
+| G16 (a) across the collar | a fan of 162 rays from the void above the junction, over the fillet from the parent's surface to the child's: the bent normal's turn over the unbent's and the bump's own curvature; at the flip, the grain's bareness and the bent normal's distance from the unbent | excess 0.000 rad; at the flip bare 0.028, the bent normal 0.002 rad from the unbent; bare down to 0.026 across the fan | ≤ 1e-3; bare ≤ tanh(k·sep) = 0.069 | band 3 not faded at the collar → bare 1.000, the bent normal 0.091 rad off | yes |
+| G16 (b) the footprint | one hit with real bark, footprints 0.05 to 2.0 by 0.01: bytes; records fetched iff a band has weight; a sponge; band 1's change between neighbours against the fade's own slope; the prediction's rows | bytes monotone; exact; 256 everywhere; largest jump over the bound 0; every row as predicted | monotone; iff; 256; ≤ 0 | the footprint ignored → 1960 bytes at 1.5 as at 0.1; the hard cut → band 1 −0.065 then 0 across its scale | yes; yes |
+
+### What was built
+
+- `src/bark.zig`: `Rules` (each `false` a mutation), `chartAt` (who
+  nearest, or by the fields where two fronts laid the neighbourhood;
+  s and θ by the masked spline, θ from cos and sin), `read` (the bands
+  by footprint with `thresholds.bandWeight`, band 1 from the ring at
+  the arc found by binary search on the front's rings, band 2 its
+  second difference, bands 3+ smoothstep value noise on (θ·r, s) at
+  the octaves — WORLD units through `domain.cell()` — bared by
+  `collarBare`, the normal bent by the relief's gradient in the chart's
+  tangent frame ∇s, r∇θ), the bytes as G7 counts them. `World.dt_s`
+  for band 2's scale; `Brick.splineJet1Mapped`, `Brick.locate` public.
+- Thresholds: `G16_CHART_TOL` 1e-3 STRUCK; `bandWeight` (the mip
+  rule); `collarBare`; `BARK_OCTAVES_W` 0.5, 0.25 STRUCK in world
+  units; `BARK_AMPLITUDES_W` 0.05, 0.025 PROPOSED; `band1Scale`;
+  `bendSlope`; `G16_MASK_BOUND` 0.5 PROPOSED; `G16_PREDICTED`.
+- Matryoshka (`loam_bridge.zig`, `dynamic_trace.glsl`,
+  `traversal.comp`, `vk_renderer.zig`, `dynamic_bvh.zig`,
+  `common.glsl`): the stride 1336 → 10652 — eight planes a brick, the
+  carrier then chart_s, cos θ, sin θ, who, own, other, collar (the
+  distances in metres): 42.6 KB a brick against the struck 6664,
+  because the collar's weight at the hit reads the two slots and their
+  k; a one-plane bake of the weight is the named alternative. A ring
+  table in a second SSBO (binding 51, 1.7 MB allocated; the front
+  count, the bark's material, a row a front, 26 floats a ring;
+  rewritten whole when a ring was added — some 200 KB for the
+  sapling). `loamBark` at a hit: the same reads, the footprint from
+  the pixel's cone at the hit's distance, band 1 darkening the albedo
+  (`bark_darken` 0.8 per lattice unit of residual, clamped to 0.5–1.3),
+  bands 3+ bending the normal. The material in METRES on the mount:
+  octaves 3 cm and 1.5 cm, amplitudes 3 mm and 1.5 mm — grooves on a
+  fifteen-centimetre trunk. `--loam-no-bark` for the side-by-side.
+  The bridge's three tests pass; the picture is Christian's eyes.
+
+### Numbers
+
+The regression line, re-measured: 5.21 ms a step ReleaseSafe on the
+sapling (5.18 pinned; the sim path gained the chart's unclamped foot
+and nothing else; noise). G1 `d64a1b0f…` → `60b27f31…`, the chart
+planes alone. The suite: 94 gates. The frame time of the close-up
+against the plain sapling is not measured here — the overlay prints
+it, and Christian's machine has the GPU.
+
+### Open
+
+The stride against the struck number (the bake). The one-sided mask's
+error inside a collar, if a chart read there ever matters. The
+amplitudes, PROPOSED. The silhouette ensemble, recorded with its
+trigger (shimmer at a silhouette under the footprint cut). From
+before: the cost, pinned; the three-way junction; the coil's inner
+wall; the arc window; a units-schedule replay; the D5 signal; the
+shared fixture.
 
 ## P2.3 before the cost (Sunday 2026-09-06, night — Christian, relaying Claude Chat)
 

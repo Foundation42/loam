@@ -272,6 +272,9 @@ pub const World = struct {
     /// rebuilds capsules from it. Not in the content hash — it is the
     /// fronts' past, which the hashes of the steps that made it hold.
     rings: std.ArrayListUnmanaged(std.ArrayListUnmanaged(front.Ring)) = .{},
+    /// The last step's fed delta, seconds: the ring pitch is speed × this,
+    /// band 2's scale for a reader (P2.3).
+    dt_s: f64 = 1,
     /// Consecutive steps whose backlog exceeded the budget: under a
     /// sustained cut the backlog grows, obligations fill the head, tier
     /// two gets nothing, and the world degrades to key-order round-robin
@@ -543,6 +546,7 @@ pub const World = struct {
         }
         const dt_ns = now.time_ns - self.time_ns;
         const dt: f64 = @as(f64, @floatFromInt(dt_ns)) / 1e9;
+        if (dt > 0) self.dt_s = dt;
         self.time_ns = now.time_ns;
         self.frame = now.frame;
         self.epoch += 1;
@@ -2024,36 +2028,49 @@ pub const World = struct {
             };
         }
 
-        /// A point's foot on the capsule: the axis parameter s ∈ [0, 1],
-        /// the radial distance, and the angle in each ring's frame.
-        pub const Foot = struct { s: f64, rho: f64, th0: f64, th1: f64 };
+        /// A point's foot on the capsule: the axis parameter s ∈ [0, 1]
+        /// (the cap beyond either end reads as the end), its unclamped
+        /// value, the radial distance, and the angle in each ring's frame.
+        pub const Foot = struct { s: f64, s_raw: f64, rho: f64, th0: f64, th1: f64 };
 
         pub fn foot(self: *const Capsule, q: [3]f64) Foot {
             const d = [3]f64{ q[0] - self.p0[0], q[1] - self.p0[1], q[2] - self.p0[2] };
-            var s: f64 = 0;
-            if (self.len2 > 1e-18) s = @min(1.0, @max(0.0, dot(d, self.axis) / self.len2));
+            var s_raw: f64 = 0;
+            if (self.len2 > 1e-18) s_raw = dot(d, self.axis) / self.len2;
+            const s = @min(1.0, @max(0.0, s_raw));
             const rad = [3]f64{ d[0] - s * self.axis[0], d[1] - s * self.axis[1], d[2] - s * self.axis[2] };
             return .{
                 .s = s,
+                .s_raw = s_raw,
                 .rho = len3(rad),
                 .th0 = std.math.atan2(dot(rad, self.b0), dot(rad, self.n0)) - self.roll0,
                 .th1 = std.math.atan2(dot(rad, self.b1), dot(rad, self.n1)) - self.roll1,
             };
         }
 
-        /// The chart's s at the foot: the front's arc length there.
+        /// The chart's s at the foot: the front's arc length there — the
+        /// UNCLAMPED projection, so a sample in the cap behind a
+        /// capsule's start reads the arc it lies beside, not the cap's.
+        /// With the clamp, a ring whose bark bulged won samples axially
+        /// behind it (its cap nearer than the previous capsule's side)
+        /// and gave them its start's s: the chart jumped by up to a ring
+        /// along a straight tube, and G16 (a) read 0.15 against 1e-3.
         pub fn chartS(self: *const Capsule, ft: Foot) f32 {
-            return @floatCast(self.s0 + ft.s * (self.s1 - self.s0));
+            return @floatCast(self.s0 + ft.s_raw * (self.s1 - self.s0));
         }
 
         /// The chart's θ at the foot, in [0, 2π): the two rings' angles
-        /// lerped the short way round, so a frame twisting between rings
-        /// gives a continuous chart along the capsule.
+        /// lerped the short way round — by the UNCLAMPED parameter, as s
+        /// is, so a sample in the cap behind the start reads the roll of
+        /// the arc it lies beside (clamped, the far side of a straight
+        /// tube read θ 0.0185 off: drift × a ring behind) — so a frame
+        /// twisting between rings gives a continuous chart along the
+        /// capsule, and across a bend the twist is extrapolated a step.
         pub fn chartTheta(_: *const Capsule, ft: Foot) f32 {
             const two_pi = 2 * std.math.pi;
             var dth = @mod(ft.th1 - ft.th0, two_pi);
             if (dth > std.math.pi) dth -= two_pi;
-            const th = @mod(ft.th0 + ft.s * dth, two_pi);
+            const th = @mod(ft.th0 + ft.s_raw * dth, two_pi);
             return @floatCast(th);
         }
 
