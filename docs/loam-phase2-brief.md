@@ -1,0 +1,133 @@
+# Loam — Phase 2 brief: the continuous carrier
+
+Companion to `loam-phase1-brief.md`, `representation.md` (Astra,
+2026-09-06) and the conversation that produced it (Christian, Claude Chat,
+Claude Code, the same day). The brief says what P2.1 builds, how we will
+know, and what it does not build. Where it disagrees with the chat, the
+brief wins; where a ruling is Christian's, it says so.
+
+## 0. The change, in one sentence
+
+Yesterday Loam grew matter. Now Loam grows a continuous implicit function
+whose zero set is matter, and everything perceived as bark, scars, grain
+and age is structured history around that carrier.
+
+## 1. Rulings asked (Christian's to strike before P2.1)
+
+**R7 — Reconstruction: a scalar halo and a cubic B-spline.** Every
+channel stays one plane; a brick stores an 11³ block — its 9³ samples and
+one halo sample beyond each face, copied from the neighbours at commit by
+the anchor rule taken one layer deeper. Reconstruction is a uniform cubic
+B-spline over the 11³ block: C2 inside a brick and across a same-gauge
+seam, because both sides reconstruct from the same 64 samples. Rejected:
+stored value + gradient with Hermite (a second truth the seam contract
+must also anchor; 4× the carrier's memory against 1.8×). Claude Code
+proposed, Astra concurred; the fetch count (64 against 32) is measured in
+P2.1 and recorded. **B-spline samples are control values, not points the
+zero set passes through** — documented at the channel, and refine/coarsen
+(D2) is defined on the reconstructed function, never by resampling
+values.
+
+**R8 — Band 0 is a signed implicit carrier with a Lipschitz bound, not a
+distance.** φ = 0 is the surface, φ < 0 inside. After smooth union,
+displacement and reconstruction it is a bound; what a renderer needs is
+continuity and |φ(x) − φ(y)| ≤ L‖x − y‖, and `Summary.max_gradient` is L
+— derived conservatively from the B-spline coefficients, not measured by
+finite difference. A safe step is |φ|/L. The channel is `surface`
+(rejected: `distance`, which promises what it is not; `sdf`, same).
+
+**R9 — Continuity contract.** C2 inside bricks and across same-gauge
+seams by construction. C0 across a gauge change in P2.1 (the hanging-node
+rule gives values). **Spline-consistent prolongation is D2's first item,
+not cosmetic cleanup**: refinement adds bandwidth, it does not change
+shape — the fine side represents the coarse function before local
+information is added.
+
+**R10 — Composition is smooth union at commit.** A `surface` delta is not
+added; the commit applies smin(φ, δ, k) with k the collar radius carried
+on the delta. Applied in front-id order: deterministic, and marked a
+DELIBERATE COMPROMISE, not architecture — the log-sum-exp family is
+associative for a shared k and is the path to an unordered reduction if
+one is ever wanted.
+
+**R11 — Deposition is a swept capsule.** A front deposits nothing at a
+point. Between ring k−1 and ring k it sweeps a capsule whose radius is
+the ring's radius at (s, θ), evaluates signed distance to it at every
+node in reach, and smooth-unions it in. Nothing is quantised.
+
+**R12 — (s, θ) are charts, not fields.** Ring history stays on the front
+genealogy (24 slots per ring, the loft table it always was). Deposition
+leaves PROVENANCE at the nodes it touches — front id, segment id, and the
+chart's (s, θ) — not an authoritative global (s, θ). At a branch collar
+several segments contribute; band signal is blended by the same
+smooth-union weights that compose the shape, w_i ∝ exp(−kφ_i), so bark
+never rotates 140° because nearest-front ownership changed by one sample
+(Astra's correction of Claude Code's proposal; adopted).
+
+**R13 — Bands are semantic bandwidth classes.** Band 0 the carrier;
+bands 1–2 developmental history (ring morphology, scars, knots) from the
+front's ring history through the charts; bands 3+ material microstructure,
+procedural, with a per-material amplitude vector. A query names the
+footprint and the class; bands finer than the footprint are not
+evaluated. Sponge, sound and sensors ask for band 0.
+
+**R14 — What stays a node quantity.** Growth, Age, Activity, Light,
+Stimulus, Damage: conserved, diffusing, additive, unchanged. Density and
+Extinction stay for volumes. The tree stops being a volume.
+
+## 2. Gates first (pre-registered)
+
+Thresholds ⟨…⟩ are Christian's; PROPOSED values live in
+`src/thresholds.zig` and stand until struck. Every gate has a mutation
+that must bite.
+
+| Gate | Claim | Measure | Threshold | Mutation |
+|---|---|---|---|---|
+| G9 Continuity | the carrier is C2 across a same-gauge seam | max over shared-face probe points of \|∇φ_A − ∇φ_B\| and \|∇²φ_A − ∇²φ_B\| from the two holders' reconstructions | 0 to float tolerance ⟨1e-5⟩ | drop the halo copy → C0 only, derivatives disagree |
+| G10 Bound | the summary's L is conservative | for every brick, max over probe pairs of \|φ(x) − φ(y)\|/‖x − y‖ ≤ L | ≤ L, exactly | L from finite differences instead of coefficients → a pair exceeds it |
+| G11 Sphere trace | a march stepped by \|φ\|/L never overshoots the zero set | for N random rays, the first sign change lies within one bisection tolerance of the hit; no hit missed that a dense march finds | 0 misses in ⟨4096⟩ rays | step by 2\|φ\|/L → overshoots |
+| G12 Collar | smooth union is smooth at a branch | \|∇φ\| continuous across the junction; provenance-blended band signal continuous | no jump above ⟨…⟩ | hard min → a crease; nearest-front ownership → the bark rotates |
+| G1 again | replay, end to end, with the new carrier | frozen reference, re-baselined as a reviewed event with old and new in the ledger | identical | commit order reversed |
+| The look | the trunk with no facets | the close-up at `--loam-scale 0.06` | Christian's eyes | — |
+
+Denominator check: G11's is the dense march's hit set, so "0 misses" is
+measured against something that can miss for its own reasons at a
+sliver; the dense march runs at a sixteenth of a cell.
+
+## 3. Beats
+
+**P2.1 — the carrier.** Halo blocks; B-spline reconstruction and its
+analytic gradient; `max_gradient` from coefficients; the `surface`
+channel with narrow-band frontier (a brick is materialised where the
+band reaches a face, and a brick whose φ minimum is positive holds no
+surface); the `smin` op on the update buffer, front-id ordered; the
+capsule sweep; the leaf as a sphere tracer stepped by the brick's L; the
+seam guard extended to derivatives. Gates: G9, G10, G11, G1 re-baselined.
+The bridge and the shader move from `material` iso to `surface` zero.
+
+**P2.2 — history and bands.** Provenance at deposition; ring history on
+the front; bands 1–2 through the charts, blended by collar weights; bands
+3+ procedural; footprint-bandlimited queries by class. Gates: G12; a
+Sponge-class query that touches band 0 only, with "ignore the class" as
+the mutation.
+
+**P2.3 — the picture.** Bark from the bands; the close-up; the ensemble
+near the surface for the silhouettes if the footprint truncation leaves
+any (stable temporal sampling, spec Phase 2).
+
+## 4. Scope fence
+
+- No refinement: cross-gauge stays C0 and D2 opens with prolongation.
+- No volumes: Density and Extinction are untouched and the tree is not
+  one.
+- No Fourier machinery: a band is a class, not an octave.
+- No terrain yet, and nothing that would make terrain harder.
+
+## 5. Recorded, not built
+
+| fill | pointer | trigger |
+|---|---|---|
+| Spline-consistent prolongation (D2, first item) | R9 | the first tree that needs a finer gauge under its trunk |
+| Unordered smooth union | R10, log-sum-exp | a scene where front order is the parallel merge's cost |
+| Hermite with stored gradients | R7 | P2.1's fetch count measured and found to matter |
+| Cross-gauge C1 | R9 | the same trigger as D2 |

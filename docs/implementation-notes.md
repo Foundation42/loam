@@ -598,6 +598,22 @@ Suzanne in `test_scene`, ray-traced with its own shadow.
   this tree); the tree's colour from a channel (Albedo is a channel the
   spec already names).
 
+## Phase 2 pre-registered (2026-09-06, evening)
+
+Christian: the representation is wrong — "materialness" should be an
+SDF, material properties frequencies on that surface, and completely
+continuous. Claude Chat drew the three continuities (reconstruction,
+composition, deposition) and the bands; Claude Code proposed the scalar
+halo with a cubic B-spline over stored gradients, the `smin` op in
+front-id order, and (s, θ) as node channels; Astra (`representation.md`)
+concurred on the B-spline, named band 0 a signed implicit carrier with
+a Lipschitz bound rather than a distance, moved cross-gauge prolongation
+to the top of D2, and corrected the (s, θ) channels into charts with
+provenance blended by the collar weights — adopted, it is the better
+design. The brief is `loam-phase2-brief.md`: rulings R7–R14 asked, gates
+G9–G12 with their mutations, the beats and the fence. Nothing of it is
+built; the brief precedes the spade.
+
 ## P1.7 — the seedbed (2026-09-06)
 
 - `loam-run`: named scenes, `--damage box@step`, `--slice`, `--project`
