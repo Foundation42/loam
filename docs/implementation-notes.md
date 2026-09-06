@@ -1913,11 +1913,37 @@ matryoshka bridge's three tests pass unchanged against the new leaf
 
 ### Open
 
-The cost above. The two-slot limit at a three-way junction. The coil's
-inner wall. `elbowTrigger`, for Christian: the measured excess against
-h/r. The arc window against his count of segments. From before: a
-units-schedule replay; the D5 signal on lag-weighted pending; the
-shared sapling fixture.
+The cost above — pinned, not taken (next entry). The two-slot limit at
+a three-way junction. The coil's inner wall. `elbowTrigger`, for
+Christian: the measured excess against h/r. The arc window against his
+count of segments. From before: a units-schedule replay; the D5 signal
+on lag-weighted pending; the shared sapling fixture.
+
+## P2.3 before the cost (Sunday 2026-09-06, night — Christian, relaying Claude Chat)
+
+"The seam finding is the right fix and the right principle: a copied
+`who` is not a change, and the floor counts only what the world reads.
+Provenance never wakes anything." Struck as a principle: the change
+floor and attention count the carrier and the additive channels; the
+slots and the provenance are the carrier's bookkeeping, scored where
+the carrier is, and nothing of them wakes a brick.
+
+The order: "5.18 ms is seven planes on every tissue brick, and the
+candidates are obvious (integer planes for who/segment, halves for the
+charts, provenance only where the band is). But which planes a bark
+read actually touches, and at what footprint, is the fact that decides
+which candidate, and P2.3 is where that fact appears. So: P2.3 first,
+with 5.18 pinned as the regression line in ReleaseSafe and nothing
+taken until the bark has told you what it reads. Optimising provenance
+before anything reads it would be the sizing premise again." THE
+REGRESSION LINE: the sapling, seed 7, 100 steps, serial, `loam-run
+--phases`, ReleaseSafe — 5.18 ms a step, hash 97 ms of the run; every
+beat from here re-measures it in that regime and states it, and a beat
+that moves it up says why. No candidate above is taken before the bark
+reads. P2.3 opens next: the bark from the bands (what a hit reads —
+the chart channels, the ring records — and at what footprint, which is
+the fact), the close-up, the ensemble near the surface for the
+silhouettes if the footprint truncation leaves any.
 
 ## The bridge's dirty upload (Sunday 2026-09-06, afternoon, matryoshka branch `loam`)
 
