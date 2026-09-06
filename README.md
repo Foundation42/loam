@@ -43,7 +43,7 @@ print(w.root_hash().hex(), w.stats()["fronts"])
 |---|---|---|
 | G1 replay | (seed, fields, operators) → byte-identical snapshot | same hash serial and over the JobSystem; across two processes; from Python and from the CLI; equal to a frozen reference in Debug and ReleaseFast |
 | G2 growth | a seeded front builds persistent branching structure, no mesh | 9 branches; 5 components of young material at peak (1 with branching off); material never resets |
-| G3 tropism | moving a stimulus redirects live fronts | 30.9 units of material-centroid drift between ±40, against a null floor of 23.9 (3× the spread over six seeds) |
+| G3 tropism | matched ± stimulus pairs across 6 seeded directions produce a positive directional centroid response | 95% lower confidence bound > 0, every pair has the correct sign, mean response exceeds 3× natural wander RMS; zero-coefficient and reversed-gradient mutations both fail |
 | G4 repair | removing material re-activates locally only | 54 bricks touched, 0 beyond two bricks of the wound; untouched bricks are the same pointers |
 | G5 dormancy | dormant tissue costs nothing | 12,480 evaluations where iterating every brick would be 584,320 |
 | G6 skip | a ray rejects subtrees from summaries alone | 12 of 64 crossed leaves sampled |
@@ -62,12 +62,15 @@ zig build                                   # library, libloam.so (the C seam), 
 zig build run -- --steps 120 --project material:z:256:tree.pgm
 zig build run -- --scene wound --damage -10,18,-10,10,30,10@100 --steps 160 --phases
 zig build run -- --all-regions --steps 40   # the G5 mutation, as a number
+zig build run -- --threads 16 --steps 200 --phases      # the parallel phases over common's JobSystem; same hash
+zig build run -- --tropism-sweep 10,20,40   # G3's ensemble as a dose-response, one world per core
 python3 -m unittest discover -s py/tests    # after zig build
 zig build test                              # the gates
 ```
 
 Fixed dt is the only clock: `--dt-ms 1000` is one fed second per step,
-and two runs with the same flags print the same hash.
+and two runs with the same flags print the same hash — with any thread
+count.
 
 ## Layout
 

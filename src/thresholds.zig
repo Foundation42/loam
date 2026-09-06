@@ -20,14 +20,21 @@ pub const G2_MIN_BRANCHES: usize = 3; // PROPOSED
 pub const G2_STEPS: u32 = 160; // PROPOSED
 pub const G2_CHECK_EVERY: u32 = 10; // PROPOSED
 
-/// G3: the floor is set from the NULL, not from the measurement. Runs
-/// with no stimulus across G3_NULL_SEEDS seeds give the centroid's
-/// spread under wander alone (RMS about the seed axis); the drift between
-/// the stimulus at +x and at −x must exceed G3_NULL_K × that spread.
-/// (Review 2026-09-06: a fixed floor under a measured value is post hoc.)
-pub const G3_NULL_K: f64 = 3.0; // PROPOSED
-pub const G3_NULL_SEEDS: u64 = 6; // PROPOSED
-pub const G3_STEPS: u32 = 60; // PROPOSED
+/// G3: matched ± stimulus pairs across G3_SEEDS seeded directions. For
+/// seed i with its own horizontal direction û_i, the stimulus sits at
+/// +D·û_i and at −D·û_i; the response is r_i = (c⁺ − c⁻)·û_i on the
+/// material centroid. The counter-based noise is keyed by seed, front id
+/// and epoch, so the pair shares its wander: r_i is a controlled
+/// perturbation, not signal against generic variability. Three separate
+/// requirements: the 95% lower confidence bound on r̄ is above zero;
+/// every r_i has the right sign (P = 2⁻ⁿ under a directionless null);
+/// and r̄ exceeds G3_EFFECT_K × σ₀, where σ₀ is the RMS horizontal
+/// centroid wander with no stimulus — an EFFECT-SIZE floor, kept apart
+/// from the confidence test because σ₀ is not the null variance of r.
+pub const G3_SEEDS: u64 = 6; // PROPOSED
+pub const G3_DISPLACEMENT: f64 = 40; // PROPOSED
+pub const G3_EFFECT_K: f64 = 3.0; // PROPOSED
+pub const G3_STEPS: u32 = 40; // PROPOSED — the response/wander ratio is 4.0 at 40 steps, 3.3 at 60, at half the cost
 
 /// G4: bricks the update may touch, in bricks beyond the damage box.
 pub const G4_DILATE_BRICKS: u32 = 2; // PROPOSED

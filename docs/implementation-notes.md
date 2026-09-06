@@ -162,7 +162,7 @@ code had to make.
 | G1 | content hash, serial vs JobSystem(4); two dumps; two processes (py-test); Python door vs CLI door | identical, and equal to the frozen reference | identical | seed ^ 1 | yes |
 | G1 | frozen reference | `74cc820b…` | fixed | commit order reversed | yes — see P1.6 |
 | G2 | branches; young-material 3-D components at peak; material N/2 → N | 9; 5; 2596 → 2628 | ≥3; ≥3; no reset | branching off → 1 component, material grows; deposit = 0 → nothing | yes; yes |
-| G3 | material-centroid x, stimulus at +40 vs −40, against 3× the null spread over six seeds | drift 30.9; null 8.0; floor 23.9 | drift ≥ floor | tropism_stimulus = 0 → bit-identical | yes |
+| G3 | matched ± pairs, six seeded directions, D = 40, 40 steps: r̄, 95% lower bound, sign test, effect size vs σ₀ along û | r̄ 25.9, lower 24.0, 6/6 positive, σ₀ 6.5 (floor 19.5) | lower > 0; all > 0; r̄ > 3σ₀ | coefficient 0 → r ≡ 0; gradient reversed → all r < 0 | yes; yes |
 | G4 | bricks touched vs dilate(box, 2), by identity; material regrown | 54 touched, 0 outside, 1601 regrown | 0 outside | no healing operator → 0 regrown | yes |
 | G5 | region evaluations over 80 steps | 12,480 (all-regions: 584,320) | evals == Σ active × ops | `active_only = false` | yes |
 | G6 | leaves sampled / leaves crossed | 12 / 64 | ≤ 0.25 | `use_summaries = false` → 64/64 | yes |
@@ -343,6 +343,93 @@ Christian forwarded the review. Against the code:
 - **Regime:** per binary, one machine (above). The seam cut stays
   deferred as recorded.
 
+## G3 rebuilt as a matched-pair ensemble (2026-09-06, after the review)
+
+Christian's follow-up on the review's G3: replace centroid drift with a
+directional growth response conditioned on stimulus displacement, over a
+seed ensemble with confidence bounds. Built as agreed
+(`seedbed.tropismEnsemble`, shared by the gate and `loam-run
+--tropism-sweep`):
+
+- **The pairing is the design.** The noise is counter-based on (seed,
+  front id, epoch), so for one seed the +D and −D runs share their
+  wander: r_i = (c⁺ − c⁻)·û_i is a controlled perturbation, not signal
+  against generic variability. The coefficient-zero mutation shows it —
+  every pair bit-identical, r ≡ 0 — and that is also why the earlier
+  floor (an unpaired spread) was answering a different statistical
+  question than the paired statistic. Recorded as the correction it was.
+- **Three separate requirements**, not one inequality: the 95% lower
+  confidence bound on r̄ is above zero (Student's t from a table, n − 1
+  df); every r_i > 0 (P = 2⁻ⁿ = 1/64 under a directionless null); and
+  r̄ > k·σ₀ with k = 3, an EFFECT-SIZE floor kept apart from the
+  confidence test because σ₀ is not the null variance of r.
+- **σ₀ is along û.** Pre-registered before the second measurement: the
+  no-stimulus centroid's displacement projected on the same direction
+  the pair is measured on. The first cut used the full 2-D horizontal
+  wander (13.3 at 60 steps) against a 1-D projection and failed the
+  floor; along û it is 9.65 at 60 steps, 6.5 at 40. Apples to apples.
+- **Directions from the seed.** û_i is an angle drawn from seed i, so no
+  axis is privileged and a response that only steered in x would fail.
+  The six directions drawn all lie in one half-plane by chance of the
+  hash; the sign test does not care, and a later n can widen it.
+- **The coefficient is not the lever.** Swept at 30, 60 and 100: r̄ 32.1,
+  31.9, 31.2 at 60 steps. The response saturates — once the stimulus
+  term dominates the heading, the centroid shift is bounded by geometry
+  (the stimulus at D = 40 against a tree ~60 tall). The scene keeps 30.
+- **Dose-response** (instrument, not gate): D = 10, 20, 40 give r̄ 13.5,
+  23.4, 31.9 at coefficient 60 — monotonic, sub-linear, slope 0.59 per
+  unit of displacement. Kept out of the gate for suite time, as agreed;
+  `loam-run --tropism-sweep 10,20,40 --coeff A --seeds N --steps S`.
+- **Steps: 40, not 60.** The claim holds at both (ratio r̄/σ₀ 4.0 at 40,
+  3.3 at 60) because wander accumulates faster than response once tips
+  go dormant; 40 is the stronger ratio at half the cost. The mutations
+  skip the null runs they never assert on.
+- **Mutations.** Coefficient zero: r ≡ 0 on every seed (presence of the
+  mechanism). Gradient reversed (coefficient −30): every r < 0, r̄ −15
+  (directionality). The asymmetry — −15 against +32 — is the tree
+  bending away out of its potential sphere and stalling; it is a scene
+  fact and the sign test does not depend on it.
+- Cost: 18 + 12 sapling runs of 40 steps — see the parallel entry below.
+
+## Parallel phases (2026-09-06, Christian's btop)
+
+Christian noticed one core busy. True: only the operate phase ran over
+the JobSystem, 0.02 ms of a 15 ms Debug step, and `loam-run` defaulted
+to serial. Built "what we can for now" — the order-free phases — and
+left the one that is not.
+
+- **`World.jobs`**: a host's system, used by every parallel phase;
+  `step` may still be handed one per call. `loam-run --threads N` sets
+  it before the scene builds, so authoring is parallel too.
+- **Now parallel, per brick, over `parallelRange`**: applying deltas
+  (clone, add, clamp — recorded in key order afterwards, serially, which
+  is what fixes everything downstream); finalize (summary and BLAKE3);
+  blob authoring (entries serially, the fill in parallel through the
+  thread-safe plane allocator). Requires a thread-safe allocator, which
+  GPA, c_allocator and the testing allocator are.
+- **The ensemble runs one world per core** on plain threads pulling from
+  an atomic index — each world is its own allocator and seed, so the
+  schedule cannot reach the result and the reduction happens afterwards
+  in seed order. G1's serial run rides a thread beside the JobSystem run,
+  which must stay on the thread that owns the system.
+- **Measured** (sapling, 3652 bricks, ReleaseFast): scene build finalize
+  37 ms → 2.9 ms, apply 7.5 → 3.8; per step finalize 1.31 → 0.40 ms;
+  content hash identical at 1 and 16 threads (`5110f333…`, 40 steps);
+  the G1 frozen reference `74cc820b…` holds in Debug with the serial run
+  threaded and the JobSystem run covering the new phases. The G3
+  ensemble: 18 runs in 1.5 s wall at ten cores, where it was two minutes
+  serial in Debug.
+- **Not parallel, on purpose**: the seam pass (two changed bricks can
+  clone and write the same unchanged neighbour — a race until it becomes
+  collect-then-apply in key order, recorded below) and the front pass
+  (id order is the determinism). The seam pass is now the per-step
+  cost: 1.8 of 2.1 ms in ReleaseFast, 195 of 218 ms of the scene build.
+- **A scene edit that landed by accident.** The interrupted command that
+  cut the stimulus radius to 72 had written the file before the
+  interrupt; the ensemble's stimulus runs moved (r̄ 25.86 → 26.18) while
+  its null runs did not, which is how it was noticed. Reverted to 96;
+  the numbers above are at 96.
+
 ## P1.7 — the seedbed (2026-09-06)
 
 - `loam-run`: named scenes, `--damage box@step`, `--slice`, `--project`
@@ -370,6 +457,7 @@ Christian forwarded the review. Against the code:
 | Ring inheritance at a branch | `World.budSpawn` starts a fresh ring | a branch base that looks wrong in a capture |
 | Frontier into partly filled cubes | `materialiseFrontier` skips an inner node | a diffusion mass check across a gauge boundary that leaks |
 | A stack-allocated cursor | `ray.Cursor` takes a gpa for its queue | matryoshka's traversal wanting no allocator |
+| Parallel seam pass | `World.reconcile`: collect writes per changed brick, then apply in key order | the per-step number mattering for the tiltyard, or G5's slope on hundreds of active bricks |
 
 ## Measurements (regime stated)
 
@@ -380,8 +468,7 @@ Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:
 | Debug | 2.0 s | 15 ms | ~2 min |
 | ReleaseFast | 0.38 s | 1.9 ms | ~20 s |
 
-Per phase at step 40 (Debug): operate 0.02, fronts 0.24, apply 1.3,
-frontier 1.5, seams 9.0, finalize 6.0, build 1.2, publish 1.5 ms. The
-seams remain the cost; the next cut is a same-gauge face fast path that
-skips the per-point holder search (recorded, trigger: G5's slope on a
-scene with hundreds of active bricks).
+Per phase at step 40 (Debug, serial): operate 0.02, fronts 0.24, apply
+1.3, frontier 1.5, seams 9.0, finalize 6.0, build 1.2, publish 1.5 ms.
+With 16 threads finalize and apply fall away and the seams remain; the
+next cut is their two-phase parallel form (deferred table).

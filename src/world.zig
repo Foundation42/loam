@@ -145,6 +145,12 @@ pub const World = struct {
     total: StepStats = .{},
     /// The healing operator's front template; a scene sets it.
     heal_params: front.Params = .{},
+    /// A host's JobSystem, used by every parallel phase — operate, apply,
+    /// finalize, blob authoring — when set. `step` may pass one per call
+    /// instead. Requires a thread-safe allocator (GPA, c_allocator and
+    /// the testing allocator all are). Null runs everything serial, and
+    /// G1 says the two agree to the byte.
+    jobs: ?*jobs.JobSystem = null,
     /// Fronts queued by authoring or the front pass; ids assigned at commit.
     pending_spawns: std.ArrayListUnmanaged(update.Spawn) = .{},
 
@@ -261,7 +267,7 @@ pub const World = struct {
     /// Commit whatever authoring has queued, as a step with no operators
     /// and no time. Publishes a new vid.
     pub fn apply(self: *World) Error!void {
-        try self.commit(.{ .frame = self.frame, .time_ns = self.time_ns }, self.head, false);
+        try self.commit(.{ .frame = self.frame, .time_ns = self.time_ns }, self.head, false, self.jobs);
     }
 
     // ── The step ─────────────────────────────────────────────────────────
@@ -304,6 +310,7 @@ pub const World = struct {
 
         // 3. Operate: region-local, order-free.
         var timer = std.time.Timer.start() catch unreachable;
+        const sys = js orelse self.jobs;
         const evaluated = dt > 0 and self.operators.items.len > 0;
         if (evaluated) {
             var ctx = OperateCtx{
@@ -316,10 +323,10 @@ pub const World = struct {
                 .evals = std.atomic.Value(u64).init(0),
                 .clamped = std.atomic.Value(u64).init(0),
             };
-            if (js) |sys| {
+            if (sys) |system| {
                 var counter = jobs.Counter.init(0);
-                sys.parallelFor(@intCast(active.len), self.policy.chunk, operateJob, &ctx, &counter);
-                sys.waitFor(&counter);
+                system.parallelFor(@intCast(active.len), self.policy.chunk, operateJob, &ctx, &counter);
+                system.waitFor(&counter);
             } else {
                 operateRange(&ctx, 0, active.len);
             }
@@ -334,7 +341,7 @@ pub const World = struct {
         self.stats.ns_fronts = timer.lap();
 
         // 5. Commit and publish.
-        try self.commit(now, base, evaluated);
+        try self.commit(now, base, evaluated, sys);
         self.total.accumulate(self.stats);
     }
 
@@ -379,6 +386,31 @@ pub const World = struct {
             _ = ctx.clamped.fetchAdd(rc.clamped, .monotonic);
         }
     }
+
+    /// Run `f(ctx, i)` for i in [0, count): over the JobSystem in chunks
+    /// when there is one, else here. `f` must be order-free — every
+    /// parallel phase is gated by G1 running with and without a system.
+    fn parallelRange(sys: ?*jobs.JobSystem, count: usize, chunk: u32, comptime Ctx: type, ctx: *Ctx, comptime f: fn (*Ctx, usize) void) void {
+        if (count == 0) return;
+        if (sys) |js| {
+            const Wrap = struct {
+                fn job(j: *jobs.Job) void {
+                    const range = j.getData(jobs.BatchRange);
+                    const c: *Ctx = @ptrCast(@alignCast(@constCast(range.context)));
+                    var i: usize = range.start;
+                    while (i < range.end) : (i += 1) f(c, i);
+                }
+            };
+            var counter = jobs.Counter.init(0);
+            js.parallelFor(@intCast(count), chunk, Wrap.job, ctx, &counter);
+            js.waitFor(&counter);
+        } else {
+            var i: usize = 0;
+            while (i < count) : (i += 1) f(ctx, i);
+        }
+    }
+
+    pub const parallelRangePub = parallelRange;
 
     /// Live, non-dormant fronts within a brick and a half of `key`'s
     /// centre — "something is already working here". Linear; fronts are
@@ -772,7 +804,7 @@ pub const World = struct {
     /// `evaluated`: the operate phase ran over `base.active`, so a brick
     /// that did not change has settled. When it did not run — the epoch
     /// tick, an authoring apply — the active set carries forward.
-    fn commit(self: *World, now: Now, base: *const Snapshot, evaluated: bool) Error!void {
+    fn commit(self: *World, now: Now, base: *const Snapshot, evaluated: bool, sys: ?*jobs.JobSystem) Error!void {
         const gpa = self.gpa;
         const eps = thresholds.EPSILON;
         var timer = std.time.Timer.start() catch unreachable;
@@ -786,38 +818,27 @@ pub const World = struct {
             for (order.items) |raw| changed.get(raw).?.b.release(gpa);
         };
 
-        // 1. Apply deltas in key order.
+        // 1. Apply deltas: per entry independently (clone, add, clamp) over
+        // the job system; then record them in key order, serially, which
+        // is what fixes the order of everything downstream.
         const entries = try self.buffer.sorted(gpa);
         defer gpa.free(entries);
         var spawn_requests = std.ArrayListUnmanaged(update.Spawn){};
         defer spawn_requests.deinit(gpa);
-        for (entries) |ru| {
-            for (ru.spawns.items) |s| try spawn_requests.append(gpa, s);
-            if (ru.mask == 0 and !ru.materialise) continue;
-            const old = base.brickAt(ru.key);
-            if (old == null and ru.mask == 0) {
-                // materialise only: an empty brick
-            }
-            const nb = if (old) |o| try Brick.clone(gpa, o) else try Brick.create(gpa, ru.key);
-            nb.version = if (old) |o| o.version + 1 else 1;
-            var max_delta: f32 = 0;
-            var bit: u6 = 0;
-            while (true) : (bit += 1) {
-                if (ru.deltas[bit]) |dp| {
-                    const clamp = self.registry.clamp(bit);
-                    const pl = try nb.ensurePlane(gpa, bit);
-                    for (pl, dp) |*v, d| {
-                        const nv = clamp.apply(v.* + d);
-                        max_delta = @max(max_delta, @abs(nv - v.*));
-                        v.* = nv;
-                    }
-                }
-                if (bit == 63) break;
-            }
-            try changed.put(gpa, ru.key.raw(), .{ .b = nb, .old = old, .max_delta = max_delta, .materialised = old == null and ru.mask == 0, .rank = if (ru.mask != 0) 0 else 2 });
+        const results = try gpa.alloc(?Changed, entries.len);
+        defer gpa.free(results);
+        var actx = ApplyCtx{ .world = self, .base = base, .entries = entries, .results = results, .failed = std.atomic.Value(bool).init(false) };
+        parallelRange(sys, entries.len, 16, ApplyCtx, &actx, applyEntry);
+        if (actx.failed.load(.acquire)) {
+            for (results) |r| if (r) |c| c.b.release(gpa);
+            return Error.OutOfMemory;
+        }
+        for (entries, results) |ru, r| {
+            for (ru.spawns.items) |sp| try spawn_requests.append(gpa, sp);
+            const c = r orelse continue;
+            try changed.put(gpa, ru.key.raw(), c);
             try order.append(gpa, ru.key.raw());
         }
-
         self.stats.ns_apply = timer.lap();
 
         // 2. Frontier: a changed brick whose face carries a value above
@@ -863,9 +884,10 @@ pub const World = struct {
         defer dirty.deinit(gpa);
         var active = std.ArrayListUnmanaged(Key){};
         defer active.deinit(gpa);
+        var fctx = FinalizeCtx{ .world = self, .changed = &changed, .order = order.items };
+        parallelRange(sys, order.items.len, 8, FinalizeCtx, &fctx, finalizeOne);
         for (order.items) |raw| {
             const c = changed.getPtr(raw).?;
-            c.b.finalize(gpa);
             try overrides.append(gpa, .{ .key = Key.fromRaw(raw), .brick = c.b });
             try dirty.append(gpa, Key.fromRaw(raw));
             if (c.max_delta > eps or c.materialised) try active.append(gpa, Key.fromRaw(raw));
@@ -936,6 +958,52 @@ pub const World = struct {
         self.stats.active_out = active_owned.len;
         try self.publish(snap);
         self.stats.ns_publish = timer.lap();
+    }
+
+    const ApplyCtx = struct {
+        world: *World,
+        base: *const Snapshot,
+        entries: []*update.RegionUpdate,
+        results: []?Changed,
+        failed: std.atomic.Value(bool),
+    };
+
+    fn applyEntry(ctx: *ApplyCtx, i: usize) void {
+        const ru = ctx.entries[i];
+        ctx.results[i] = null;
+        if (ru.mask == 0 and !ru.materialise) return;
+        const gpa = ctx.world.gpa;
+        const old = ctx.base.brickAt(ru.key);
+        const nb = (if (old) |o| Brick.clone(gpa, o) else Brick.create(gpa, ru.key)) catch {
+            ctx.failed.store(true, .release);
+            return;
+        };
+        nb.version = if (old) |o| o.version + 1 else 1;
+        var max_delta: f32 = 0;
+        var bit: u6 = 0;
+        while (true) : (bit += 1) {
+            if (ru.deltas[bit]) |dp| {
+                const clamp = ctx.world.registry.clamp(bit);
+                const pl = nb.ensurePlane(gpa, bit) catch {
+                    nb.release(gpa);
+                    ctx.failed.store(true, .release);
+                    return;
+                };
+                for (pl, dp) |*v, d| {
+                    const nv = clamp.apply(v.* + d);
+                    max_delta = @max(max_delta, @abs(nv - v.*));
+                    v.* = nv;
+                }
+            }
+            if (bit == 63) break;
+        }
+        ctx.results[i] = .{ .b = nb, .old = old, .max_delta = max_delta, .materialised = old == null and ru.mask == 0, .rank = if (ru.mask != 0) 0 else 2 };
+    }
+
+    const FinalizeCtx = struct { world: *World, changed: *std.AutoHashMapUnmanaged(u64, Changed), order: []const u64 };
+
+    fn finalizeOne(ctx: *FinalizeCtx, i: usize) void {
+        ctx.changed.get(ctx.order[i]).?.b.finalize(ctx.world.gpa);
     }
 
     fn dedupKeys(gpa: std.mem.Allocator, sorted: []const Key) ![]Key {

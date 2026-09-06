@@ -311,14 +311,25 @@ test "time: fed time going backwards is refused, never clamped; the first tick i
 
 test "G1: (seed, initial fields, operators) → byte-identical snapshot, serial and over the job system" {
     const gpa = testing.allocator;
+    // The serial run on a thread of its own while the JobSystem run —
+    // which must stay on the thread that owns the system — goes here.
     var a: GrownWorld = undefined;
-    try a.growWounded(gpa, 7, 40, null);
-    defer a.deinit();
+    var a_err: ?anyerror = null;
+    const th = try std.Thread.spawn(.{}, struct {
+        fn f(g: *GrownWorld, alloc: std.mem.Allocator, err: *?anyerror) void {
+            g.growWounded(alloc, 7, 40, null) catch |e| {
+                err.* = e;
+            };
+        }
+    }.f, .{ &a, gpa, &a_err });
     var js = try jobs.JobSystem.init(gpa, 4);
     defer js.deinit();
     var b: GrownWorld = undefined;
     try b.growWounded(gpa, 7, 40, js);
     defer b.deinit();
+    th.join();
+    if (a_err) |e| return e;
+    defer a.deinit();
     try testing.expect(a.published().fronts.len > 3); // the wound spawned repair fronts: the order axis is live
     const ha = a.published().contentHash();
     const hb = b.published().contentHash();
@@ -367,6 +378,7 @@ const GrownWorld = struct {
     /// sapling; this fixture is what makes G1 watch that axis.
     fn growWounded(self: *GrownWorld, gpa: std.mem.Allocator, seed: u64, steps: u32, js: ?*jobs.JobSystem) !void {
         self.world = try World.init(gpa, .{ .seed = seed });
+        self.world.jobs = js; // every parallel phase, scene build included
         self.scene = .{};
         errdefer self.world.deinit();
         try self.scene.build(&self.world, .sapling);
@@ -488,69 +500,40 @@ test "G2 mutation: zero deposit rate → no material" {
     try testing.expectEqual(@as(usize, 0), r.max_young);
 }
 
-/// Centroid of live front positions, lattice units.
-fn frontCentroid(snap: *const loam.Snapshot) [3]f64 {
-    var c = [3]f64{ 0, 0, 0 };
-    var n: f64 = 0;
-    for (snap.fronts) |f| {
-        if (!f.alive) continue;
-        inline for (0..3) |a| c[a] += f.pos[a];
-        n += 1;
-    }
-    if (n == 0) return c;
-    inline for (0..3) |a| c[a] /= n;
-    return c;
+fn printEnsemble(label: []const u8, e: *const seedbed.TropismEnsemble) void {
+    std.debug.print("\n{s}: n = {d}, D = {d}: r̄ {d:.2}, sd {d:.2}, lower95 {d:.2}, σ₀ {d:.2} (floor {d:.2}), all positive {}\n", .{ label, e.samples.len, thresholds.G3_DISPLACEMENT, e.mean, e.sd, e.lower95, e.sigma0, thresholds.G3_EFFECT_K * e.sigma0, e.all_positive });
+    for (e.samples) |smp| std.debug.print("  seed {d}: û ({d:.2}, {d:.2}) r {d:.2} null {d:.2}\n", .{ smp.seed, smp.u[0], smp.u[2], smp.r, smp.null_disp });
 }
 
-/// The stimulus coefficient the G3 scene uses. Spec §11's term is
-/// a·∇stimulus and the blob's gradient over a radius of 64 is of order
-/// 0.02 per lattice unit, so at a = 1.5 the term was several times
-/// weaker per step than the wander noise — under the null floor, as the
-/// review predicted. At 30 it is of order the persistence term.
-const G3_COEFF: f32 = 30;
-
-/// Centroid of the MATERIAL laid over the run — the field, not the
-/// live tips, whose centroid is a noisy statistic once tips go dormant.
-fn tropismRun(gpa: std.mem.Allocator, seed: u64, stimulus_x: ?f64, coeff: f32) ![3]f64 {
-    var w = try World.init(gpa, .{ .seed = seed });
-    defer w.deinit();
-    var scene = seedbed.Scene{ .stimulus = if (stimulus_x) |x| .{ x, 40, 0 } else null, .tropism_light = 0, .tropism_stimulus = coeff };
-    try scene.build(&w, .sapling);
-    try run(&w, thresholds.G3_STEPS, null);
-    return seedbed.centroid(&w, Channel.material.bit()).c;
-}
-
-/// The null: no stimulus, wander alone, across seeds — the RMS of the
-/// material centroid's x about the seed axis. What noise does on its own.
-fn nullSpread(gpa: std.mem.Allocator) !f64 {
-    const axis_x: f64 = @as(f64, lattice.CELLS / 2);
-    var sum2: f64 = 0;
-    var seed: u64 = 1;
-    while (seed <= thresholds.G3_NULL_SEEDS) : (seed += 1) {
-        const c = try tropismRun(gpa, seed, null, 0);
-        const dx = c[0] - axis_x;
-        sum2 += dx * dx;
-    }
-    return @sqrt(sum2 / @as(f64, @floatFromInt(thresholds.G3_NULL_SEEDS)));
-}
-
-test "G3: moving a stimulus field redirects live fronts, beyond k× the null spread" {
+test "G3: matched ± stimulus pairs across seeded directions produce a positive directional response" {
     const gpa = testing.allocator;
-    const spread = try nullSpread(gpa);
-    const floor = thresholds.G3_NULL_K * spread;
-    const plus = try tropismRun(gpa, 7, 40, G3_COEFF);
-    const minus = try tropismRun(gpa, 7, -40, G3_COEFF);
-    const drift = plus[0] - minus[0];
-    std.debug.print("\nG3: null spread {d:.2} over {d} seeds, floor {d:.2} (k = {d}); drift {d:.2} between stimulus at +40 and −40\n", .{ spread, thresholds.G3_NULL_SEEDS, floor, thresholds.G3_NULL_K, drift });
-    try testing.expect(spread > 0); // the null varied: wander is on
-    try testing.expect(drift >= floor);
+    var e = try seedbed.tropismEnsemble(gpa, thresholds.G3_SEEDS, thresholds.G3_DISPLACEMENT, seedbed.TROPISM_COEFF, thresholds.G3_STEPS, true);
+    defer e.deinit(gpa);
+    printEnsemble("G3", &e);
+    try testing.expect(e.sigma0 > 0); // the null wandered: the effect-size unit is real
+    // 1. The paired directional response is positive: 95% lower bound above zero.
+    try testing.expect(e.lower95 > 0);
+    // 2. Every pair has the right sign: P = 2⁻ⁿ under a directionless null.
+    try testing.expect(e.all_positive);
+    // 3. And it is large against natural wander: the effect-size floor, kept separate.
+    try testing.expect(e.mean > thresholds.G3_EFFECT_K * e.sigma0);
 }
 
-test "G3 mutation: stimulus gradient term zeroed → no drift" {
+test "G3 mutation: coefficient zero → every pair bit-identical, response exactly zero" {
     const gpa = testing.allocator;
-    const plus = try tropismRun(gpa, 7, 40, 0);
-    const minus = try tropismRun(gpa, 7, -40, 0);
-    try testing.expectEqual(plus[0], minus[0]); // nobody read the field: bit-identical
+    var e = try seedbed.tropismEnsemble(gpa, 3, thresholds.G3_DISPLACEMENT, 0, thresholds.G3_STEPS, false);
+    defer e.deinit(gpa);
+    for (e.samples) |smp| try testing.expectEqual(@as(f64, 0), smp.r);
+    try testing.expect(!e.all_positive);
+}
+
+test "G3 mutation: gradient term reversed → every pair has the wrong sign" {
+    const gpa = testing.allocator;
+    var e = try seedbed.tropismEnsemble(gpa, 3, thresholds.G3_DISPLACEMENT, -seedbed.TROPISM_COEFF, thresholds.G3_STEPS, false);
+    defer e.deinit(gpa);
+    printEnsemble("G3 reversed", &e);
+    for (e.samples) |smp| try testing.expect(smp.r < 0);
+    try testing.expect(e.lower95 < 0 or e.mean < 0);
 }
 
 const DamageBox = struct { lo: [3]f64 = .{ -10, 18, -10 }, hi: [3]f64 = .{ 10, 30, 10 } };

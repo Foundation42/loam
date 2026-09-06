@@ -62,39 +62,54 @@ pub fn blobLattice(w: *World, bit: u6, c: [3]f64, r: f64, amplitude: f32, gauge:
             }
         }
     }
-    for (keys.keys()) |raw| {
-        const key = Key.fromRaw(raw);
-        {
-            {
-                const ru = try w.author(key);
-                const o = key.origin();
-                const sp: i64 = key.spacing();
-                var any = false;
-                var k: u32 = 0;
-                while (k < brick.N) : (k += 1) {
-                    var j: u32 = 0;
-                    while (j < brick.N) : (j += 1) {
-                        var i: u32 = 0;
-                        while (i < brick.N) : (i += 1) {
-                            const p = [3]f64{
-                                @floatFromInt(@as(i64, o[0]) + @as(i64, i) * sp),
-                                @floatFromInt(@as(i64, o[1]) + @as(i64, j) * sp),
-                                @floatFromInt(@as(i64, o[2]) + @as(i64, k) * sp),
-                            };
-                            const dx = p[0] - c[0];
-                            const dy = p[1] - c[1];
-                            const dz = p[2] - c[2];
-                            const d2 = dx * dx + dy * dy + dz * dz;
-                            if (d2 >= r * r) continue;
-                            const q = 1 - d2 / (r * r);
-                            const v: f32 = amplitude * @as(f32, @floatCast(q * q));
-                            const idx = Brick.index(i, j, k);
-                            try ru.add(w.buffer.arena.allocator(), bit, idx, v);
-                            any = true;
-                        }
-                    }
-                }
-                if (!any and ru.mask == 0) ru.materialise = false;
+    // Entries serially (the buffer's map is not thread-safe); the fill in
+    // parallel, each key its own entry, planes from the thread-safe
+    // allocator. Order-free: G1's parallel run covers this path too.
+    const rus = try w.gpa.alloc(*update.RegionUpdate, keys.count());
+    defer w.gpa.free(rus);
+    for (keys.keys(), 0..) |raw, i| rus[i] = try w.author(Key.fromRaw(raw));
+    var ctx = BlobCtx{ .rus = rus, .alloc = w.buffer.planeAllocator(), .bit = bit, .c = c, .r = r, .amplitude = amplitude, .failed = std.atomic.Value(bool).init(false) };
+    world_mod.World.parallelRangePub(w.jobs, rus.len, 4, BlobCtx, &ctx, blobFill);
+    if (ctx.failed.load(.acquire)) return error.OutOfMemory;
+}
+
+const BlobCtx = struct {
+    rus: []*update.RegionUpdate,
+    alloc: std.mem.Allocator,
+    bit: u6,
+    c: [3]f64,
+    r: f64,
+    amplitude: f32,
+    failed: std.atomic.Value(bool),
+};
+
+fn blobFill(ctx: *BlobCtx, i: usize) void {
+    const ru = ctx.rus[i];
+    const key = ru.key;
+    const o = key.origin();
+    const sp: i64 = key.spacing();
+    var k: u32 = 0;
+    while (k < brick.N) : (k += 1) {
+        var j: u32 = 0;
+        while (j < brick.N) : (j += 1) {
+            var ii: u32 = 0;
+            while (ii < brick.N) : (ii += 1) {
+                const p = [3]f64{
+                    @floatFromInt(@as(i64, o[0]) + @as(i64, ii) * sp),
+                    @floatFromInt(@as(i64, o[1]) + @as(i64, j) * sp),
+                    @floatFromInt(@as(i64, o[2]) + @as(i64, k) * sp),
+                };
+                const dx = p[0] - ctx.c[0];
+                const dy = p[1] - ctx.c[1];
+                const dz = p[2] - ctx.c[2];
+                const d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 >= ctx.r * ctx.r) continue;
+                const q = 1 - d2 / (ctx.r * ctx.r);
+                const v: f32 = ctx.amplitude * @as(f32, @floatCast(q * q));
+                ru.add(ctx.alloc, ctx.bit, Brick.index(ii, j, k), v) catch {
+                    ctx.failed.store(true, .release);
+                    return;
+                };
             }
         }
     }
@@ -396,6 +411,166 @@ pub fn centroid(w: *const World, bit: u6) struct { c: [3]f64, mass: f64 } {
     }.f);
     if (ctx.sum == 0) return .{ .c = .{ 0, 0, 0 }, .mass = 0 };
     return .{ .c = .{ ctx.m[0] / ctx.sum, ctx.m[1] / ctx.sum, ctx.m[2] / ctx.sum }, .mass = ctx.sum };
+}
+
+// ── Tropism: the matched-pair ensemble (G3, and `--tropism-sweep`) ─────
+
+/// The stimulus coefficient the ensemble uses. Spec §11's term is
+/// a·∇stimulus; a blob's gradient over a radius of 96 is of order 0.01
+/// per lattice unit, so a = 30 puts the term at the order of the
+/// persistence term. A scene parameter, not a threshold.
+pub const TROPISM_COEFF: f32 = 30;
+
+pub const TropismSample = struct {
+    seed: u64,
+    /// The imposed horizontal direction, drawn from the seed.
+    u: [3]f64,
+    /// (c⁺ − c⁻)·û: the paired directional response, lattice units.
+    r: f64,
+    /// The no-stimulus centroid's displacement projected on û — natural
+    /// wander along the same direction the pair is measured on. NaN when
+    /// the null run was skipped.
+    null_disp: f64,
+};
+
+pub const TropismEnsemble = struct {
+    samples: []TropismSample,
+    mean: f64,
+    /// Sample standard deviation of r.
+    sd: f64,
+    /// r̄ − t₀.₉₇₅,ₙ₋₁ · sd/√n.
+    lower95: f64,
+    /// RMS of null_disp over the seeds: the effect-size unit, 1-D along û.
+    sigma0: f64,
+    all_positive: bool,
+
+    pub fn deinit(self: *TropismEnsemble, gpa: std.mem.Allocator) void {
+        gpa.free(self.samples);
+    }
+};
+
+/// Student's t, two-sided 95%, for df = n − 1. A table, because a gate
+/// should not ship a special-function library for one number.
+pub fn tStudent975(df: usize) f64 {
+    const table = [_]f64{ 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086 };
+    std.debug.assert(df >= 1 and df <= table.len);
+    return table[df - 1];
+}
+
+/// Direction û from the seed: an angle in the horizontal plane. The seed
+/// chooses it, so no axis is privileged.
+pub fn seededDirection(seed: u64) [3]f64 {
+    const theta = 2 * std.math.pi * @as(f64, @import("rng.zig").unitOf(@import("rng.zig").hash4(seed, 0x7a3, 0, 0)));
+    return .{ @cos(theta), 0, @sin(theta) };
+}
+
+/// Material centroid of the sapling grown `steps` steps with the
+/// stimulus at `stimulus` (world units), or none.
+fn tropismRun(gpa: std.mem.Allocator, seed: u64, stimulus: ?[3]f64, coeff: f32, steps: u32) ![3]f64 {
+    var w = try World.init(gpa, .{ .seed = seed });
+    defer w.deinit();
+    var scene = Scene{ .stimulus = stimulus, .tropism_light = 0, .tropism_stimulus = coeff };
+    try scene.build(&w, .sapling);
+    var i: u64 = 0;
+    while (i <= steps) : (i += 1) try w.step(.{ .frame = i, .time_ns = i * std.time.ns_per_s }, null);
+    return centroid(&w, Channel.material.bit()).c;
+}
+
+/// One run of the ensemble: which seed, which condition.
+const EnsembleRun = struct {
+    seed: u64,
+    stimulus: ?[3]f64,
+    coeff: f32,
+    steps: u32,
+    result: [3]f64 = .{ 0, 0, 0 },
+    err: ?anyerror = null,
+};
+
+const EnsembleCtx = struct {
+    gpa: std.mem.Allocator,
+    runs: []EnsembleRun,
+    next: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+
+    fn worker(self: *EnsembleCtx) void {
+        while (true) {
+            const i = self.next.fetchAdd(1, .monotonic);
+            if (i >= self.runs.len) return;
+            const r = &self.runs[i];
+            r.result = tropismRun(self.gpa, r.seed, r.stimulus, r.coeff, r.steps) catch |e| {
+                r.err = e;
+                continue;
+            };
+        }
+    }
+};
+
+/// Every run is its own world with its own seed, so they are independent
+/// and run one per core: `min(runs, cpus)` threads pull from a shared
+/// index. The result cannot depend on scheduling — each world is
+/// deterministic and the reduction happens afterwards in seed order.
+fn runEnsemble(gpa: std.mem.Allocator, runs: []EnsembleRun) !void {
+    var ctx = EnsembleCtx{ .gpa = gpa, .runs = runs };
+    const cpus = std.Thread.getCpuCount() catch 1;
+    const nthreads = @max(1, @min(runs.len, cpus));
+    const threads = try gpa.alloc(std.Thread, nthreads);
+    defer gpa.free(threads);
+    var spawned: usize = 0;
+    for (threads) |*t| {
+        t.* = std.Thread.spawn(.{}, EnsembleCtx.worker, .{&ctx}) catch break;
+        spawned += 1;
+    }
+    if (spawned == 0) ctx.worker();
+    for (threads[0..spawned]) |t| t.join();
+    for (runs) |r| if (r.err) |e| return e;
+}
+
+/// Seeds 1..n, each with its direction: the ± pair and, when `with_null`,
+/// the stimulus-free run that gives σ₀. A mutation that asserts only on
+/// the pairs skips the null and a third of the cost.
+pub fn tropismEnsemble(gpa: std.mem.Allocator, n: u64, d: f64, coeff: f32, steps: u32, with_null: bool) !TropismEnsemble {
+    const per: usize = if (with_null) 3 else 2;
+    const runs = try gpa.alloc(EnsembleRun, @as(usize, @intCast(n)) * per);
+    defer gpa.free(runs);
+    var seed: u64 = 1;
+    while (seed <= n) : (seed += 1) {
+        const u = seededDirection(seed);
+        const base = (seed - 1) * per;
+        runs[base] = .{ .seed = seed, .stimulus = .{ d * u[0], 40, d * u[2] }, .coeff = coeff, .steps = steps };
+        runs[base + 1] = .{ .seed = seed, .stimulus = .{ -d * u[0], 40, -d * u[2] }, .coeff = coeff, .steps = steps };
+        if (with_null) runs[base + 2] = .{ .seed = seed, .stimulus = null, .coeff = coeff, .steps = steps };
+    }
+    try runEnsemble(gpa, runs);
+
+    const samples = try gpa.alloc(TropismSample, @intCast(n));
+    errdefer gpa.free(samples);
+    const seed_axis = (lattice.Domain{}).toLattice(.{ 0, 0, 0 });
+    var sum: f64 = 0;
+    var sum0: f64 = 0;
+    var all_positive = true;
+    seed = 1;
+    while (seed <= n) : (seed += 1) {
+        const u = seededDirection(seed);
+        const base = (seed - 1) * per;
+        const plus = runs[base].result;
+        const minus = runs[base + 1].result;
+        const r = (plus[0] - minus[0]) * u[0] + (plus[2] - minus[2]) * u[2];
+        var disp: f64 = std.math.nan(f64);
+        if (with_null) {
+            const none = runs[base + 2].result;
+            disp = (none[0] - seed_axis[0]) * u[0] + (none[2] - seed_axis[2]) * u[2];
+            sum0 += disp * disp;
+        }
+        samples[seed - 1] = .{ .seed = seed, .u = u, .r = r, .null_disp = disp };
+        sum += r;
+        if (r <= 0) all_positive = false;
+    }
+    const nf: f64 = @floatFromInt(n);
+    const mean = sum / nf;
+    var ss: f64 = 0;
+    for (samples) |smp| ss += (smp.r - mean) * (smp.r - mean);
+    const sd = if (n > 1) @sqrt(ss / (nf - 1)) else 0;
+    const lower = if (n > 1) mean - tStudent975(@intCast(n - 1)) * sd / @sqrt(nf) else mean;
+    return .{ .samples = samples, .mean = mean, .sd = sd, .lower95 = lower, .sigma0 = if (with_null) @sqrt(sum0 / nf) else std.math.nan(f64), .all_positive = all_positive };
 }
 
 /// Named scenes. The same handful the gates use, so `loam-run --scene`

@@ -40,6 +40,9 @@ const usage =
     \\  --active             print the active set at the end
     \\  --every N            print a line every N steps (default 10; 0 = none)
     \\  --phases             print wall-clock per phase beside each line
+    \\  --tropism-sweep D,D,…  the G3 ensemble at each stimulus displacement D (dose-response), then exit
+    \\  --seeds N            seeds in the ensemble (default 6)
+    \\  --coeff A            stimulus coefficient for the sweep (default the G3 scene's)
     \\  --help
     \\
 ;
@@ -65,6 +68,9 @@ const Opts = struct {
     active: bool = false,
     every: u32 = 10,
     phases: bool = false,
+    sweep: std.ArrayListUnmanaged(f64) = .{},
+    seeds: u64 = 6,
+    coeff: f32 = seedbed.TROPISM_COEFF,
 };
 
 const Slice = struct { bit: u6, axis: u2, coord: f64, res: u32, path: []const u8 };
@@ -170,6 +176,13 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             o.active = true;
         } else if (std.mem.eql(u8, a, "--phases")) {
             o.phases = true;
+        } else if (std.mem.eql(u8, a, "--tropism-sweep")) {
+            var it = std.mem.splitScalar(u8, try next(args, &i), ',');
+            while (it.next()) |part| try o.sweep.append(gpa, try std.fmt.parseFloat(f64, part));
+        } else if (std.mem.eql(u8, a, "--seeds")) {
+            o.seeds = try std.fmt.parseInt(u64, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--coeff")) {
+            o.coeff = try std.fmt.parseFloat(f32, try next(args, &i));
         } else if (std.mem.eql(u8, a, "--every")) {
             o.every = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else {
@@ -200,10 +213,42 @@ pub fn main() !void {
     };
     defer opts.slices.deinit(gpa);
     defer opts.projections.deinit(gpa);
+    defer opts.sweep.deinit(gpa);
 
     const stdout = std.io.getStdOut().writer();
+    if (opts.sweep.items.len > 0) {
+        // The dose-response instrument: G3's ensemble at each displacement.
+        try stdout.print("tropism sweep: {d} seeds, coefficient {d}, {d} steps\n", .{ opts.seeds, opts.coeff, opts.steps });
+        try stdout.print("{s:>6} {s:>8} {s:>8} {s:>9} {s:>8} {s:>8}  {s}\n", .{ "D", "mean r", "sd", "lower95", "sigma0", "all>0", "per seed" });
+        var sx: f64 = 0;
+        var sy: f64 = 0;
+        var sxx: f64 = 0;
+        var sxy: f64 = 0;
+        for (opts.sweep.items) |d| {
+            var e = try seedbed.tropismEnsemble(gpa, opts.seeds, d, opts.coeff, opts.steps, true);
+            defer e.deinit(gpa);
+            try stdout.print("{d:>6.1} {d:>8.2} {d:>8.2} {d:>9.2} {d:>8.2} {s:>8} ", .{ d, e.mean, e.sd, e.lower95, e.sigma0, if (e.all_positive) "yes" else "no" });
+            for (e.samples) |smp| try stdout.print(" {d:.1}", .{smp.r});
+            try stdout.print("\n", .{});
+            sx += d;
+            sy += e.mean;
+            sxx += d * d;
+            sxy += d * e.mean;
+        }
+        const n: f64 = @floatFromInt(opts.sweep.items.len);
+        if (n > 1) {
+            const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+            try stdout.print("slope of mean response against D: {d:.3} per lattice unit of displacement\n", .{slope});
+        }
+        return;
+    }
+
+    var js: ?*jobs.JobSystem = null;
+    if (opts.threads > 0) js = try jobs.JobSystem.init(gpa, opts.threads);
+    defer if (js) |s| s.deinit();
     var world = try loam.World.init(gpa, .{ .seed = opts.seed, .policy = .{ .active_only = !opts.all_regions } });
     defer world.deinit();
+    world.jobs = js;
     var scene = seedbed.Scene{};
     if (opts.light) |l| scene.light = l;
     scene.stimulus = opts.stimulus;
@@ -221,10 +266,6 @@ pub fn main() !void {
             @as(f64, @floatFromInt(s.ns_apply)) / 1e6, @as(f64, @floatFromInt(s.ns_frontier)) / 1e6, @as(f64, @floatFromInt(s.ns_seams)) / 1e6, @as(f64, @floatFromInt(s.ns_finalize)) / 1e6, @as(f64, @floatFromInt(s.ns_build)) / 1e6, @as(f64, @floatFromInt(s.ns_publish)) / 1e6,
         });
     }
-
-    var js: ?*jobs.JobSystem = null;
-    if (opts.threads > 0) js = try jobs.JobSystem.init(gpa, opts.threads);
-    defer if (js) |s| s.deinit();
 
     var step: u64 = 0;
     var total_ms: f64 = 0;

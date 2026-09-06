@@ -7,7 +7,7 @@ feel reassured. Chris has asked for this in every sibling repo; a suite
 run per edit makes the harness the activity rather than the work.
 
     zig build test -Dtest-filter=straddling   # one gate, seconds
-    zig build test                            # 47 gates, ~2 min Debug — before a commit
+    zig build test                            # 48 gates, ~3 min Debug — before a commit
     zig build test -Doptimize=ReleaseFast     # the same in ~20 s; know the delta, don't lean on it
     zig build verify-dump                     # loam-run writes a dump, the struple PYTHON port reads it
     zig build py-test                         # the ctypes binding, and G1 across two PROCESSES
@@ -62,9 +62,16 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   different libm is unmeasured. A GPU twin is D3's problem and the
   integer lattice is the path there.
 - **Operators write deltas, never bricks.** Region-local update entries,
-  applied at commit in key order. The parallel phase cannot reach the
-  result in a different order; G1 runs serial and over common's JobSystem
-  and compares the bytes.
+  applied at commit in key order. No parallel phase can reach the result
+  in a different order; G1 runs serial and over common's JobSystem and
+  compares the bytes against a frozen reference.
+- **What runs in parallel** when a world has `jobs` (or `step` is handed
+  a system): the operate phase, applying deltas, finalize (summary and
+  hash), and blob authoring — all per brick, order-free. The seam pass
+  and the front pass are serial; the seam pass is the remaining per-step
+  cost and its two-phase parallel form is recorded with a trigger. The
+  G3 ensemble runs its worlds one per core on plain threads, since each
+  world is independent. `loam-run --threads N` sets all of it.
 - **Randomness is counter-based.** `rng.Stream` hashes (seed, who, epoch,
   counter); nothing draws sequentially, so parallel order cannot leak in.
 - **Snapshots are immutable and refcounted.** A published brick is never
