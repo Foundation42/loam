@@ -2303,11 +2303,25 @@ The veins are short: the fronts stop at the first vein or face they
 meet and wander little. Longer, sheet-like veins are the archetype's
 tuning, play.
 
+Christian, on the marble: "This is the best one yet! See, the thing
+is now we can have transitions on albedo, roughness, metalness,
+emissives. Each of the sampling/conformal mappings makes sense for
+different use cases, but the simple 'sampled space' mapping, like the
+marble, makes the most initial intuitive sense." So the volume, read
+at the hit's world position, is the default way an archetype attaches,
+and the next step is the archetype as a MATERIAL FIELD: the bake
+carrying every PBR channel the archetype models — albedo, roughness,
+metallic, emissive — correlated because they come from one history
+(a vein is glossier, an ore vein metallic, a hot vein emissive), the
+material entry supplying the rest. The marble's tint is the first such
+transition, on albedo alone.
+
 ### Open
 
-The archetype's mip chain; a periodic slab or cube; the veins'
-morphology; the chart path for structured surface archetypes if the
-plates are wanted on a tube. `who` and `segment` packed to one plane,
+The archetype as a material field (every PBR channel it models baked
+beside φ, the entry's defaults for the rest); the archetype's mip
+chain; a periodic slab or cube; the veins' morphology; the chart path
+for structured surface archetypes if the plates are wanted on a tube. `who` and `segment` packed to one plane,
 and `own` where `other` is far, are the next two of the seven-plane
 cost. The one-sided mask's
 error inside a collar, if a chart read there ever matters. The
