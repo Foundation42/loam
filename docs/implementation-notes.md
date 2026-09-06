@@ -563,6 +563,32 @@ Suzanne in `test_scene`, ray-traced with its own shadow.
   sphere's reflection, which the reflection walk found through
   `dynTraceClosest` without a line written for it. Christian watched it
   grow. The seedbed said it would.
+- **Three artefacts, found by looking closely** (Christian's close-ups,
+  matryoshka `loam` branch, second commit). Shelves, flat, axis-aligned,
+  view-dependent: the pack padded a brick's tight bounds by a sample
+  and, where the support touched the cube's face, that reached OUTSIDE
+  the cube; the sampler clamped to the face and extruded its values as a
+  slab a sample thick — "triangles poking out" that were never
+  triangles. Dark bands along every seam: the central-difference normal
+  reached half a cell past the face into the neighbour and, once the
+  sampler said zero outside the cube, pointed every near-face normal at
+  the face. Hairline cracks at seams: the march broke when its next
+  step passed the leaf's exit, so a crossing in the last partial step
+  was never tested, and the neighbour started inside and reported
+  nothing. Fixes: bounds clamped to the cube and zero outside it; the
+  normal from the ANALYTIC gradient of the trilinear reconstruction
+  inside its cell; the last step clamped to the exit and tested, and a
+  leaf entered already inside reports the entry. A quarter-cell step
+  for the silhouettes' sawteeth. A rule from it: a leaf's march may
+  reach nothing outside its own cube, for values or for derivatives —
+  the neighbour holds that, and the seam contract is what makes the two
+  agree.
+- **What remains is the reconstruction**: trilinear facets at cell
+  scale on a trunk five cells across, the field's honest resolution
+  here. Christian's ensemble idea — diverge the ray near the surface —
+  antialiases the silhouette (the stable temporal sampling beat) but not
+  the facets; those are D2 (a finer gauge under the trunk) and D4 (a
+  smoother basis).
 - **Recorded, not built, with triggers:** density/extinction as a
   VOLUME with the summaries' majorants (the second capture with smoke
   or foliage); a loam leaf in the STATIC tree for a tree that has gone
