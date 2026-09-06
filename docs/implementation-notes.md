@@ -2059,9 +2059,55 @@ the fill, recorded not built, with its trigger: the strips still read
 after the darkening moved to the envelope. "Some seams but I think
 that's okay."
 
+### The scaffold question, and the field mode (Christian, the same night)
+
+"I don't understand why the lofting rings even come into it. Those are
+just a scaffold. The point of loam is the gradient field. There should
+be no connection between the scaffold and the texture." He is right,
+and the strips were the evidence: band 1 as built re-reads the ring's
+residual, which the capsule already deposited into the carrier — at
+this gauge the slot pitch is 0.8 against a lattice of 1, so it adds
+nothing the field does not hold, and what it adds is the scaffold's
+own artefacts. The only genuine history in the ring table is the
+event: a bud that left, a cut. He sent Pixar's SIGGRAPH 2023 talk
+(Bartsch, Thompson, de Goes, "A Procedural Approach for Stylized Bark
+Shading"): a smooth tangent DIRECTION FIELD over the trunk from artist
+strokes, streamlines advected along it, baked to Ptex — no history at
+all, the direction field is the texture. Loam has that field for free
+from the carrier: the Hessian at the hit gives the principal
+directions of the level set, and a tube's axis is its direction of
+least curvature. Pixar's strokes exist because a mesh has no Hessian
+to ask.
+
+Played, not briefed ("no brief for just an experiment, as long as
+the base is committed and pushed"): matryoshka's `--loam-bark-mode
+field` — the frame from the Hessian, the grain stretched four to one
+along the axis, even in the frame's signs so no flip leaves a seam;
+reads nothing but the carrier. No strips, no seams, no chart, no ring
+table, no provenance planes: the bark read's cost in that mode is the
+carrier's own 64 coefficients twice. Rendered headless beside the
+chart mode at the same three cameras; his to judge. The chart keeps
+one thing the field cannot give — a coordinate that follows matter
+that moves in place — which nothing in loam does yet, and the history
+proper (who, the scar) stays provenance.
+
+His document on materials as loams, read the same night: an archetype
+is a small loam world grown from processes — M(x, t_f) = Φⁿ(M₀, E) —
+with the low bands stored history (rings, veins, plates) and the
+higher bands procedural conditional on them; three levels, static,
+developed, living; and the nested chain planet → geology → materials
+→ terrain → life → weathering, "the same conceptual machinery at
+different scales". Read against P2.3: the archetype's history is its
+OWN field, attached to a surface through what the surface gives at a
+hit — φ as depth, the Hessian's frame as orientation — never through
+the sweep's scaffold. The bark's bands 1–2 were the scaffold standing
+in for an archetype that does not exist yet. "An isolated material
+seedbed would be a cracking experiment once P2 has settled."
+
 ### Open
 
-The stride against the struck number (the bake). The one-sided mask's
+The stride against the struck number (the bake). Which grain mode is
+the bark's, his eyes. The material seedbed. The one-sided mask's
 error inside a collar, if a chart read there ever matters. The
 amplitudes, PROPOSED. The silhouette ensemble, recorded with its
 trigger (shimmer at a silhouette under the footprint cut). From
