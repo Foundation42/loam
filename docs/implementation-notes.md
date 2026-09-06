@@ -2038,6 +2038,27 @@ planes alone. The suite: 94 gates. The frame time of the close-up
 against the plain sapling is not measured here — the overlay prints
 it, and Christian's machine has the GPU.
 
+### The first look (Christian, the same night)
+
+"For a first attempt it looks amazing." Up close, speckle and hard-
+edged black blobs; farther back, strips across the trunk. The speckle
+and the blobs were two unit slips in the shader and an index: the
+chart's gradients are per metre and s, r in lattice units, so the
+bump's tangent frame is ∇v = h∇s and ∇u = r·h·∇θ — without the h both
+directions were sixteen times too strong at six centimetres a unit,
+and the normals flipped (the CPU reference works in lattice units
+throughout and never had it; the two agree term for term only when
+the units do). Band 1 darkened per lattice unit of residual, which
+runs to a whole unit on the trunk, so grooves saturated the clamp into
+blobs — it darkens as a fraction of the ring's envelope now. And the
+nearest sample for `who` read block i where sample i sits at block
+i + 1. Matryoshka `a30109a`. The strips are band 1 read across rings:
+the loft table lerps linearly from ring to ring, so the relief is C0
+along the arc, a kink at every ring — a Catmull-Rom over four rings is
+the fill, recorded not built, with its trigger: the strips still read
+after the darkening moved to the envelope. "Some seams but I think
+that's okay."
+
 ### Open
 
 The stride against the struck number (the bake). The one-sided mask's
