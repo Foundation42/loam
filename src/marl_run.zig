@@ -74,6 +74,14 @@ const usage =
     \\                      reaches the child — the trainability floor (default 1)
     \\  --route-gain B      added per unit of |parent residual| — the epistemic
     \\                      bias (default 0; floor 1 gain 0 is MARL-2's routing)
+    \\  --duty D            MARL-5: normalise routing to this fraction of the
+    \\                      exemplars offered, whatever the score (0 = MARL-4's
+    \\                      raw probability). Equal duty is equal work
+    \\  --sched M           off (MARL-4) | need | need_lag | need_lag_suff
+    \\  --lag-tau T         anti-starvation timescale, exemplars (20000)
+    \\  --suff-ref R        evidence per child kernel counting as served (200)
+    \\  --arms5             MARL-5's controlled arms at one duty: uniform,
+    \\                      static biased, and three schedules
     \\  --birth-scale F     the evidence cell's edge, in coverage spacings (2)
     \\  --birth-residual F  mean post-update residual it must still carry
     \\                      (default 0 = the surprise threshold)
@@ -93,6 +101,7 @@ const Opts = struct {
     arms: bool = false,
     tsv: bool = false,
     hier: bool = false,
+    arms5: bool = false,
     p: marl.PressureOptions = .{},
 };
 
@@ -174,6 +183,17 @@ fn parse(args: []const []const u8) !?Opts {
             o.p.route_floor = try parseF32(try next(args, &i));
         } else if (std.mem.eql(u8, a, "--route-gain")) {
             o.p.route_gain = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--duty")) {
+            o.p.route_duty = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--lag-tau")) {
+            o.p.lag_tau = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--suff-ref")) {
+            o.p.suff_ref = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--arms5")) {
+            o.arms5 = true;
+        } else if (std.mem.eql(u8, a, "--sched")) {
+            const v = try next(args, &i);
+            o.p.sched = if (std.mem.eql(u8, v, "off")) .off else if (std.mem.eql(u8, v, "need")) .need else if (std.mem.eql(u8, v, "need_lag")) .need_lag else if (std.mem.eql(u8, v, "need_lag_suff")) .need_lag_suff else if (std.mem.eql(u8, v, "hybrid")) .hybrid else return error.UnknownSched;
         } else if (std.mem.eql(u8, a, "--birth-scale")) {
             o.m.birth_scale = try parseF32(try next(args, &i));
         } else if (std.mem.eql(u8, a, "--birth-residual")) {
@@ -224,6 +244,7 @@ pub fn main() !void {
     };
 
     if (o.arms) return arms(gpa, o);
+    if (o.arms5) return arms5(gpa, o);
     if (o.hier) return hier(gpa, o);
     var model = try marl.Model.init(gpa, o.m);
     defer model.deinit();
@@ -455,6 +476,85 @@ fn arms(gpa: std.mem.Allocator, o: Opts) !void {
     try out.print("    work_C/work_B' = {d:.3}\n", .{@as(f64, @floatFromInt(c.stats.updates)) / @as(f64, @floatFromInt(@max(1, b.stats.updates)))});
     const drift = b.driftOf();
     try out.print("    B' moved A's centres by {d:.5} on average, {d:.5} at most (h = {d:.4})\n", .{ drift.mean, drift.max, b.h });
+}
+
+/// MARL-5's controlled arms. Every arm sees the same exemplars in the same
+/// order and routes the same FRACTION of them; they differ only in which
+/// ones. So no arm can win by processing more, which is the whole point of
+/// the control and the reason `--duty` exists.
+fn arms5(gpa: std.mem.Allocator, o: Opts) !void {
+    const out = std.io.getStdOut().writer();
+    const pr = try marl.probesOf(gpa, o.m.truth, 0xB0B, o.probe_n);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    const Arm = struct { name: []const u8, p: marl.PressureOptions };
+    const duty = if (o.p.route_duty > 0) o.p.route_duty else 0.4;
+    const set = [_]Arm{
+        .{ .name = "A  uniform", .p = .{ .route_duty = duty, .route_floor = 1, .route_gain = 0 } },
+        .{ .name = "B  static residual bias", .p = .{ .route_duty = duty, .route_floor = 0.05, .route_gain = 6 } },
+        .{ .name = "C1 need", .p = .{ .route_duty = duty, .sched = .need, .lag_tau = o.p.lag_tau, .suff_ref = o.p.suff_ref } },
+        .{ .name = "C2 need × lag", .p = .{ .route_duty = duty, .sched = .need_lag, .lag_tau = o.p.lag_tau, .suff_ref = o.p.suff_ref } },
+        .{ .name = "C3 need × lag ÷ suff", .p = .{ .route_duty = duty, .sched = .need_lag_suff, .lag_tau = o.p.lag_tau, .suff_ref = o.p.suff_ref } },
+    };
+
+    try out.print("MARL-5 — scheduling a fixed learning budget ({s})\n", .{@tagName(builtin.mode)});
+    try out.print("  target sharpness ×{d:.1}, {d} exemplars, duty {d:.2}, τ {d:.0}, suff_ref {d:.0}, seed {d}\n\n", .{ o.m.truth.sharpness, o.exemplars, duty, o.p.lag_tau, o.p.suff_ref, o.m.seed });
+    try out.print("  {s:<24} {s:>9} {s:>8} {s:>9} {s:>8} {s:>7} {s:>7} {s:>8} {s:>9}\n", .{ "arm", "RMS", "routed", "childUpd", "kernels", "upd/k", "concen", "trained", "mean|w|" });
+
+    var rms_a: f32 = 0;
+    var conc_a: f64 = 0;
+    for (set, 0..) |arm, ai| {
+        var h = try marl.Hierarchy.init(gpa, o.m, arm.p);
+        defer h.deinit();
+        try h.stream_n(o.exemplars);
+        const rms = try h.rms(pr.p, pr.y, null);
+        const conc = h.childConcentration();
+        if (ai == 0) {
+            rms_a = rms;
+            conc_a = conc;
+        }
+        try out.print("  {s:<24} {d:>9.5} {d:>8} {d:>9} {d:>8} {d:>7.0} {d:>7.2} {d:>8.3} {d:>9.3}\n", .{
+            arm.name,                  rms,
+            h.routed,                  h.child.stats.updates,
+            h.child.kernels.items.len, h.child.meanUpdates(),
+            conc,                      h.child.trainedFraction(10),
+            h.child.weightStats().mean_abs,
+        });
+        if (ai == set.len - 1 or ai == 1) {
+            // The learning-efficiency distribution, measured and never
+            // scheduled from — split by whether the region's need is above
+            // or below the median, which is the split that might one day
+            // separate "send more evidence" from "the representation is
+            // wrong".
+            var hi: f64 = 0;
+            var hi_n: u32 = 0;
+            var lo: f64 = 0;
+            var lo_n: u32 = 0;
+            var med: f32 = 0;
+            var cnt: u32 = 0;
+            for (h.sched, 0..) |*e, i| {
+                if (!h.refined[i] or e.eff_n == 0) continue;
+                med += e.need;
+                cnt += 1;
+            }
+            if (cnt > 0) med /= @floatFromInt(cnt);
+            for (h.sched, 0..) |*e, i| {
+                if (!h.refined[i] or e.eff_n == 0) continue;
+                if (e.need >= med) {
+                    hi += e.efficiency();
+                    hi_n += 1;
+                } else {
+                    lo += e.efficiency();
+                    lo_n += 1;
+                }
+            }
+            if (hi_n > 0 and lo_n > 0) try out.print("     learning efficiency ({s}): above-median need {e:.3} over {d} regions, below {e:.3} over {d}\n", .{ arm.name, hi / @as(f64, @floatFromInt(hi_n)), hi_n, lo / @as(f64, @floatFromInt(lo_n)), lo_n });
+        }
+    }
+    try out.print("\n  the gates read: C's RMS must beat B's by {d:.2} (MARL5_RMS_EDGE) AND\n", .{th.MARL5_RMS_EDGE});
+    try out.print("  C's concentration must beat A's {d:.2} by {d:.2} (MARL5_CONCENTRATION_EDGE);\n", .{ conc_a, th.MARL5_CONCENTRATION_EDGE });
+    try out.print("  and RMS(need) over RMS(need × lag) must clear {d:.2} (MARL5_LAG_HELPS)\n", .{th.MARL5_LAG_HELPS});
 }
 
 /// MARL-2: the two-level residual hierarchy against flat MARL, on the same

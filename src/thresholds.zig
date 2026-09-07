@@ -874,4 +874,75 @@ pub const MARL4_TRAINED_FLOOR: f32 = 0.8;
 /// perfect — an ask, and well short of claiming the problem solved.
 pub const MARL4_CONCENTRATION: f32 = 2.5;
 
+// ── MARL-5 (scheduling a fixed learning budget) ──────────────────────
+//
+// From `tools/marl5_predict.py`, before its runs. MARL-4 left one tension:
+// concentration and evidence sufficiency compete for a fixed budget. Three
+// arms at THE SAME ROUTED COUNT, so no arm can win by processing more —
+// uniform, best static residual bias, and adaptive scheduling.
+//
+// Christian's restraints shape the whole set. The criterion is a PARETO
+// improvement and not a maximum, because MARL-4 established that chasing
+// concentration to the ceiling is actively bad. And the sufficiency term
+// is a control rather than a target: if residual-only scheduling does as
+// well, evidence-per-kernel was diagnostic and the scheduler does not need
+// it. That must not be pre-committed to.
+
+/// G22 (a): the adaptive arm's RMS against the best static arm's, at the
+/// same routed count.
+///
+/// PROPOSED, from what counts as an effect on this target: MARL-4's whole
+/// efficient regime spans 1.2% of RMS between uniform routing and the
+/// static 0.05/6 point, so five percent is several times anything a static
+/// setting can buy and cannot be reached by drifting along that frontier.
+///
+/// **REFUTED, and left standing.** Measured 0.91 — the adaptive arm is 10%
+/// WORSE than static bias, not 5% better, and so are the other two
+/// policies. The reason is granularity: a region is a sixth of the domain
+/// across and the ridge is a fortieth of it thick, so a schedule that
+/// routes a whole region at one probability cannot separate the exemplar
+/// on the ridge from the one beside it — and that separation is the entire
+/// mechanism MARL-4 established.
+pub const MARL5_RMS_EDGE: f32 = 1.05;
+
+/// G22 (a), the other half: concentration against the UNIFORM arm's.
+///
+/// PROPOSED so that a scheduler cannot pass the RMS gate by quietly
+/// becoming uniform routing, which would be the degenerate solution. Both
+/// halves must hold; either alone is meaningless.
+///
+/// **REFUTED, and left standing.** Measured 1.08 (1.83 against uniform's
+/// 1.70), where static per-exemplar bias reaches 2.29 on the same
+/// exemplars at the same duty.
+pub const MARL5_CONCENTRATION_EDGE: f32 = 1.2;
+
+/// G22 (b): RMS(need alone) over RMS(need × anti-starvation), at the same
+/// routed count.
+///
+/// PROPOSED as a DIRECTION claim with a deliberately small margin.
+/// Christian's prediction is that the largest residual is not the best
+/// schedule — that a scheduler must avoid both tails, repeatedly servicing
+/// well-trained high-residual regions and starving newly created
+/// representation. Demanding a large margin would make a true but modest
+/// effect read as a refutation of a claim that was right.
+///
+/// **REFUTED, and left standing — though not in the way it was written
+/// to be.** Measured 1.001: `need` and `need × lag` are indistinguishable.
+/// That is not evidence that the largest residual IS the best schedule; it
+/// is that at region granularity the whole family is dominated, so the
+/// question the number was asking could not be answered at this
+/// resolution. Christian's prediction is untested, not refuted.
+///
+/// The sufficiency control, reported and never gated: `need × lag ÷
+/// sufficiency` was the WORST of the three (0.05380 against 0.05228). So
+/// evidence-per-kernel was diagnostic, as Christian allowed it might be,
+/// and the scheduler does not want it explicitly.
+pub const MARL5_LAG_HELPS: f32 = 1.02;
+
+// NOT gated, at Christian's instruction, and recorded rather than
+// pre-committed: whether the SUFFICIENCY term contributes causally, and
+// what `learning_efficiency` — Δ(regional unresolved residual) per unit of
+// learning work — turns out to look like. Measured first, scheduled from
+// never.
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

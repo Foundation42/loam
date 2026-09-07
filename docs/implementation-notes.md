@@ -4005,6 +4005,123 @@ The open question is no longer where to put capacity. It is how to spend a
 fixed evidence budget across regions that need different amounts of it —
 which is a scheduling problem, and Loam has had one of those since R17.
 
+## MARL-5 — scheduling, and the granularity that made it moot (Monday 2026-09-07)
+
+Christian's question: can an adaptive scheduler allocate a fixed learning
+budget better than static residual-biased routing? Three arms at one duty
+so no arm can win by processing more; scheduler state per parent region
+limited to quantities the campaign already understands — need (unresolved
+pressure), sufficiency (evidence per child kernel), lag (anti-starvation).
+
+**All three pre-registered numbers refuted. The answer is no, and the
+reason is granularity.**
+
+    arm                          RMS   routed  childUpd  kernels  upd/k  concen
+    A  uniform                0.05154    9932    450555     2569    175    1.70
+    B  static residual bias   0.04764    7411    620823     2438    255    2.29
+    C1 need                   0.05233    7756    322370     2274    142    1.85
+    C2 need × lag             0.05228    7762    321710     2274    141    1.83
+    C3 need × lag ÷ suff      0.05380    7545    294950     2231    132    1.75
+                                          (sharpness ×4, 200 000 exemplars, duty 0.4)
+
+Every region-level policy loses to MARL-4's per-exemplar bias by about 10%
+of RMS, and by a quarter of its concentration.
+
+### Why: the schedule is coarser than its own signal
+
+A parent region is a sixth of the domain across. The ridge this campaign
+has spent five phases chasing is a fortieth of it thick. A schedule that
+routes a whole region at one probability cannot separate the exemplar on
+the ridge from the one beside it — and that separation IS the mechanism
+MARL-4 established.
+
+The decisive test was a HYBRID arm, added after the first three lost: the
+per-exemplar bias multiplied by the region's starvation term.
+
+    at ~620 000 child updates      RMS       concentration
+      static bias (per-exemplar)   0.04764       2.29
+      hybrid (per-exemplar × lag)  0.04719       2.29
+      region schedule alone        0.05237       1.78   (at 739 000 updates)
+
+The hybrid recovers static's number to within 1% and matches its
+concentration exactly. **The region term contributes nothing; the exemplar
+term contributes everything.** Christian's R17 correspondence was offered
+as a hypothesis to be earned, and it is not earned: Loam schedules bricks
+because a brick is its unit of work, while MARL's unit of work is one
+exemplar and its structure is finer than any region. The two do not
+transfer.
+
+### The control, answered
+
+`need × lag ÷ sufficiency` was the WORST of the three policies (0.05380
+against 0.05228). So evidence-per-kernel was DIAGNOSTIC, exactly as
+Christian allowed it might be — a real property of the machine that the
+scheduler does not want stated explicitly. And `need` against `need × lag`
+came out at 1.001, indistinguishable: which is not evidence that the
+largest residual is the best schedule, but that at this granularity the
+whole family is dominated and the question could not be answered here.
+Christian's prediction is untested rather than refuted.
+
+### Two things the sweep found that were not asked for
+
+**A crossover, and my first two gates sat below it.** Biased routing is
+BEHIND uniform until about 175 000 exemplars and only wins after:
+
+    N          uniform   static 0.05/6   need_lag   hybrid
+    100 000    0.04977      0.05415      0.05327   0.05386
+    150 000    0.05065      0.05169      0.05218   0.05273
+    200 000    0.05154      0.04764      0.05228   0.04719
+    300 000    0.05216      0.04702      0.05100   0.04655
+    400 000    0.05138      0.04458      0.04921   0.04499
+
+Concentrated evidence starves before it compounds — the campaign's
+standing invariant, arriving for the fifth time. And **uniform routing at
+duty 0.4 never improves at all**: 0.0498 at a hundred thousand exemplars,
+0.0514 at four hundred thousand. It plateaus, while every biased arm keeps
+descending. Spreading a fixed budget evenly does not merely learn more
+slowly; past a point it stops learning.
+
+**The Pareto improvement MARL-5 was asked to find already existed.**
+Against child work rather than exemplar count:
+
+    uniform, full duty      RMS 0.04423   work 1 733 899   concentration 1.65
+    static 0.05/6, duty 0.7 RMS 0.04495   work   923 161   concentration 2.06
+
+Within 1.6% of the best error for 53% of the work and 25% better placement.
+That is the improvement the scheduler was meant to deliver, and MARL-4 had
+already delivered it.
+
+### The gates, and what each was paid for
+
+| gate | mutation | result |
+|---|---|---|
+| G22 (a) a region schedule is coarser than its signal; the per-exemplar term carries the routing | the hybrid's per-exemplar term removed | fails |
+| G22 (b) the Pareto improvement is MARL-4's | the gain zeroed — the biased arm IS the uniform arm | fails |
+
+Both gates name their horizon, because the crossover means an arm ordering
+asserted below 175 000 exemplars is the opposite of the one above it. The
+first drafts ran at 150 000 and failed for that reason, which is worth
+recording: an ordering that reverses in N is not a result until the N is
+stated.
+
+### Where the campaign stands after five phases
+
+    birth       allocates degrees of freedom — and supplies the basis
+                density that keeps the model trainable
+    deformation fits them — and buys everything after the topology is found
+    refinement  decides where a level cannot represent — precisely, and
+                then allocates inside that decision geometrically
+    routing     supplies evidence — and is the only thing that makes
+                capacity concentrate at all
+    scheduling  arbitrates scarcity — and at region granularity has nothing
+                to arbitrate that the routing rule does not already decide
+
+The invariant has now appeared six times, from six directions, and MARL-5
+adds the sharpest version of it: **spreading a fixed evidence budget
+evenly does not slow learning down, it stops it.** Uniform routing at 40%
+duty is flat across a fourfold increase in exemplars. The budget is not
+merely scarce; where it goes is the whole of the learning.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

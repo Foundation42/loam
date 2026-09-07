@@ -40,6 +40,9 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -- --sharpness 4 --route-floor 0.02 --route-gain 3 --hier   # MARL-4: bias the STREAM — concentration 1.65 → 2.50
     zig build marl -- --sharpness 4 --route-floor 0.05 --route-gain 6 --hier   # MARL-4: most of the placement for almost none of the accuracy
     zig build test -Dtest-filter="G21"             # MARL-4's gates; tools/marl4_predict.py, all four of whose numbers HELD
+    zig build marl -- --sharpness 4 --arms5        # MARL-5: five arms at one duty — region scheduling loses to per-exemplar bias
+    zig build marl -- --sharpness 4 --duty 0.4 --sched hybrid --route-floor 0.05 --route-gain 6 --hier   # the granularity test
+    zig build test -Dtest-filter="G22"             # MARL-5's gates; tools/marl5_predict.py, all three of whose numbers were REFUTED
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -100,6 +103,15 @@ price is the campaign's fourth sighting of one invariant: **capacity you
 cannot train is worse than capacity you do not have.** Every mechanism
 added for placing capacity better has been paid for in the evidence
 available to fit it, and RMS tracks updates-per-kernel monotonically.
+MARL-5 then asked whether a scheduler could spend that budget better and
+the answer was no: a region is a sixth of the domain across and the
+structure is a fortieth of it thick, so **a region-level schedule is
+coarser than its own signal** (G22 a). Loam's R17 correspondence is
+therefore NOT earned — Loam schedules bricks because a brick is its unit
+of work; MARL's unit is one exemplar. And the sharpest form of the
+invariant: uniform routing at 40% duty is FLAT across a fourfold rise in
+exemplars, so spreading a fixed evidence budget evenly does not slow
+learning, it stops it.
 
 ## The ledger
 

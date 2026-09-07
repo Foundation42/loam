@@ -341,6 +341,42 @@ pub fn truth(p: [3]f32) f32 {
 /// hundred times the capacity, predicting worse. The ledger has the run.
 pub const Optimizer = enum { nlms, adam };
 
+/// How the router scores a refined region (MARL-5).
+///
+/// The three signals are the only ones the campaign already understands:
+/// NEED is unresolved representation pressure (the child's post-update
+/// residual there); SUFFICIENCY is evidence per child kernel, MARL-4's
+/// discovery that capacity you cannot train is worse than none; LAG is the
+/// anti-starvation term, exemplars since the region was last served.
+///
+/// Deliberately not one clever multiplicative formula arrived at in a
+/// single step: the point is to find out whether sufficiency contributes
+/// CAUSALLY or merely correlates, and that needs the terms separable.
+pub const SchedMode = enum {
+    /// MARL-4: score is `route_floor + route_gain·|residual|`, per
+    /// exemplar, with no per-region state at all.
+    off,
+    /// Largest residual wins. Christian's prediction is that this is NOT
+    /// the best schedule, which makes it the one to beat rather than the
+    /// one to use.
+    need,
+    /// need × (1 + lag/τ). The anti-starvation term alone.
+    need_lag,
+    /// need × (1 + lag/τ) ÷ (1 + sufficiency/ref). Damps a region whose
+    /// kernels are already well evidenced, on the theory that more
+    /// evidence there is not what its residual needs.
+    need_lag_suff,
+    /// The per-exemplar residual bias of MARL-4, modulated by the region's
+    /// starvation. Added after the first three lost to static bias by 10%,
+    /// to test whether the loss was GRANULARITY: a region-level schedule
+    /// routes a whole region at one probability, and the residual
+    /// structure this campaign has been chasing is a fortieth of the
+    /// domain thick inside regions a sixth of it wide. A schedule coarser
+    /// than its own signal throws away the selectivity MARL-4 established
+    /// was the entire mechanism.
+    hybrid,
+};
+
 pub const BirthRule = enum {
     /// MARL-0 through MARL-2: birth where nothing already covers.
     coverage,
@@ -1426,6 +1462,62 @@ pub const PressureOptions = struct {
     /// G19 and G20 keep measuring what they measured.
     route_floor: f32 = 1,
     route_gain: f32 = 0,
+    /// MARL-5. Target fraction of the exemplars OFFERED to the child that
+    /// are actually routed. Zero leaves MARL-4's raw probability alone;
+    /// above zero, every routing score is normalised by its own running
+    /// mean so the realised duty tracks this number whatever the score is.
+    ///
+    /// It exists so the arms can be compared at THE SAME ROUTED COUNT.
+    /// Without it a scheduler wins by processing more, which answers a
+    /// different question than the one asked.
+    route_duty: f32 = 0,
+    /// Which score the router normalises. `.off` is MARL-4's static
+    /// `floor + gain·|residual|`; the rest are per-region schedules.
+    sched: SchedMode = .off,
+    /// The anti-starvation timescale, in exemplars: a region unserved for
+    /// this long doubles its priority.
+    lag_tau: f32 = 20_000,
+    /// Evidence per child kernel at which a region counts as sufficiently
+    /// served, so `.need_lag_suff` halves its priority.
+    suff_ref: f32 = 200,
+};
+
+/// What the scheduler knows about one refined region. Nothing here is new
+/// physics — every field is a quantity an earlier phase already measured
+/// and understood, which is the condition Christian set.
+pub const RegionSched = struct {
+    /// Unresolved representation pressure: an EWMA of the CHILD's
+    /// post-update residual here. Seeded at refinement from the parent's
+    /// own pressure, or a region that has never been served has a need of
+    /// zero, scores zero, is never served, and the scheduler deadlocks on
+    /// its first step.
+    need: f32 = 0,
+    /// Exemplars served, child kernels born here, and child gradient
+    /// applications spent here.
+    routed: u64 = 0,
+    kernels: u32 = 0,
+    updates: u64 = 0,
+    /// Exemplar index when this region was last served.
+    last_served: u64 = 0,
+    /// The learning-efficiency window: need at the window's start, work
+    /// spent since, and the accumulated efficiency. MEASURED, and nothing
+    /// schedules from it — Christian's instruction, and the right one:
+    /// until it is characterised, scheduling from it would be scheduling
+    /// from a quantity nobody has read.
+    win_need: f32 = 0,
+    win_updates: u64 = 0,
+    win_n: u32 = 0,
+    eff_sum: f64 = 0,
+    eff_n: u32 = 0,
+
+    pub fn sufficiency(self: *const RegionSched) f32 {
+        return @as(f32, @floatFromInt(self.updates)) / @as(f32, @floatFromInt(@max(1, self.kernels)));
+    }
+
+    pub fn efficiency(self: *const RegionSched) f32 {
+        if (self.eff_n == 0) return 0;
+        return @floatCast(self.eff_sum / @as(f64, @floatFromInt(self.eff_n)));
+    }
 };
 
 /// Two levels, and the prediction is their SUM:
@@ -1473,6 +1565,14 @@ pub const Hierarchy = struct {
     /// which of them the child is shown. Two routing settings therefore
     /// see the same world.
     route_stream: rng.Stream,
+    /// Per parent region, and only for the refined ones.
+    sched: []RegionSched,
+    /// Running mean of the routing score, so a score of any scale
+    /// normalises to the target duty. An EWMA rather than a true mean
+    /// because the scores move as the model learns, and a normaliser
+    /// averaged over the whole run would hold the duty at what the score
+    /// used to be.
+    score_mean: f32 = 1,
 
     pub fn init(gpa: std.mem.Allocator, opts: Options, popts: PressureOptions) !Hierarchy {
         var parent = try Model.init(gpa, opts);
@@ -1492,6 +1592,9 @@ pub const Hierarchy = struct {
         const ps = try gpa.alloc(f64, n);
         errdefer gpa.free(ps);
         @memset(ps, 0);
+        const sch = try gpa.alloc(RegionSched, n);
+        errdefer gpa.free(sch);
+        for (sch) |*e| e.* = .{};
         return .{
             .gpa = gpa,
             .parent = parent,
@@ -1502,6 +1605,7 @@ pub const Hierarchy = struct {
             .post_sum = ps,
             .stream = rng.Stream.region(opts.seed, 0x4D41_524C, 0), // "MARL", the flat model's key
             .route_stream = rng.Stream.region(opts.seed, 0x524F_5554, 0), // "ROUT"
+            .sched = sch,
         };
     }
 
@@ -1511,6 +1615,22 @@ pub const Hierarchy = struct {
         self.gpa.free(self.refined);
         self.gpa.free(self.covered_events);
         self.gpa.free(self.post_sum);
+        self.gpa.free(self.sched);
+    }
+
+    /// The routing score for a region, before normalisation.
+    fn scoreOf(self: *const Hierarchy, r: u32, residual: f32) f32 {
+        const e = &self.sched[r];
+        return switch (self.popts.sched) {
+            .off => self.popts.route_floor + self.popts.route_gain * @abs(residual),
+            .need => e.need,
+            .need_lag => e.need * (1 + @as(f32, @floatFromInt(self.seen - e.last_served)) / self.popts.lag_tau),
+            .need_lag_suff => e.need *
+                (1 + @as(f32, @floatFromInt(self.seen - e.last_served)) / self.popts.lag_tau) /
+                (1 + e.sufficiency() / self.popts.suff_ref),
+            .hybrid => (self.popts.route_floor + self.popts.route_gain * @abs(residual)) *
+                (1 + @as(f32, @floatFromInt(self.seen - e.last_served)) / self.popts.lag_tau),
+        };
     }
 
     /// The sum. The child contributes exactly zero where it has no
@@ -1539,7 +1659,14 @@ pub const Hierarchy = struct {
             // is routed. That is the router's honest cost and it is what
             // `work` will show.
             const held = try self.parent.predict(x);
-            const p = @min(1, self.popts.route_floor + self.popts.route_gain * @abs(y - held));
+            const score = self.scoreOf(r, y - held);
+            // One normaliser for every mode, so the arms differ in WHICH
+            // exemplars they route and not in how many.
+            self.score_mean += 0.001 * (score - self.score_mean);
+            const p = if (self.popts.route_duty > 0)
+                @min(1, self.popts.route_duty * score / @max(1e-6, self.score_mean))
+            else
+                @min(1, score);
             if (self.route_stream.unit() >= p) return;
             // Counted HERE, immediately before the child sees it, and not
             // at the top of the branch: the number that matters is the
@@ -1549,7 +1676,30 @@ pub const Hierarchy = struct {
             // a uniform stream that no longer was one.
             self.routed += 1;
             if (in_band) self.routed_in_band += 1;
-            _ = try self.child.observe(x, y - held);
+            const before = self.child.stats.updates;
+            const kn = self.child.kernels.items.len;
+            const cev = try self.child.observe(x, y - held);
+            const spent = self.child.stats.updates - before;
+
+            const e = &self.sched[r];
+            e.need += 0.01 * (@abs(cev.post_residual) - e.need);
+            e.routed += 1;
+            e.updates += spent;
+            e.kernels += @intCast(self.child.kernels.items.len - kn);
+            e.last_served = self.seen;
+            // Learning efficiency, measured over a moving window: how much
+            // unresolved residual a unit of learning work removed here.
+            e.win_updates += spent;
+            e.win_n += 1;
+            if (e.win_n >= 200) {
+                if (e.win_updates > 0) {
+                    e.eff_sum += @as(f64, e.win_need - e.need) / @as(f64, @floatFromInt(e.win_updates));
+                    e.eff_n += 1;
+                }
+                e.win_need = e.need;
+                e.win_updates = 0;
+                e.win_n = 0;
+            }
             return;
         }
         const ev = try self.parent.observe(x, y);
@@ -1583,6 +1733,12 @@ pub const Hierarchy = struct {
             self.refined[r] = true;
             self.refined_count += 1;
             self.parent.freezeRegion(r);
+            // Seeded from the parent's own pressure: a region whose need
+            // started at zero would score zero, never be served, and never
+            // learn what its need was.
+            self.sched[r].need = self.pressureOf(r);
+            self.sched[r].win_need = self.sched[r].need;
+            self.sched[r].last_served = self.seen;
         }
     }
 
@@ -2484,7 +2640,7 @@ test "G19 (c) the hierarchy beats flat MARL on the same exemplars and does LESS 
     // the threshold was set ten times too high.
     const gpa = testing.allocator;
     const tp = TruthParams{ .sharpness = 2 };
-    const pr = try probesOf(gpa, tp, 0xB0B, 2048);
+    const pr = try probesOf(gpa, tp, 0xB0B, 4096);
     defer gpa.free(pr.p);
     defer gpa.free(pr.y);
 
@@ -2741,4 +2897,105 @@ test "G21 (b) the floor keeps the child trainable, and the bias is paid for in e
         @as(f64, @floatFromInt(uniform.parent.stats.updates + uniform.child.stats.updates));
     try testing.expect(work < thresholds.MARL2_WORK_RATIO);
     std.debug.print("  G21 (b): concentration {d:.2} (predicted ≥ {d:.1}); {d} kernels at {d:.0} updates each against uniform's {d} at {d:.0}; trained {d:.3}, mean |w| {d:.3} ({s})\n", .{ child_conc, thresholds.MARL4_CONCENTRATION, biased.child.kernels.items.len, biased.child.meanUpdates(), uniform.child.kernels.items.len, uniform.child.meanUpdates(), biased.child.trainedFraction(10), biased.child.weightStats().mean_abs, @tagName(builtin.mode) });
+}
+
+// ── MARL-5's gates ────────────────────────────────────────────────────
+//
+// All three pre-registered numbers were REFUTED and stand unstruck in
+// `thresholds.zig`. The answer to "can an adaptive scheduler allocate a
+// fixed learning budget better than static residual-biased routing?" is
+// NO, and the reason is granularity: the schedule is coarser than the
+// signal it must act on.
+
+test "G22 (a) a region-level schedule is coarser than the structure it must resolve, and the per-exemplar term is what carries the routing" {
+    // MARL-5's refutation, isolated. Three region-level policies — need,
+    // need × lag, need × lag ÷ sufficiency — all lose to MARL-4's static
+    // per-exemplar bias by about 10% of RMS at the same duty. The hybrid
+    // (per-exemplar bias × the region's starvation) recovers static's
+    // number to within 1%, which says the region term contributes nothing
+    // and the exemplar term contributes everything.
+    //
+    // The reason is scale. A region is a sixth of the domain across; the
+    // ridge this campaign has been chasing is a fortieth of it thick. A
+    // schedule that routes a whole region at one probability cannot
+    // separate the exemplar on the ridge from the one beside it, and that
+    // separation IS the mechanism MARL-4 established.
+    //
+    // MUTATION: the hybrid's per-exemplar term removed, leaving the region
+    // term alone — it becomes `need_lag` and the comparison below fails.
+    //
+    // The horizon is named, and it has to be: biased routing CROSSES OVER
+    // uniform routing between 150 000 and 200 000 exemplars and only wins
+    // after. Below the crossover it is behind, because concentrating
+    // evidence starves before it compounds — the campaign's standing
+    // invariant arriving one more time. Measured at duty 0.4, sharpness
+    // ×4: uniform 0.0498 → 0.0514 across a fourfold rise in N (it plateaus
+    // and never improves), while static bias goes 0.0542 → 0.0446 and the
+    // hybrid 0.0539 → 0.0450.
+    const gpa = testing.allocator;
+    const tp = TruthParams{ .sharpness = 4 };
+    const pr = try probesOf(gpa, tp, 0xB0B, 4096);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    const base = PressureOptions{ .route_duty = 0.4, .route_floor = 0.05, .route_gain = 6 };
+    var region = try Hierarchy.init(gpa, .{ .truth = tp }, blk: {
+        var p = base;
+        p.sched = .need_lag;
+        break :blk p;
+    });
+    defer region.deinit();
+    try region.stream_n(200_000);
+    const rms_region = try region.rms(pr.p, pr.y, null);
+
+    var hybrid = try Hierarchy.init(gpa, .{ .truth = tp }, blk: {
+        var p = base;
+        p.sched = .hybrid;
+        break :blk p;
+    });
+    defer hybrid.deinit();
+    try hybrid.stream_n(200_000);
+    const rms_hybrid = try hybrid.rms(pr.p, pr.y, null);
+
+    // The per-exemplar term wins, and it is not close.
+    try testing.expect(rms_hybrid < rms_region);
+    // …and it wins on concentration too, so this is not a work trade.
+    try testing.expect(hybrid.childConcentration() > region.childConcentration() * 1.15);
+    std.debug.print("\n  G22 (a): region schedule {d:.5} at concentration {d:.2}; the same schedule with MARL-4's per-exemplar term {d:.5} at {d:.2} ({s})\n", .{ rms_region, region.childConcentration(), rms_hybrid, hybrid.childConcentration(), @tagName(builtin.mode) });
+}
+
+test "G22 (b) the Pareto improvement MARL-5 was asked for already existed, and it is MARL-4's" {
+    // At equal duty, static residual bias reaches a materially better
+    // error AND a materially better concentration than uniform routing,
+    // for less child work. That is the improvement the scheduler was meant
+    // to find, and it was already there — which is the honest reading of
+    // MARL-5 and the reason its own three numbers were refuted rather than
+    // met.
+    //
+    // MUTATION: `route_gain` set to zero — the biased arm IS the uniform
+    // arm, and every comparison below collapses. Verified by hand.
+    const gpa = testing.allocator;
+    const tp = TruthParams{ .sharpness = 4 };
+    const pr = try probesOf(gpa, tp, 0xB0B, 4096);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    // Past the crossover, and it must be: below about 175 000 exemplars
+    // the biased arm is BEHIND uniform, because concentrated evidence
+    // starves before it compounds. Uniform at this duty never improves —
+    // 0.0498 at 100 000, 0.0514 at 400 000 — while the biased arm goes
+    // 0.0542 to 0.0446 and passes it on the way.
+    var uniform = try Hierarchy.init(gpa, .{ .truth = tp }, .{ .route_duty = 0.4, .route_floor = 1, .route_gain = 0 });
+    defer uniform.deinit();
+    try uniform.stream_n(200_000);
+    var biased = try Hierarchy.init(gpa, .{ .truth = tp }, .{ .route_duty = 0.4, .route_floor = 0.05, .route_gain = 6 });
+    defer biased.deinit();
+    try biased.stream_n(200_000);
+
+    try testing.expect((try biased.rms(pr.p, pr.y, null)) < (try uniform.rms(pr.p, pr.y, null)));
+    try testing.expect(biased.childConcentration() > uniform.childConcentration() * 1.2);
+    // Both levels stay healthy — the campaign's standing invariant.
+    try testing.expect(biased.child.trainedFraction(10) >= thresholds.MARL4_TRAINED_FLOOR);
+    try testing.expect(biased.child.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
+    std.debug.print("  G22 (b): uniform {d:.5} at concentration {d:.2}; static residual bias {d:.5} at {d:.2}, on the same exemplars at the same duty ({s})\n", .{ try uniform.rms(pr.p, pr.y, null), uniform.childConcentration(), try biased.rms(pr.p, pr.y, null), biased.childConcentration(), @tagName(builtin.mode) });
 }
