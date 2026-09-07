@@ -117,6 +117,7 @@ const Opts = struct {
     hysteresis: bool = false,
     drift_at: u64 = 200_000,
     repeat: u32 = 0,
+    cycle: bool = false,
     p: marl.PressureOptions = .{},
 };
 
@@ -214,6 +215,9 @@ fn parse(args: []const []const u8) !?Opts {
             o.drift6 = true;
         } else if (std.mem.eql(u8, a, "--hysteresis")) {
             o.hysteresis = true;
+        } else if (std.mem.eql(u8, a, "--drift-mode")) {
+            const v = try next(args, &i);
+            o.cycle = std.mem.eql(u8, v, "cycle");
         } else if (std.mem.eql(u8, a, "--drift-repeat")) {
             o.repeat = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--drift-at")) {
@@ -521,19 +525,32 @@ fn driftRepeat(gpa: std.mem.Allocator, o: Opts) !void {
     defer h.deinit();
     try h.stream_n(o.drift_at);
 
-    try out.print("MARL-7 — the world moves {d} times ({s}, R {d:.3}, unrefine {d:.1})\n", .{ o.repeat, @tagName(builtin.mode), o.m.responsibility, o.p.unrefine });
+    try out.print("MARL-9 — the world moves {d} times, {s} ({s}, R {d:.3}, unrefine {d:.1}, recycle {})\n", .{ o.repeat, if (o.cycle) "CYCLING between two worlds" else "WALKING to six different ones", @tagName(builtin.mode), o.m.responsibility, o.p.unrefine, o.p.recycle });
     try out.print("  {s:>6} {s:>10} {s:>9} {s:>9} {s:>9} {s:>9} {s:>8}\n", .{ "move", "RMS", "child K", "unrefined", "banked", "moved", "adopted" });
     var tp = o.m.truth;
     var i: u32 = 0;
     while (i <= o.repeat) : (i += 1) {
         if (i > 0) {
-            tp.shift[1] -= 0.08;
+            // WALK: six worlds that share nothing, each inside the bounds
+            // the quiet slab's derivation needs (|shift x| ≤ 0.15, and the
+            // shell inside the cube on every axis).
+            // CYCLE: two worlds, alternating. Same number of changes, a
+            // third of the distinct structure.
+            const walk = [_][3]f32{
+                .{ 0, -0.30, 0 },     .{ 0.12, 0, 0.22 },
+                .{ -0.12, -0.20, -0.16 }, .{ 0, 0.14, 0.26 },
+                .{ 0.14, -0.34, 0.10 },   .{ -0.14, 0.10, -0.18 },
+            };
+            tp.shift = if (o.cycle)
+                (if (i % 2 == 1) [3]f32{ 0, -0.30, 0 } else [3]f32{ 0, 0, 0 })
+            else
+                walk[(i - 1) % walk.len];
             try h.drift(gpa, tp);
         }
         const pr = try marl.probesOf(gpa, tp, 0xB0B, o.probe_n);
         defer gpa.free(pr.p);
         defer gpa.free(pr.y);
-        try h.stream_n(100_000);
+        try h.stream_n(if (o.exemplars > 0) o.exemplars else 100_000);
         try out.print("  {d:>6} {d:>10.5} {d:>9} {d:>9} {d:>9} {d:>9} {d:>8.3}\n", .{
             i,                    try h.rms(pr.p, pr.y, null),
             h.child.kernels.items.len, h.unrefined_count,

@@ -52,6 +52,9 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G26"             # MARL-7's gate; tools/marl7_predict.py, three of whose four were REFUTED
     zig build marl -- --sharpness 2 --responsibility 3 --unrefine 2 --recycle --drift-repeat 6   # MARL-8: borrow instead of buy — it does not work
     zig build test -Dtest-filter="G28"             # MARL-8's gate: a transplant is inert when it lands
+    zig build marl -- --sharpness 2 --responsibility 3 --drift-mode cycle --drift-repeat 12   # MARL-9: revisiting a known world gets cheap
+    zig build marl -- --sharpness 2 --responsibility 3 --drift-mode walk  --drift-repeat 6    # …and a new one never does
+    zig build test -Dtest-filter="G29"             # MARL-9's gate; it overturned three earlier phases' readings
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -162,6 +165,19 @@ pre-paid. **Geometry is cheap to acquire locally and worthless imported.**
 What survives is one design decision, gated: a transplant is INERT when it
 lands (weights reset, prediction unchanged bit for bit), so it can never
 be actively harmful. `--recycle` stays, default off.
+
+MARL-9 then answered the fixture question and **overturned three phases'
+readings**. Cycling between two worlds against walking to six, same six
+moves: the walking arm's marginal cost is flat at ~2100 kernels a move
+while the cycling arm's decays to 159 by the twelfth, and cycling is also
+more accurate. So **capacity is paid per THING LEARNED, not per change**
+— the model pays in full for structure it has never seen and almost
+nothing for structure it has. MARL-6's "no memory" was the transient
+mistaken for the settled state; MARL-7's "always bought, never borrowed"
+was true only of novel structure; and MARL-8 failed because the
+architecture already reuses on recurrence with no mechanism at all. A
+campaign that has only tested one kind of world cannot tell what its
+numbers are counting.
 
 ## The ledger
 

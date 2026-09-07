@@ -1166,4 +1166,62 @@ pub const MARL8_NO_REGRESSION: f32 = 1.05;
 /// donor set lands where the new region has nothing for it to do.
 pub const MARL8_ADOPTION: f32 = 0.5;
 
+// ── MARL-9 (per change, or per thing learned?) ───────────────────────
+//
+// From `tools/marl9_predict.py`. Every drift this campaign has run has
+// been the same shell translated, so when capacity grows linearly with the
+// number of moves there is no way to tell whether the model pays per
+// CHANGE or per THING LEARNED — the two have been the same number all
+// along. MARL-9 separates them with two arms of six moves each:
+//
+//     CYCLE — A B A B A B: six changes, two worlds of distinct structure
+//     WALK  — six different worlds: six changes, six worlds' worth
+//
+// No new mechanism. Just a fixture that can tell the two currencies apart.
+
+/// G29: child population after six moves, cycling over walking.
+///
+/// PROPOSED from MARL-6's hysteresis, which is a two-move version of the
+/// cycling arm and showed no saving whatever: one round trip took 4 339
+/// child kernels to 7 883, and the return spike was the same size as the
+/// departure. At or above 0.9 the two arms are the same and capacity is
+/// paid PER CHANGE — the model billed for the event rather than for what
+/// it learned, which is a much sharper statement of MARL-7's pathology
+/// than "capacity is bought".
+///
+/// The threshold is deliberately written so that its FAILURE is the
+/// interesting outcome. If cycling is materially cheaper then latent reuse
+/// exists, MARL-8's failure was about its mechanism rather than about the
+/// possibility, and the dictionary is worth building.
+///
+/// **REFUTED, in the direction that was worth being wrong about.**
+/// Measured 0.574 over six moves and 0.687 over four. Cycling is far
+/// cheaper than walking, so capacity is paid PER THING LEARNED and not per
+/// change. The marginal cost of a revisit decays — 2 140, 971, 745, 527,
+/// 368, 371 across six moves, and down to 159 by the twelfth — against a
+/// walking arm flat at about 2 100 a move.
+///
+/// This overturns MARL-6's hysteresis reading, which measured ONE round
+/// trip, saw the return spike at full size and concluded "no memory, only
+/// accumulation". The spike is the transient. The settled state is not it:
+/// over repeated visits both the error and the marginal cost improve.
+///
+/// And it explains MARL-8 completely. The model already reuses capacity on
+/// recurrence, with no mechanism at all, so an explicit transplant had
+/// nothing left to add — which is exactly what recycling measured.
+pub const MARL9_RECURRENCE: f32 = 0.9;
+
+/// G29, the control: RMS of the cycling arm over the walking arm.
+///
+/// PROPOSED as a comparability band. A cycling world is genuinely easier —
+/// half the distinct structure — so the cycling arm should if anything be
+/// MORE accurate. Well outside this in either direction means the arms are
+/// not comparable and their populations cannot be read against each other.
+///
+/// **HELD, and on the generous side.** The cycling arm is not merely
+/// comparable, it is BETTER — RMS 0.03182 against 0.04514 over six moves,
+/// 0.04550 against 0.06722 over four. Half the distinct structure, less
+/// capacity spent, and a lower error.
+pub const MARL9_FAIR: f32 = 1.15;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

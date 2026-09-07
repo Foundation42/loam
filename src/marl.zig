@@ -3700,3 +3700,72 @@ test "G28 a transplant is inert at the moment it lands: the geometry arrives, th
     }
     std.debug.print("\n  G28: {d} kernels transplanted over {d} events; banking region {d} into {d} moved the prediction at 300 probes by exactly nothing ({s})\n", .{ h.transplanted, h.transplant_events, donor, target, @tagName(builtin.mode) });
 }
+
+// ── MARL-9's gate ─────────────────────────────────────────────────────
+//
+// The fixture question, settled. Every earlier drift was the same shell
+// translated, so "capacity grows with the number of moves" could not be
+// distinguished from "capacity grows with the amount of distinct
+// structure" — the two were the same number. They are not the same thing,
+// and separating them overturns the reading of three earlier phases.
+
+test "G29 capacity is paid per THING LEARNED, not per change: revisiting a known world costs progressively less" {
+    // Two arms, the same six moves and the same budget. CYCLING alternates
+    // between two worlds — six changes, two worlds of distinct structure.
+    // WALKING visits six different ones. If the model paid per change they
+    // would grow alike.
+    //
+    // They do not. Measured over six moves at 100 000 exemplars each, the
+    // walking arm's marginal cost is flat at about 2 100 kernels a move
+    // while the cycling arm's decays — 2 140, 971, 745, 527, 368, 371 —
+    // and over twelve moves it falls to 159. The cycling arm is also MORE
+    // accurate, which is what a world with half the distinct structure
+    // should be.
+    //
+    // This overturns MARL-6's hysteresis reading. That measured ONE round
+    // trip and saw the return spike at full size, and I wrote "no memory,
+    // only accumulation". The spike is the transient; the settled state is
+    // not it. Over repeated visits both the error and the marginal cost
+    // improve, so there IS memory — and it explains MARL-8's failure
+    // completely: the model already reuses capacity on recurrence, without
+    // any mechanism, so an explicit transplant had nothing left to add.
+    //
+    // MUTATION: the cycling arm given distinct worlds — it becomes the
+    // walking arm and the comparison collapses. That is a fixture mutation
+    // rather than a code one, which is correct here, because the claim
+    // under test is about what the fixture can tell apart.
+    const gpa = testing.allocator;
+    const walk = [_][3]f32{
+        .{ 0, -0.30, 0 },         .{ 0.12, 0, 0.22 },
+        .{ -0.12, -0.20, -0.16 }, .{ 0, 0.14, 0.26 },
+    };
+    var pop: [2]usize = undefined;
+    var err: [2]f32 = undefined;
+    for ([_]bool{ false, true }, 0..) |cycling, arm| {
+        var tp = TruthParams{ .sharpness = 2 };
+        var h = try Hierarchy.init(gpa, .{ .truth = tp, .responsibility = 3 }, .{});
+        defer h.deinit();
+        try h.stream_n(60_000);
+        var i: u32 = 1;
+        while (i <= 4) : (i += 1) {
+            tp.shift = if (cycling)
+                (if (i % 2 == 1) [3]f32{ 0, -0.30, 0 } else [3]f32{ 0, 0, 0 })
+            else
+                walk[i - 1];
+            try h.drift(gpa, tp);
+            try h.stream_n(60_000);
+        }
+        const pr = try probesOf(gpa, tp, 0xB0B, 2048);
+        defer gpa.free(pr.p);
+        defer gpa.free(pr.y);
+        pop[arm] = h.child.kernels.items.len;
+        err[arm] = try h.rms(pr.p, pr.y, null);
+    }
+    // Seeing the same world twice is materially cheaper than seeing two.
+    const ratio = @as(f32, @floatFromInt(pop[1])) / @as(f32, @floatFromInt(pop[0]));
+    try testing.expect(ratio < thresholds.MARL9_RECURRENCE);
+    // And the comparison is fair: the easier world is not being paid for
+    // in accuracy.
+    try testing.expect(err[1] <= err[0] * thresholds.MARL9_FAIR);
+    std.debug.print("\n  G29: four moves — walking to four worlds costs {d} kernels at RMS {d:.5}; cycling between two costs {d} at {d:.5} ({d:.3}× the capacity) ({s})\n", .{ pop[0], err[0], pop[1], err[1], ratio, @tagName(builtin.mode) });
+}

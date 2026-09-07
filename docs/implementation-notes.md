@@ -4607,6 +4607,87 @@ been the same shell translated — so the question of whether that growth is
 a pathology or an honest bill is still open, and it is a fixture question
 before it is an architecture question.
 
+## MARL-9 — per change, or per thing learned? (Monday 2026-09-07)
+
+MARL-8 left one question open and named it a FIXTURE question: every drift
+this campaign had run was the same shell translated, so "capacity grows
+with the number of moves" could not be told apart from "capacity grows
+with the amount of distinct structure". The two had been the same number
+all along.
+
+Two arms, six moves each, same budget. **CYCLING** alternates between two
+worlds — six changes, two worlds' worth of structure. **WALKING** visits
+six different ones. No new mechanism; only a fixture that can tell the two
+currencies apart.
+
+    move   WALK: RMS   child K      CYCLE: RMS   child K
+      0      0.03082     5233         0.03082     5233
+      1      0.04363     7373         0.04363     7373
+      2      0.04808     9684         0.03742     8344
+      3      0.04729    11796         0.04286     9089
+      4      0.05001    14055         0.03721     9616
+      5      0.04781    16168         0.04081     9984
+      6      0.04514    18031         0.03182    10355
+
+**Capacity is paid per thing learned, not per change.** The walking arm's
+marginal cost is flat at about 2 100 kernels a move. The cycling arm's
+decays — 2 140, 971, 745, 527, 368, 371 — and over twelve moves falls to
+159 and is still falling. Final populations 18 031 against 10 355: a ratio
+of 0.574 against a pre-registered 0.9, refuted in the direction that was
+worth being wrong about.
+
+And the cycling arm is not merely cheaper, it is MORE ACCURATE (0.03182
+against 0.04514), which is what a world with half the distinct structure
+should be. Its error on each world improves across visits: world B goes
+0.04363 → 0.04286 → 0.04081 → 0.04066 → 0.03791 over its five returns.
+
+### What this overturns
+
+**MARL-6's hysteresis reading was wrong, and it was mine.** That measured
+ONE round trip, saw the return spike at full magnitude, and I wrote "no
+memory, only corrective archaeology". The spike is the TRANSIENT. The
+settled state is not it — over repeated visits both the error and the
+marginal cost improve, so there is memory, and it is substantial.
+
+**MARL-7's pathology was overstated.** "Capacity is always bought, never
+borrowed" is true only of structure the model has never seen. On
+recurrence it borrows automatically, with no mechanism whatever.
+
+**MARL-8's failure is now fully explained.** Recycling added nothing
+because there was nothing to add: the model already reuses capacity on
+recurrence. An explicit transplant was solving a problem the architecture
+had already solved implicitly — which is precisely what the measurements
+said, in the flattest possible way, at every timescale.
+
+Three phases' conclusions moved on one fixture change. The lesson is the
+one MARL-8 half-stated and then did not act on: a campaign that has only
+ever tested one kind of world cannot tell what its numbers are counting.
+I named that as a fixture question and then built MARL-8 anyway before
+answering it, which cost a phase.
+
+### What the pathology actually is
+
+Not that capacity is bought rather than borrowed. It is:
+
+> **The model pays in full for structure it has never seen, and almost
+> nothing for structure it has. Growth is linear in the world's
+> complexity, not in its rate of change.**
+
+That is a much healthier property than three phases of this campaign
+believed, and it is arguably the correct behaviour for a continual
+learner. Whether the residual ~160 kernels a move on a fully-recurrent
+world eventually plateaus or accumulates without bound is the one thing
+twelve moves cannot settle.
+
+### The gate, and what it was paid for
+
+| gate | mutation | result |
+|---|---|---|
+| G29 capacity is paid per thing learned, not per change | the cycling arm given distinct worlds — it becomes the walking arm | fails |
+
+A fixture mutation rather than a code one, which is right here: the claim
+under test is about what the fixture can tell apart.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:
