@@ -5340,6 +5340,101 @@ G34 costs about 25 s of suite. With G31's 14 and G33's 25 the suite is
 approaching four minutes, and the next phase that wants a gate this size
 should be asked to justify it rather than assumed to be entitled to it.
 
+## MARL-15 — quantization, and a sensitivity analysis that was wrong by fivefold (Tuesday 2026-09-08)
+
+Christian asked whether quantization was already in the numbers. **It was
+not.** Every byte count this campaign had quoted was `kernels × PARAMS × 4`
+with the grid baseline in f32 too — fair, and uncompressed. MARL-14's
+headline was a claim about a representation nobody would ship, and the two
+sides do not quantize alike: a grid of values in [0, 1] goes to eight bits
+for essentially nothing, where an RBF set's ten floats have wildly
+different sensitivities and the weight sits in a sum where neighbours
+cancel. So this phase exists to qualify a claim, not to add one.
+
+### What is quantized, and what deliberately is not
+
+The `rbf.Set` — the thing that actually ships, and bit-identical to the
+model by G31 (a) at a power-of-two extent — and not a live `marl.Model`. A
+model's kernels are OWNED by regions, so rounding a centre could move it
+across a face or grow its reach past the region's bound; quantizing in
+place would silently corrupt the gather and charge it to the quantizer.
+
+No bit-packed container is built. Quantization is applied by ROUNDING the
+parameters onto the representable grid and scoring normally, with the byte
+count computed from the allocation. A packer would change no number here.
+
+The log-diagonal is quantized and not the diagonal, because that is the
+parameterisation the model descends in and the one whose error is
+RELATIVE — a width is a scale, and a scale quantized linearly spends all
+its precision on the widest kernels.
+
+### The sweep, on MARL-14's shipped 814-kernel student
+
+| allocation (μ/logd/off/w) | bits | KiB | RMS | vs f32 |
+|---|---|---|---|---|
+| 16 / 10 / 10 / 12 (pre-registered) | 120 | 12.0 | 0.16307 | 1.000 |
+| 12 / 8 / 8 / 10 | 94 | 9.4 | 0.16315 | 1.000 |
+| 10 / 6 / 6 / 8 | 74 | 7.4 | 0.16379 | 1.004 |
+| **8 / 6 / 6 / 8** | **68** | **6.8** | 0.16474 | **1.010** |
+| 6 / 5 / 5 / 6 | 54 | 5.4 | 0.17715 | 1.086 |
+| 4 / 4 / 4 / 4 (mutation) | 40 | 4.0 | 0.26227 | 1.608 |
+
+`MARL15_BITS` HELD at 1.000 — and the analysis behind it was **pessimistic
+by about fivefold**. A kernel ships in **8.5 bytes**, not the fifteen
+predicted: a 4.7× saving for one per cent of the accuracy. The knee is
+sharp, which is what makes the sweep a measurement rather than a shape: 54
+bits breaks the ceiling and 40 fails outright.
+
+### Why the prediction was wrong, and it is not the obvious answer
+
+The first explanation I wrote was that the weights must be small — a
+heavily overlapping basis sharing the field between its kernels, so each
+carries a small share and rounds cheaply. **That is wrong, and the gate
+prints the number that disproves it**: the weights span −0.4982 to 1.3759,
+so |w| is slightly ABOVE the 1.0 the prediction assumed and makes the
+analysis worse rather than better.
+
+The real reason is that **peak sensitivity and peak overlap do not
+coincide.** The prediction multiplied the derivative's maximum — 0.6065, at
+r = 1 exactly — by √(3n) for n = 30 overlapping kernels. But a point
+sitting at r = 1 of one kernel sits far out in the tails of most of the
+others, where both the value and the derivative are near zero. The kernels
+that are SENSITIVE there are a handful, not thirty. Compounding a worst
+case over an assumed overlap count multiplies two things that never happen
+together, and measured, that product is about fivefold.
+
+Worth keeping as a method note: a per-element worst-case sensitivity
+analysis over an overlapping basis is not conservative, it is wrong, and
+the direction of the error is predictable.
+
+### The headline: quantization IMPROVES MARL's position
+
+| | RMS | KiB |
+|---|---|---|
+| MARL, 68 bits a kernel | **0.16474** | 6.8 |
+| dense grid, 19³ at 8 bits | 0.19189 | 6.7 |
+
+**0.859**, where MARL-14's f32 number on the same fixture was 0.878. The
+derivation predicted 1.06 on the assumption that a grid compresses 4× and a
+kernel only 2.7×. A kernel compresses **4.7×**, so the packed set gains
+slightly MORE from compression than the texture does — and the f32
+comparison was, if anything, unfair to it.
+
+So the sentence MARL-14 bought survives compression, and gets a number
+attached to it:
+
+    A distilled, quantized MARL of 814 kernels is 6.8 KiB and beats an
+    eight-bit 19³ volume texture of the same size by 14% on error — on a
+    field queried where a renderer actually queries it.
+
+### What is still owed
+
+The weights were quantized against a single global span. MARL-1's divergent
+regime reached mean |w| of 13–17, and a set with that spread would waste
+most of its levels on outliers; per-region spans, or a non-uniform
+allocation, are the obvious next thing and are not built. Nothing here
+tested a set in that condition.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

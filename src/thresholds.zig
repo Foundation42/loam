@@ -1632,4 +1632,67 @@ pub const MARL14_COARSE: f32 = 3.0;
 /// perfectly given enough kernels.
 pub const MARL14_GENERATION: f32 = 1.0;
 
+// ── MARL-15 (quantization: what a shippable kernel costs) ────────────
+//
+// From `tools/marl15_predict.py`. Every byte count this campaign has
+// quoted is f32 on both sides — fair, and uncompressed. The two sides do
+// not quantize alike: a grid of values in [0, 1] goes to eight bits for
+// essentially nothing, where an RBF set's ten floats have wildly different
+// sensitivities and the weight sits in a sum where neighbours cancel.
+
+/// G35: RMS at the 16/10/10/12 allocation (120 bits, 15 bytes, a 2.7×
+/// saving) over RMS in f32. PROPOSED as a CEILING at 1.05, from the
+/// per-field sensitivity analysis — the centre's 0.6065·|w|·ε/σ dominates,
+/// because σ is a seventeenth of the domain and an error measured against
+/// the domain is amplified seventeenfold before it reaches the field.
+///
+/// If a kernel cannot survive fifteen bytes, the packed set is not a
+/// shippable representation and MARL-14's memory claim needs restating in
+/// f32 terms only.
+///
+/// **HELD, at 1.000 — and the analysis behind it was pessimistic by about
+/// fivefold.** The sweep, on MARL-14's shipped 814-kernel student:
+///
+///     120 bits  12.0 KiB  1.000      74 bits  7.4 KiB  1.004
+///      94 bits   9.4 KiB  1.000      68 bits  6.8 KiB  1.010
+///      54 bits   5.4 KiB  1.086      40 bits  4.0 KiB  1.608
+///
+/// So a kernel ships in **8.5 bytes**, not fifteen — a 4.7× saving for one
+/// per cent of the accuracy, and the knee is sharp: 54 bits breaks the
+/// ceiling and 40 fails outright, which is what says the sweep is not
+/// decoration.
+///
+/// The prediction's error is worth keeping. It is NOT the weights, which
+/// was the first thing to check: the span measures −0.4982 … 1.3759, so
+/// |w| is slightly ABOVE the 1.0 assumed and makes the analysis worse.
+/// It is that PEAK SENSITIVITY AND PEAK OVERLAP DO NOT COINCIDE — the
+/// derivative's maximum is at r = 1 exactly, and a point at r = 1 of one
+/// kernel is far out in the tails of most of the others, where both value
+/// and derivative are near zero. Compounding a worst case over an assumed
+/// overlap count multiplies two things that never happen together.
+pub const MARL15_BITS: f32 = 1.05;
+
+/// G35: MARL over the grid with BOTH compressed. PROPOSED as a CEILING at
+/// 1.15, deliberately NOT at parity: the derivation says quantization
+/// roughly cancels the distilled model's advantage and lands near 1.06, so
+/// a gate at parity would be pre-registering a refutation rather than
+/// testing anything. What 1.15 tests is whether an RBF set quantizes
+/// SUBSTANTIALLY worse than the sensitivity analysis says — which is what
+/// would actually be news, and what would make the packed set unshippable.
+///
+/// Either way the honest sentence is that MARL-14's 0.878 is an f32
+/// number, and under compression the two representations are expected to
+/// be about level on this field.
+///
+/// **HELD, at 0.859 — and quantization IMPROVES MARL's position rather
+/// than cancelling it.** MARL 0.16474 at 6.8 KiB against a 19³ eight-bit
+/// grid's 0.19189 at 6.7 KiB, where MARL-14's f32 number on the same
+/// fixture was 0.878.
+///
+/// The derivation predicted 1.06 on the assumption that a grid compresses
+/// 4× and a kernel only 2.7×. A kernel compresses **4.7×**, so the packed
+/// set gains slightly MORE from quantization than the texture does, and
+/// the f32 comparison was if anything unfair to it.
+pub const MARL15_HEADLINE: f32 = 1.15;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

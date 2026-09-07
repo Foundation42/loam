@@ -62,6 +62,7 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G32"             # MARL-12's gate; tools/marl12_predict.py. The widening's own gate is the suite being UNCHANGED
     zig build test -Dtest-filter="G33"             # MARL-13: the occlusion cache — the first NOISY field; tools/marl13_predict.py, two of whose three were REFUTED
     zig build test -Dtest-filter="G34"             # MARL-14: DISTILLATION — sample a built model to train a smaller one; all four numbers HELD
+    zig build test -Dtest-filter="G35"             # MARL-15: QUANTIZATION — a kernel ships in 8.5 bytes; tools/marl15_predict.py was pessimistic 5×
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -337,6 +338,32 @@ WIDENS as memory shrinks**, because a grid's error is set by its cell size
 and halving memory costs it a cube root of resolution. So: build once at
 full fidelity from the expensive noisy source, then distil to whatever the
 budget allows.
+
+MARL-15 then asked what any of that is worth COMPRESSED, because every
+byte count above is f32 on both sides. Quantization is applied to the
+`rbf.Set` — the shipped artefact, bit-identical to the model by G31 (a) —
+and never to a live `Model`, whose kernels are owned by regions and would
+have their gather silently corrupted by a rounded centre. **A kernel ships
+in 8.5 bytes** (8/6/6/10 bits over μ / log-diagonal / off-diagonal /
+weight) for 1% of the accuracy: a 4.7× saving, where 54 bits breaks and 40
+fails outright.
+
+That is 5× better than `tools/marl15_predict.py` predicted, and the reason
+is a method note worth keeping. It is NOT that the weights are small — the
+gate prints their span at −0.50…1.38, ABOVE the 1.0 assumed. It is that
+**peak sensitivity and peak overlap do not coincide**: the derivative's
+maximum is at r = 1 exactly, and a point at r = 1 of one kernel is far out
+in the tails of most of the others. A per-element worst case compounded
+over an assumed overlap count multiplies two things that never happen
+together, and is not conservative but wrong.
+
+So the headline goes the other way from the derivation: **0.859 compressed
+against 0.878 in f32.** A kernel compresses 4.7× where an eight-bit grid
+cell compresses 4×, so the packed set gains MORE from compression. A
+distilled, quantized MARL of 814 kernels is 6.8 KiB and beats an 8-bit 19³
+volume texture of the same size by 14%. Still owed: the weights use one
+global span, and MARL-1's divergent regime reached mean |w| of 13–17, which
+would waste most of the levels on outliers.
 
 ## The ledger
 
