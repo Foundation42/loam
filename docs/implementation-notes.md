@@ -2723,6 +2723,27 @@ fog. Three shots settled it — the rim (drive 4, no spread), the fog
 (12, 0.9), and 6/0.8 between them, which is the committed default.
 All three numbers PROPOSED.
 
+THEN THE COLOUR, and the eye again ("only the orange is emissive. But
+why is the halo not orange - it's white?"): the strength was the
+record's but the HUE was the bloom's, and the bloom's rgb is the
+blurred FRAME. Painting the tint to the screen settled it in one
+shot — the vein's red for a few pixels, the stone's blue-grey after
+that — so an orange vein wore a white halo, and additive orange onto
+bright blue stone desaturates on top of that. THE AURA GOT ITS OWN
+CHAIN: a second, four-level pyramid over its own image, run by the
+bloom's two pipelines and its descriptor layout, whose first level
+reads the composite and the record TOGETHER — each full-res pixel's
+colour WEIGHTED by its record into rgb, the record into alpha — so at
+the top mip `rgb / luma(rgb)` is the emitters' own hue at any
+distance. The bloom chain went back to exactly what it was. Four
+levels also bound the reach by construction, which retires the level
+rule. THEN, immediately: "that did it! But now we can see it, it's
+way too much" — the drive and gain had been raised TWICE against the
+diluted record, so they were tuned to the breakage; halved on the
+chain (4 and 0.3). A NUMBER TUNED AGAINST A BROKEN SIGNAL IS TUNED TO
+THE BREAKAGE, which is the general form of the finding and is written
+into matryoshka's §7.8a.
+
 THEN THE LEAK, and his eye again ("some of that cube's aura is
 lighting up down at the bottom, or side of the screen, and all the
 auras keep flickering ... it's like there is a fence/barrier
