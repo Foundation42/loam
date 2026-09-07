@@ -1046,4 +1046,69 @@ pub const MARL6_PRECISION_FALL: f32 = 0.85;
 // outcome B — the one an ordinary benchmark would call success. Reported
 // only, along with the hysteresis run.
 
+// ── MARL-7 (unrefinement: retiring a level that stopped being valid) ─
+//
+// From `tools/marl7_predict.py`. Christian asked that erosion be split
+// into KERNEL DEATH and UNREFINEMENT, and two measurements run before any
+// mechanism decided which of them MARL-7 could be about:
+//
+//   Obsolete kernels do NOT self-identify. After a large drift, pre-move
+//   child kernels outside the current band carry mean |w| 0.1219 — larger
+//   than the stationary control's off-band kernels at 0.0832.
+//
+//   And they are LOAD-BEARING. Silencing them costs 1.42× the RMS in the
+//   stationary control and 1.56× after large drift.
+//
+// So the corrective archaeology is not separable capacity beside the
+// useful kind; it is a contamination inside otherwise-useful kernels, and
+// no deletion takes one without the other. MARL-7 is therefore
+// UNREFINEMENT ONLY — drop the child level and unfreeze the parent in one
+// act, so the stale error and its correction leave together.
+
+/// G25 (a): of the regions unrefined, the share the current band has left.
+///
+/// PROPOSED at MARL2_PRECISION's floor and for the same reason: a region
+/// beside the departure can be legitimately disturbed without the band
+/// having left it.
+pub const MARL7_UNREFINE_PRECISION: f32 = 0.75;
+
+/// G25 (a), the other half: unrefinements in a stationary world.
+///
+/// PROPOSED at zero, absolute, and derivable: a refined region's parent
+/// error is exactly what the child was created to absorb, and in a
+/// stationary world it does not grow — MARL-6 measured the stationary
+/// control's parent flat at 0.0715 across 100 000 exemplars. A single
+/// unrefinement with nothing moving means the trigger is reading noise.
+///
+/// **HOLDS, BUT ONLY AT A SETTING** — so it is not gated. At an
+/// unrefinement factor of 3 the trigger is silent in a still world across
+/// 721 000 exemplars; at 2 it retires a region by 300 000. "Quiet when
+/// nothing moves" turns out to be a property of a threshold rather than of
+/// the mechanism, and a gate asserting it would launder the one into the
+/// other.
+pub const MARL7_STATIONARY_QUIET: u32 = 0;
+
+/// G25 (b): total RMS after large drift with unrefinement, over MARL-6's
+/// without it.
+///
+/// PROPOSED, and deliberately modest. MARL-6's large drift recovers to
+/// 0.04861 with its parent stuck at 0.08968 — the parent contributes
+/// nothing to the repair, being neither free to move nor observing.
+/// Unrefinement hands those regions back to a parent that learns them the
+/// way it learns anything, and MARL-2 established the parent alone reaches
+/// about 0.07 on this target from scratch. But unrefinement also throws
+/// away a level's worth of fitted capacity and the transient may eat much
+/// of the gain, so a tenth is the ask.
+pub const MARL7_RECOVERY: f32 = 0.9;
+
+/// G25 (c): child kernels after a there-and-back drift, over the count
+/// before it.
+///
+/// PROPOSED against MARL-6's measured 1.82 (7 883 from 4 339, with worse
+/// accuracy than the state it returned to). If unrefinement works, the
+/// regions abandoned on the way out are collapsed rather than carried and
+/// the return trip does not pay for them twice. Not 1.0 — the new world
+/// genuinely needs capacity of its own.
+pub const MARL7_HYSTERESIS_GROWTH: f32 = 1.4;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

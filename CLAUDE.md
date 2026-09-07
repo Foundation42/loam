@@ -47,6 +47,9 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G23"             # MARL-6's gates; tools/marl6_predict.py, two of whose four held
     zig build marl -- --responsibility 3 --sharpness 2 --hier   # MARL-6R: the corrected learning unit — same accuracy, a sixth of the work
     zig build test -Dtest-filter="G24"             # the recalibration gate. MARL-7 onward should run at R = 3
+    zig build marl -- --sharpness 2 --responsibility 3 --drift-repeat 6   # MARL-7: six moves — accuracy flat, capacity linear
+    zig build marl -- --sharpness 2 --responsibility 3 --unrefine 2 --drift6   # unrefinement: precise, and it does not repay
+    zig build test -Dtest-filter="G26"             # MARL-7's gate; tools/marl7_predict.py, three of whose four were REFUTED
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -134,6 +137,18 @@ fewer kernels overlap. So an erosion mechanism that removes kernels must
 hold density; one that merely stops feeding a region need not. The default
 stays at full support for comparability, but **MARL-7 onward should run at
 `--responsibility 3`** (G24: 0.980× the RMS for 0.184× the work).
+
+MARL-7 went looking for erosion and found there is nothing to erode. The
+capacity a moved world leaves behind is LOAD-BEARING — silencing it costs
+1.4–1.6× the RMS — and its weights do not separate it from capacity born
+since, so kernel death has nothing to target (G26). Unrefinement was built,
+fires precisely, and does not repay at any sensitivity or horizon. Over six
+consecutive moves accuracy is FLAT while capacity grows linearly at about a
+thousand kernels per move, and unrefinement changes that by 1%. So: **the
+pathology is not that old representation goes bad, it is that new
+representation is always bought rather than borrowed.** MARL-8 is reuse,
+not erosion — and the obstacle is that exact locality is precisely what
+stops a kernel being re-pointed.
 
 ## The ledger
 

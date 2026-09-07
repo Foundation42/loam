@@ -1031,6 +1031,35 @@ pub const Model = struct {
         for (self.regions[region].own.items) |ki| self.kernels.items[ki].frozen = true;
     }
 
+    pub fn unfreezeRegion(self: *Model, region: u32) void {
+        for (self.regions[region].own.items) |ki| self.kernels.items[ki].frozen = false;
+    }
+
+    /// Remove the kernels `dead` marks, and rebuild every index that named
+    /// them. Real removal rather than a zeroed weight, because the child's
+    /// POPULATION is a headline number for erosion and a kernel that still
+    /// occupies a gather is not retired.
+    pub fn compact(self: *Model, dead: []const bool) !void {
+        var kept = std.ArrayListUnmanaged(Kernel){};
+        errdefer kept.deinit(self.gpa);
+        try kept.ensureTotalCapacity(self.gpa, self.kernels.items.len);
+        for (self.kernels.items, dead) |k, d| {
+            if (!d) kept.appendAssumeCapacity(k);
+        }
+        self.kernels.deinit(self.gpa);
+        self.kernels = kept;
+        for (self.regions) |*r| {
+            r.own.clearRetainingCapacity();
+            r.max_reach = 0;
+        }
+        for (self.kernels.items, 0..) |*k, i| {
+            const owner = self.regionOf(.{ k.p[MU], k.p[MU + 1], k.p[MU + 2] });
+            k.owner = owner;
+            try self.regions[owner].own.append(self.gpa, @intCast(i));
+            if (k.reach > self.regions[owner].max_reach) self.regions[owner].max_reach = k.reach;
+        }
+    }
+
     pub fn frozenCount(self: *const Model) u32 {
         var n: u32 = 0;
         for (self.kernels.items) |*k| {
@@ -1487,6 +1516,25 @@ pub const PressureOptions = struct {
     /// Evidence per child kernel at which a region counts as sufficiently
     /// served, so `.need_lag_suff` halves its priority.
     suff_ref: f32 = 200,
+    /// MARL-7. A refined region is UNREFINED when its parent's error has
+    /// grown by this factor over what it was when the region was refined —
+    /// the parent has stopped being a valid coarse level there, and the
+    /// child is being asked to do the parent's job rather than refine it.
+    /// The child's kernels in the region are removed and the parent's are
+    /// unfrozen IN ONE ACT, because MARL-7's opening measurement showed
+    /// the archaeology is load-bearing: deleting a correction while the
+    /// thing it corrects remains is not a repair.
+    ///
+    /// Zero disables it, which is MARL-2 through MARL-6, so every earlier
+    /// gate keeps measuring what it measured.
+    unrefine: f32 = 0,
+    /// Routed exemplars a region must see before its baseline is taken
+    /// and it becomes eligible — long enough for the EWMA to settle at a
+    /// rate of 0.02, and short enough that a region actually reaches it:
+    /// about thirty thousand exemplars are routed across some forty
+    /// refined regions in a run, so a threshold of two thousand each was
+    /// never reachable and the first version of this never fired once.
+    unrefine_after: u32 = 300,
 };
 
 /// What the scheduler knows about one refined region. Nothing here is new
@@ -1506,6 +1554,24 @@ pub const RegionSched = struct {
     updates: u64 = 0,
     /// Exemplar index when this region was last served.
     last_served: u64 = 0,
+    /// MARL-7: an EWMA of |y − parent(x)| over the exemplars routed here,
+    /// and what it was when the region was refined. The child was created
+    /// to absorb the parent's error at the size it then had; if that error
+    /// GROWS well past it, the parent has stopped being a valid coarse
+    /// level and no amount of residual will fix that — the residual is
+    /// what is being asked to do the parent's job.
+    parent_error: f32 = 0,
+    parent_error_at_refine: f32 = 0,
+    /// A DECAYING MAX of the same error. The mean is the wrong statistic
+    /// and the reason is the campaign's recurring one: a region is a sixth
+    /// of the domain across and the structure that leaves it is a
+    /// fortieth of the domain thick, so a 0.9-amplitude error over a fifth
+    /// of a region's volume averages down to a factor barely over three.
+    /// The question is not whether the parent is wrong ON AVERAGE here; it
+    /// is whether it is badly wrong ANYWHERE here.
+    parent_peak: f32 = 0,
+    parent_peak_at_refine: f32 = 0,
+    since_refined: u32 = 0,
     /// The learning-efficiency window: need at the window's start, work
     /// spent since, and the accumulated efficiency. MEASURED, and nothing
     /// schedules from it — Christian's instruction, and the right one:
@@ -1581,6 +1647,13 @@ pub const Hierarchy = struct {
     events_at_drift: u64 = 0,
     seen_at_drift: u64 = 0,
     updates_at_drift: []u32 = &.{},
+    /// MARL-7 bookkeeping: regions retired, and the child kernels that
+    /// went with them.
+    unrefined_count: u32 = 0,
+    unrefined_on_departed: u32 = 0,
+    child_retired: usize = 0,
+    rerefined_count: u32 = 0,
+    ever_refined: []bool = &.{},
     /// Running mean of the routing score, so a score of any scale
     /// normalises to the target duty. An EWMA rather than a true mean
     /// because the scores move as the model learns, and a normaliser
@@ -1609,6 +1682,9 @@ pub const Hierarchy = struct {
         const sch = try gpa.alloc(RegionSched, n);
         errdefer gpa.free(sch);
         for (sch) |*e| e.* = .{};
+        const ever = try gpa.alloc(bool, n);
+        errdefer gpa.free(ever);
+        @memset(ever, false);
         return .{
             .gpa = gpa,
             .parent = parent,
@@ -1620,6 +1696,7 @@ pub const Hierarchy = struct {
             .stream = rng.Stream.region(opts.seed, 0x4D41_524C, 0), // "MARL", the flat model's key
             .route_stream = rng.Stream.region(opts.seed, 0x524F_5554, 0), // "ROUT"
             .sched = sch,
+            .ever_refined = ever,
         };
     }
 
@@ -1631,6 +1708,44 @@ pub const Hierarchy = struct {
         self.gpa.free(self.post_sum);
         self.gpa.free(self.sched);
         if (self.updates_at_drift.len > 0) self.gpa.free(self.updates_at_drift);
+        self.gpa.free(self.ever_refined);
+    }
+
+    /// Retire a region's child level and hand the region back to the
+    /// parent. The two halves are ONE act: the child's kernels go and the
+    /// parent's are unfrozen in the same breath, because the correction
+    /// and the thing it corrects are only removable together.
+    ///
+    /// Safe on MARL-6R's analysis: under-basis-density is the catastrophe,
+    /// and this removes a LEVEL while leaving the parent's density where
+    /// it was. There is no sparse child left behind — there is no child.
+    fn unrefine(self: *Hierarchy, gpa: std.mem.Allocator, r: u32) !void {
+        const dead = try gpa.alloc(bool, self.child.kernels.items.len);
+        defer gpa.free(dead);
+        var n: usize = 0;
+        for (self.child.kernels.items, dead) |*k, *d| {
+            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+            d.* = self.parent.regionOf(mu) == r;
+            if (d.*) n += 1;
+        }
+        try self.child.compact(dead);
+        self.parent.unfreezeRegion(r);
+        self.refined[r] = false;
+        // The pressure statistic starts again, or the region re-refines on
+        // the evidence that had it refined before.
+        self.covered_events[r] = 0;
+        self.post_sum[r] = 0;
+        self.sched[r] = .{};
+        self.unrefined_count += 1;
+        self.child_retired += n;
+        if (!Truth.inShell(self.parent.opts.truth, self.regionCentre(r))) self.unrefined_on_departed += 1;
+    }
+
+    fn regionCentre(self: *const Hierarchy, r: u32) [3]f32 {
+        const rr = self.parent.opts.regions;
+        const c = [3]u32{ r % rr, (r / rr) % rr, r / (rr * rr) };
+        const h = self.parent.h;
+        return .{ (@as(f32, @floatFromInt(c[0])) + 0.5) * h, (@as(f32, @floatFromInt(c[1])) + 0.5) * h, (@as(f32, @floatFromInt(c[2])) + 0.5) * h };
     }
 
     /// The routing score for a region, before normalisation.
@@ -1702,6 +1817,27 @@ pub const Hierarchy = struct {
             e.updates += spent;
             e.kernels += @intCast(self.child.kernels.items.len - kn);
             e.last_served = self.seen;
+            const perr = @abs(y - held);
+            e.parent_error += 0.02 * (perr - e.parent_error);
+            e.parent_peak = @max(e.parent_peak * 0.9995, perr);
+            e.since_refined +|= 1;
+            // The baseline is MEASURED, not inherited. What the child was
+            // created to absorb is the parent's error once the region has
+            // settled under refinement — and because the parent is frozen
+            // there, that number does not move again unless the world
+            // does. Taking it from the pressure statistic instead was
+            // wrong by an order of magnitude: pressure is a POST-update
+            // residual (~0.008) and this is the raw error (~0.08), so the
+            // trigger compared two different quantities and never fired.
+            if (e.since_refined == self.popts.unrefine_after) {
+                e.parent_error_at_refine = @max(1e-4, e.parent_error);
+                e.parent_peak_at_refine = @max(1e-4, e.parent_peak);
+            } else if (self.popts.unrefine > 0 and e.since_refined > self.popts.unrefine_after and
+                e.parent_peak > e.parent_peak_at_refine * self.popts.unrefine)
+            {
+                try self.unrefine(self.gpa, r);
+                return;
+            }
             // Learning efficiency, measured over a moving window: how much
             // unresolved residual a unit of learning work removed here.
             e.win_updates += spent;
@@ -1754,6 +1890,8 @@ pub const Hierarchy = struct {
             self.sched[r].need = self.pressureOf(r);
             self.sched[r].win_need = self.sched[r].need;
             self.sched[r].last_served = self.seen;
+            if (self.ever_refined[r]) self.rerefined_count += 1;
+            self.ever_refined[r] = true;
         }
     }
 
@@ -1857,17 +1995,81 @@ pub const Hierarchy = struct {
     /// Of the child kernels that existed when the world moved, how many
     /// are still outside the band the target now has — and how many have
     /// taken any real gradient since.
-    pub const Stranded = struct { at_drift: usize, outside_current: usize, still_active: usize };
+    pub const Stranded = struct {
+        at_drift: usize,
+        outside_current: usize,
+        still_active: usize,
+        /// Mean |w| of the pre-move kernels that are now outside the
+        /// current band, and of those inside it. THE QUESTION EROSION
+        /// TURNS ON: if obsolete capacity shrinks its own weight, death is
+        /// a matter of noticing; if it does not, death needs a signal the
+        /// model does not currently produce.
+        w_obsolete: f32,
+        w_relevant: f32,
+        /// And the same for kernels born since the move, as the control.
+        w_new: f32,
+    };
 
     pub fn strandedOf(self: *const Hierarchy) Stranded {
         var outside: usize = 0;
         var active: usize = 0;
+        var w_out: f64 = 0;
+        var w_in: f64 = 0;
+        var n_in: usize = 0;
         for (self.child.kernels.items[0..self.child_at_drift], self.updates_at_drift) |*k, was| {
             const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
-            if (!Truth.inShell(self.parent.opts.truth, mu)) outside += 1;
+            if (Truth.inShell(self.parent.opts.truth, mu)) {
+                w_in += @abs(k.p[W]);
+                n_in += 1;
+            } else {
+                w_out += @abs(k.p[W]);
+                outside += 1;
+            }
             if (k.updates > was + 10) active += 1;
         }
-        return .{ .at_drift = self.child_at_drift, .outside_current = outside, .still_active = active };
+        var w_new: f64 = 0;
+        const n_new = self.child.kernels.items.len - self.child_at_drift;
+        for (self.child.kernels.items[self.child_at_drift..]) |*k| w_new += @abs(k.p[W]);
+        return .{
+            .at_drift = self.child_at_drift,
+            .outside_current = outside,
+            .still_active = active,
+            .w_obsolete = if (outside > 0) @floatCast(w_out / @as(f64, @floatFromInt(outside))) else 0,
+            .w_relevant = if (n_in > 0) @floatCast(w_in / @as(f64, @floatFromInt(n_in))) else 0,
+            .w_new = if (n_new > 0) @floatCast(w_new / @as(f64, @floatFromInt(n_new))) else 0,
+        };
+    }
+
+    /// THE ABLATION THAT DECIDES WHETHER DEATH IS EVEN POSSIBLE: silence
+    /// every pre-move child kernel now outside the current band, and see
+    /// what the prediction does. If those kernels are obsolete, removing
+    /// them costs nothing and erosion is a matter of noticing. If the
+    /// prediction gets WORSE, they are load-bearing — they are cancelling
+    /// the frozen parent's stale contribution, and deleting a correction
+    /// while the thing it corrects remains is not a repair.
+    ///
+    /// Reversible, and reversed by the caller: this is a measurement, not
+    /// a mechanism.
+    pub fn silenceObsolete(self: *Hierarchy, saved: []f32) usize {
+        var n: usize = 0;
+        for (self.child.kernels.items[0..self.child_at_drift]) |*k| {
+            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+            if (Truth.inShell(self.parent.opts.truth, mu)) continue;
+            saved[n] = k.p[W];
+            k.p[W] = 0;
+            n += 1;
+        }
+        return n;
+    }
+
+    pub fn restoreObsolete(self: *Hierarchy, saved: []const f32) void {
+        var n: usize = 0;
+        for (self.child.kernels.items[0..self.child_at_drift]) |*k| {
+            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+            if (Truth.inShell(self.parent.opts.truth, mu)) continue;
+            k.p[W] = saved[n];
+            n += 1;
+        }
     }
 
     /// The child's shell-band density over its density across the cells it
@@ -3232,3 +3434,78 @@ test "G24 the hierarchy is indifferent to the responsibility radius in accuracy 
     try testing.expect(lean.child.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
     std.debug.print("\n  G24: RMS {d:.5} → {d:.5} ({d:.3}×) for work {d} → {d} ({d:.3}×); {d} kernels → {d}, concentration {d:.2} → {d:.2} ({s})\n", .{ rms_full, rms_lean, rms_lean / rms_full, work_full, work_lean, @as(f64, @floatFromInt(work_lean)) / @as(f64, @floatFromInt(work_full)), full.child.kernels.items.len, lean.child.kernels.items.len, full.childConcentration(), lean.childConcentration(), @tagName(builtin.mode) });
 }
+
+// ── MARL-7's gates ────────────────────────────────────────────────────
+//
+// Erosion, and the answer is that there is nothing to erode. Two
+// measurements run before any mechanism scoped the phase, and a third
+// after it closed the question — the capacity a drifted model accumulates
+// is not obsolete, it is working, and neither of the operations Christian
+// separated addresses what is actually wrong.
+
+test "G26 (a) the capacity a moved world leaves behind is LOAD-BEARING, so kernel death has nothing to target" {
+    // The measurement that scoped MARL-7. Obsolete kernels do not
+    // self-identify by weight — after a large drift the pre-move kernels
+    // outside the current band carry MORE than the stationary control's
+    // off-band kernels do — and silencing them makes the prediction worse,
+    // not better. They are simultaneously fitting the swell's fine
+    // structure and cancelling the frozen parent's stale contribution, and
+    // no deletion takes one without the other.
+    //
+    // MUTATION: none is available, and the gate is written so it does not
+    // need one — it asserts that silencing HURTS. Were those kernels
+    // obsolete, silencing would be free and the assertion would fail. The
+    // gate's own subject is the null it rules out.
+    const gpa = testing.allocator;
+    const t = TruthParams{ .sharpness = 2 };
+    var moved = t;
+    moved.shift = .{ 0, -0.30, 0 };
+
+    var h = try Hierarchy.init(gpa, .{ .truth = t, .responsibility = 3 }, .{});
+    defer h.deinit();
+    try h.stream_n(100_000);
+    try h.drift(gpa, moved);
+    try h.stream_n(60_000);
+
+    const pr = try probesOf(gpa, moved, 0xB0B, 2048);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+    const before = try h.rms(pr.p, pr.y, null);
+    const saved = try gpa.alloc(f32, h.child_at_drift);
+    defer gpa.free(saved);
+    const n = h.silenceObsolete(saved);
+    const after = try h.rms(pr.p, pr.y, null);
+    h.restoreObsolete(saved[0..n]);
+
+    try testing.expect(n > 500); // there really is a population to silence
+    try testing.expect(after > before * 1.2); // and it was doing real work
+    // Weight does not separate it from anything: the "obsolete" kernels
+    // carry as much as the ones born since.
+    const st = h.strandedOf();
+    try testing.expect(st.w_obsolete > st.w_new * 0.6);
+    std.debug.print("\n  G26 (a): silencing {d} pre-move kernels now outside the band costs {d:.5} → {d:.5} ({d:.2}×); their mean |w| {d:.4} against {d:.4} for kernels born since ({s})\n", .{ n, before, after, after / before, st.w_obsolete, st.w_new, @tagName(builtin.mode) });
+}
+
+
+// G26 (b) WAS a precision gate on unrefinement — "of the regions it
+// retires, the share the structure has left" — and it was withdrawn
+// before it shipped, because it could not fail.
+//
+// Two mutations survived it. The mean statistic instead of the decaying
+// max scored 0.875 against the peak's 1.000, and retiring on AGE ALONE —
+// with no reference to the parent's error whatever — scored 0.969 across
+// 32 regions. The reason is a confound in the EXPERIMENT rather than in
+// the trigger: on a drift test the regions refined longest ago are
+// exactly the regions refined before the world moved, which are exactly
+// the departed ones. Age and departure are the same variable here, so any
+// policy preferring older regions scores well and the metric
+// distinguishes nothing.
+//
+// The peak-versus-mean difference is real — 1.000 against 0.667 at an
+// unrefinement factor of 3 with the world moving at 200 000 — but it is
+// configuration-dependent, and a gate that reproduces it at one setting
+// and not another is reporting a setting. It is in the ledger instead.
+//
+// What would discriminate is a world where structure leaves regions that
+// were refined at different times, which this target does not provide.
+// That is a fixture problem, and MARL-8's to fix if it needs the metric.

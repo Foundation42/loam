@@ -80,6 +80,10 @@ const usage =
     \\  --sched M           off (MARL-4) | need | need_lag | need_lag_suff
     \\  --lag-tau T         anti-starvation timescale, exemplars (20000)
     \\  --suff-ref R        evidence per child kernel counting as served (200)
+    \\  --unrefine F        MARL-7: retire a region's child level when the
+    \\                      parent's error there has grown F× past what it was
+    \\                      when the region was refined (0 = off, MARL-2..6)
+    \\  --unrefine-after N  exemplars a region must be refined for first (2000)
     \\  --drift6            MARL-6: move the world at a known exemplar count and
     \\                      watch. Stationary control, small and large drift
     \\  --drift-at N        when the world moves (default 200000)
@@ -110,6 +114,7 @@ const Opts = struct {
     drift6: bool = false,
     hysteresis: bool = false,
     drift_at: u64 = 200_000,
+    repeat: u32 = 0,
     p: marl.PressureOptions = .{},
 };
 
@@ -197,10 +202,16 @@ fn parse(args: []const []const u8) !?Opts {
             o.p.lag_tau = try parseF32(try next(args, &i));
         } else if (std.mem.eql(u8, a, "--suff-ref")) {
             o.p.suff_ref = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--unrefine")) {
+            o.p.unrefine = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--unrefine-after")) {
+            o.p.unrefine_after = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--drift6")) {
             o.drift6 = true;
         } else if (std.mem.eql(u8, a, "--hysteresis")) {
             o.hysteresis = true;
+        } else if (std.mem.eql(u8, a, "--drift-repeat")) {
+            o.repeat = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--drift-at")) {
             o.drift_at = try std.fmt.parseInt(u64, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--arms5")) {
@@ -258,6 +269,7 @@ pub fn main() !void {
     };
 
     if (o.arms) return arms(gpa, o);
+    if (o.repeat > 0) return driftRepeat(gpa, o);
     if (o.drift6) return drift6(gpa, o);
     if (o.arms5) return arms5(gpa, o);
     if (o.hier) return hier(gpa, o);
@@ -493,6 +505,40 @@ fn arms(gpa: std.mem.Allocator, o: Opts) !void {
     try out.print("    B' moved A's centres by {d:.5} on average, {d:.5} at most (h = {d:.4})\n", .{ drift.mean, drift.max, b.h });
 }
 
+/// Does the archaeology ever become a problem? One drift showed capacity
+/// growing and PAYING FOR ITSELF — silencing it costs error, so it is not
+/// dead. The question erosion actually turns on is whether that stays true
+/// over many moves, or whether the population runs away while the accuracy
+/// stops improving. One drift cannot tell; this is the cheapest thing that
+/// can.
+fn driftRepeat(gpa: std.mem.Allocator, o: Opts) !void {
+    const out = std.io.getStdOut().writer();
+    var h = try marl.Hierarchy.init(gpa, o.m, o.p);
+    defer h.deinit();
+    try h.stream_n(o.drift_at);
+
+    try out.print("MARL-7 — the world moves {d} times ({s}, R {d:.3}, unrefine {d:.1})\n", .{ o.repeat, @tagName(builtin.mode), o.m.responsibility, o.p.unrefine });
+    try out.print("  {s:>6} {s:>10} {s:>10} {s:>9} {s:>9} {s:>9} {s:>8}\n", .{ "move", "RMS", "parent", "child K", "parent K", "unrefined", "mean|w|" });
+    var tp = o.m.truth;
+    var i: u32 = 0;
+    while (i <= o.repeat) : (i += 1) {
+        if (i > 0) {
+            tp.shift[1] -= 0.08;
+            try h.drift(gpa, tp);
+        }
+        const pr = try marl.probesOf(gpa, tp, 0xB0B, o.probe_n);
+        defer gpa.free(pr.p);
+        defer gpa.free(pr.y);
+        try h.stream_n(100_000);
+        try out.print("  {d:>6} {d:>10.5} {d:>10.5} {d:>9} {d:>9} {d:>9} {d:>8.3}\n", .{
+            i,                              try h.rms(pr.p, pr.y, null),
+            try h.parentRms(pr.p, pr.y),    h.child.kernels.items.len,
+            h.parent.kernels.items.len,     h.unrefined_count,
+            h.child.weightStats().mean_abs,
+        });
+    }
+}
+
 /// MARL-6: move the world and watch. No repair of any kind — the refined
 /// set, the frozen parents and every kernel stay as the old world left
 /// them. Three arms of identical length: a stationary control, a small
@@ -543,7 +589,7 @@ fn drift6(gpa: std.mem.Allocator, o: Opts) !void {
         // look the same at one checkpoint and different across four.
         var last_events: u64 = h.parent.stats.events + h.child.stats.events;
         var window_events: u64 = 0;
-        const marks = [_]u64{ 1_000, 20_000, 100_000 };
+        const marks = [_]u64{ 1_000, 20_000, 100_000, 400_000 };
         var done: u64 = 0;
         for (marks, 0..) |m, mi| {
             const kn = h.child.kernels.items.len;
@@ -553,7 +599,7 @@ fn drift6(gpa: std.mem.Allocator, o: Opts) !void {
             if (mi == 0) window_events = ev_now - last_events;
             last_events = ev_now;
             try out.print("    {s:>16} {d:>9.5} {d:>9.5} {d:>9.5} {d:>9} {d:>8}\n", .{
-                if (mi == 0) "+1k (immediate)" else if (mi == 1) "+20k (early)" else "+100k (late)",
+                if (mi == 0) "+1k (immediate)" else if (mi == 1) "+20k (early)" else if (mi == 2) "+100k (late)" else "+400k (settled)",
                 try h.rms(pr.p, pr.y, null),
                 try h.parentRms(pr.p, pr.y),
                 try h.childRms(pr.p),
@@ -562,6 +608,7 @@ fn drift6(gpa: std.mem.Allocator, o: Opts) !void {
             });
         }
 
+        try out.print("    unrefinement: {d} regions retired ({d} of them where the band had left), {d} child kernels with them, {d} re-refined later\n", .{ h.unrefined_count, h.unrefined_on_departed, h.child_retired, h.rerefined_count });
         const st = h.strandedOf();
         const prec = h.precision();
         const pfrac = if (prec.refined > 0) @as(f32, @floatFromInt(prec.on_shell)) / @as(f32, @floatFromInt(prec.refined)) else 0;
@@ -572,10 +619,21 @@ fn drift6(gpa: std.mem.Allocator, o: Opts) !void {
             base_events = window_events;
         }
         try out.print("    the child is carrying {d:.2}× what the stationary control's does\n", .{if (base_child_rms > 0) child_after / base_child_rms else 1});
-        try out.print("    of {d} child kernels alive at the move: {d} ({d:.3}) are outside the CURRENT band, {d} ({d:.3}) took real gradient after it\n", .{ st.at_drift, st.outside_current, @as(f32, @floatFromInt(st.outside_current)) / @as(f32, @floatFromInt(@max(1, st.at_drift))), st.still_active, @as(f32, @floatFromInt(st.still_active)) / @as(f32, @floatFromInt(@max(1, st.at_drift))) });
+        try out.print("    of {d} child kernels alive at the move: {d} ({d:.3}) are outside the CURRENT band, {d} ({d:.3}) took real gradient after it; mean |w| obsolete {d:.4}, still-relevant {d:.4}, born-since {d:.4}\n", .{ st.at_drift, st.outside_current, @as(f32, @floatFromInt(st.outside_current)) / @as(f32, @floatFromInt(@max(1, st.at_drift))), st.still_active, @as(f32, @floatFromInt(st.still_active)) / @as(f32, @floatFromInt(@max(1, st.at_drift))), st.w_obsolete, st.w_relevant, st.w_new });
         try out.print("    refinement precision against the CURRENT target {d:.3} ({d:.2}× the control's) over {d} regions\n", .{ pfrac, if (base_precision > 0) pfrac / base_precision else 1, prec.refined });
         try out.print("    the first 1 000 exemplars after the move cost {d} learning events ({d:.2}× the control's)\n", .{ window_events, if (base_events > 0) @as(f32, @floatFromInt(window_events)) / @as(f32, @floatFromInt(base_events)) else 1 });
         try out.print("    concentration {d:.2}, mean |w| parent {d:.3} child {d:.3}, {d:.0} updates per child kernel, {d:.3} trained\n\n", .{ h.childConcentration(), h.parent.weightStats().mean_abs, h.child.weightStats().mean_abs, h.child.meanUpdates(), h.child.trainedFraction(10) });
+
+        {
+            // Is the archaeology load-bearing? Silence it and look.
+            const saved = try gpa.alloc(f32, h.child_at_drift);
+            defer gpa.free(saved);
+            const before_rms = try h.rms(pr.p, pr.y, null);
+            const n = h.silenceObsolete(saved);
+            const after_rms = try h.rms(pr.p, pr.y, null);
+            h.restoreObsolete(saved[0..n]);
+            try out.print("    ABLATION — silencing the {d} pre-move kernels now outside the band: RMS {d:.5} → {d:.5} ({d:.2}×)\n", .{ n, before_rms, after_rms, after_rms / before_rms });
+        }
 
         if (o.hysteresis and ai == 2) {
             try h.drift(gpa, old_tp);
@@ -722,6 +780,7 @@ fn hier(gpa: std.mem.Allocator, o: Opts) !void {
     try out.print("\n  gain against empty:  flat {d:.2}   hierarchy {d:.2}   ratio {d:.2}  (predicted ≥ {d:.1}, MARL2_SHARPNESS_RETENTION)\n", .{ rms0 / rms_flat, rms0 / rms_hier, (rms0 / rms_hier) / (rms0 / rms_flat), th.MARL2_SHARPNESS_RETENTION });
     try out.print("  the child's own contribution: parent alone {d:.5} → with child {d:.5}, a factor of {d:.2}\n", .{ rms_parent, rms_hier, rms_parent / rms_hier });
 
+    try out.print("\n  unrefinement: {d} regions retired, {d} child kernels with them\n", .{ h.unrefined_count, h.child_retired });
     try out.print("\n  WHERE the capacity went\n", .{});
     try out.print("    refined regions        {d:>6} of {d}   {d} touch the shell band, {d} do not\n", .{ prec.refined, h.parent.regions.len, prec.on_shell, prec.false_positive });
     try out.print("    precision              {d:>6.3}          predicted ≥ {d:.2} (MARL2_PRECISION)\n", .{ if (prec.refined > 0) @as(f32, @floatFromInt(prec.on_shell)) / @as(f32, @floatFromInt(prec.refined)) else 0, th.MARL2_PRECISION });

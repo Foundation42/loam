@@ -4364,6 +4364,147 @@ should run at R = 3 from its first line, because pricing birth and death
 against a learning event that costs six times what it needs to would be
 pricing the wrong thing twice over.
 
+## MARL-7 — erosion, and there was nothing to erode (Monday 2026-09-07)
+
+Christian's split — KERNEL DEATH for locally useless basis functions,
+UNREFINEMENT for a child level whose parent is sufficient again — with the
+question MARL-6 finally earned: *can obsolete representation be retired
+without destroying useful residual structure?*
+
+**The premise does not hold. The representation in question is not
+obsolete.** Two measurements taken before any mechanism was written scoped
+the phase, and a third after it closed the question.
+
+### One: obsolete kernels do not self-identify
+
+Mean |w| of the child kernels alive when the world moved, after recovery:
+
+                   outside the current band   inside it   born since
+    stationary            0.0832               0.3214       0.0807
+    small drift           0.1231               0.3278       0.1309
+    large drift           0.1219               0.3290       0.1555
+
+Drift makes the "obsolete" kernels BIGGER, not smaller, and they carry
+less than the kernels born since the move. Weight does not separate
+obsolete from useful in either direction.
+
+### Two: they are load-bearing
+
+Silencing every pre-move child kernel now outside the band:
+
+    stationary   RMS 0.03082 → 0.04373   (1.42×)
+    small drift      0.05018 → 0.07430   (1.48×)
+    large drift      0.04861 → 0.07573   (1.56×)
+
+So the corrective archaeology is not separable capacity sitting beside the
+useful kind. It is a contamination INSIDE otherwise-useful kernels — the
+same kernel fits the swell's fine structure and cancels the frozen
+parent's stale contribution — and no deletion takes one without the other.
+**Kernel death has nothing to target**, which is why MARL-7 became
+unrefinement only.
+
+### Unrefinement: built, precise, and it does not repay
+
+A region retires when the parent's error there has grown past what it was
+when the child was created to absorb it. The child's kernels go and the
+parent's are unfrozen in ONE act, because the correction and the thing it
+corrects are only removable together.
+
+The trigger has to be a DECAYING MAX, not a mean, and the reason is this
+campaign's recurring one: a region is a sixth of the domain across and the
+structure that leaves is a fortieth of it thick, so a 0.9-amplitude error
+over a fifth of a region's volume averages down to a factor barely over
+three. The mean fired on two thirds of the right regions; the peak fires
+on all of them. **Granularity, for the third time** — after MARL-2's
+allocator and MARL-5's scheduler.
+
+And it does not repay, at any sensitivity or horizon:
+
+                                    +100k      +400k
+    no unrefinement (small drift)   0.05018   0.03308
+    unrefine ×2                     0.05215   0.03312
+    unrefine ×3                     0.05005      —
+    unrefine ×2, parent RESET too   0.05461   0.03343
+
+Resetting the parent's stale kernels rather than merely thawing them does
+not help either. Retiring the level does not repay because the level was
+not the problem.
+
+`MARL7_STATIONARY_QUIET` = 0 holds at factor 3 across 721 000 exemplars
+and fails at factor 2 by 300 000 — quiet-when-still is a property of a
+threshold, not of the mechanism, so it is recorded rather than gated.
+
+### Three: what is actually wrong, over six moves
+
+    move    RMS       parent    child K   parent K   mean |w|
+      0   0.03082    0.07123      5233      3284      0.134
+      1   0.04572    0.09384      5784      3316      0.155
+      2   0.04499    0.09201      6922      3353      0.144
+      3   0.04468    0.09923      7823      3379      0.146
+      4   0.04611    0.09500      9106      3408      0.137
+      5   0.04773    0.10797     10185      3423      0.132
+      6   0.04424    0.09928     10997      3431      0.123
+
+**Accuracy is flat. Capacity grows linearly, about a thousand kernels per
+move, with no sign of saturating.** Weights stay healthy throughout. With
+unrefinement on, the same run ends at 10 878 against 10 997 — a 1%
+difference for fifteen retirements.
+
+So MARL-6's "corrective archaeology" was the wrong metaphor and this phase
+is what corrected it. Nothing is decaying, nothing is dead, and nothing
+needs burying. The model handles a moving world about as well after six
+moves as after one; what it does not do is REUSE anything. Every world
+costs a fresh allocation, and the old allocation keeps earning its keep
+somewhere else, which is why it cannot be deleted and why deleting it
+hurts.
+
+> **The pathology is not that old representation goes bad. It is that new
+> representation is always bought rather than borrowed.**
+
+### The gates, and what each was paid for
+
+| gate | mutation | result |
+|---|---|---|
+| G26 (a) the capacity a moved world leaves is load-bearing | none needed — the gate asserts silencing HURTS, and the null it rules out is its own subject | — |
+| ~~G26 (b) unrefinement fires on departed regions~~ | the mean instead of the peak (0.875); retiring on AGE ALONE (0.969) | **withdrawn — both survived** |
+
+G26 (b) was written, passed at 1.000 precision, and then withdrawn before
+it shipped because it could not fail. Retiring on age with no reference to
+the parent's error at all scored 0.969 across 32 regions. The confound is
+in the EXPERIMENT, not the trigger: on a drift test the regions refined
+longest ago are exactly the regions refined before the world moved, which
+are exactly the departed ones. Age and departure are the same variable
+here, so any policy preferring older regions scores well.
+
+The peak-versus-mean difference is real — 1.000 against 0.667 at factor 3
+with the world moving at 200 000 — but it reproduces at one setting and
+not another, so it is recorded and not asserted. What would discriminate
+is a world where structure leaves regions refined at different times,
+which this target does not provide. A fixture problem, and MARL-8's if it
+needs the metric.
+
+Three of MARL-7's four pre-registered numbers were refuted, and the fourth
+holds only at a setting. That is the correct outcome for a phase whose
+premise was wrong: the predictions were all about how well retirement
+would work, and retirement was never the operation this needed.
+
+### What MARL-8 would have to be about
+
+Not erosion. **Reuse.** The question is whether a kernel that was fitted
+to one world can be RE-POINTED at another — its position and shape are a
+sunk cost that the descent already paid for, and MARL-1 established that
+deformation is what buys everything after the topology is found. A model
+that could re-point instead of re-buy would break the linear growth
+without deleting anything, which is the only direction these measurements
+leave open.
+
+The obstacle is visible already: the kernels cannot move (centre drift is
+0.0009 of the domain over a whole run), and they cannot move BECAUSE
+locality is exact and their gradients vanish outside their own support.
+The property that made MARL-0 cheap is the property that stops MARL-8
+being possible in its obvious form. That tension is worth stating before
+anyone tries.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:
