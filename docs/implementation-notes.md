@@ -2790,9 +2790,15 @@ before the bloom. Overlapping cards race on the read-modify-write
 (there is no atomic max on a float image), so the record is a LOWER
 BOUND where cards pile up: every store is one of the frame's plausible
 values, none above the true maximum — an effect's buffer, stated at
-the write. NOT SEEN RUNNING: no spray can be lit from this repo's
-command line (they come from a rig), so the particle path is built and
-compiled but not watched; his session has embers live. A `light`
+the write. SEEN RUNNING, at the wrap: no spray can be lit from
+matryoshka's command line (they come from a rig), so the particle path
+went in unwatched — and Christian's shots closed it the same night. An
+ember spray's cards carry one broad orange glow across the whole
+plume, and the Lumberyard Bistro's string lights each wear their own
+colour off a scene with no loam in it at all: ordinary glTF emissive
+materials, the same record, the same aura. THE RECORD IS
+PRODUCER-AGNOSTIC BY CONSTRUCTION, and a scene that never heard of the
+marble is the proof. A `light`
 spray has no aura by this path and does not need one — its rows are
 splats, real light.
 
