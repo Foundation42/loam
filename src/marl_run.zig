@@ -80,6 +80,11 @@ const usage =
     \\  --sched M           off (MARL-4) | need | need_lag | need_lag_suff
     \\  --lag-tau T         anti-starvation timescale, exemplars (20000)
     \\  --suff-ref R        evidence per child kernel counting as served (200)
+    \\  --drift6            MARL-6: move the world at a known exemplar count and
+    \\                      watch. Stationary control, small and large drift
+    \\  --drift-at N        when the world moves (default 200000)
+    \\  --hysteresis        after the move, move it back — does the old
+    \\                      representation become useful again, or interfere?
     \\  --arms5             MARL-5's controlled arms at one duty: uniform,
     \\                      static biased, and three schedules
     \\  --birth-scale F     the evidence cell's edge, in coverage spacings (2)
@@ -102,6 +107,9 @@ const Opts = struct {
     tsv: bool = false,
     hier: bool = false,
     arms5: bool = false,
+    drift6: bool = false,
+    hysteresis: bool = false,
+    drift_at: u64 = 200_000,
     p: marl.PressureOptions = .{},
 };
 
@@ -189,6 +197,12 @@ fn parse(args: []const []const u8) !?Opts {
             o.p.lag_tau = try parseF32(try next(args, &i));
         } else if (std.mem.eql(u8, a, "--suff-ref")) {
             o.p.suff_ref = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--drift6")) {
+            o.drift6 = true;
+        } else if (std.mem.eql(u8, a, "--hysteresis")) {
+            o.hysteresis = true;
+        } else if (std.mem.eql(u8, a, "--drift-at")) {
+            o.drift_at = try std.fmt.parseInt(u64, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--arms5")) {
             o.arms5 = true;
         } else if (std.mem.eql(u8, a, "--sched")) {
@@ -244,6 +258,7 @@ pub fn main() !void {
     };
 
     if (o.arms) return arms(gpa, o);
+    if (o.drift6) return drift6(gpa, o);
     if (o.arms5) return arms5(gpa, o);
     if (o.hier) return hier(gpa, o);
     var model = try marl.Model.init(gpa, o.m);
@@ -476,6 +491,103 @@ fn arms(gpa: std.mem.Allocator, o: Opts) !void {
     try out.print("    work_C/work_B' = {d:.3}\n", .{@as(f64, @floatFromInt(c.stats.updates)) / @as(f64, @floatFromInt(@max(1, b.stats.updates)))});
     const drift = b.driftOf();
     try out.print("    B' moved A's centres by {d:.5} on average, {d:.5} at most (h = {d:.4})\n", .{ drift.mean, drift.max, b.h });
+}
+
+/// MARL-6: move the world and watch. No repair of any kind — the refined
+/// set, the frozen parents and every kernel stay as the old world left
+/// them. Three arms of identical length: a stationary control, a small
+/// displacement that lands the new ridge inside regions ALREADY REFINED,
+/// and a large one that lands it in regions never pressured.
+fn drift6(gpa: std.mem.Allocator, o: Opts) !void {
+    const out = std.io.getStdOut().writer();
+    const Arm = struct { name: []const u8, shift: [3]f32 };
+    const set = [_]Arm{
+        .{ .name = "stationary control", .shift = .{ 0, 0, 0 } },
+        .{ .name = "small drift (0.10)", .shift = .{ 0, -0.10, 0 } },
+        .{ .name = "large drift (0.30)", .shift = .{ 0, -0.30, 0 } },
+    };
+    const old_tp = o.m.truth;
+
+    try out.print("MARL-6 — the frozen parent under a moving world ({s})\n", .{@tagName(builtin.mode)});
+    try out.print("  target sharpness ×{d:.1}; the world moves at {d} of {d} exemplars; seed {d}\n", .{ o.m.truth.sharpness, o.drift_at, o.exemplars, o.m.seed });
+    try out.print("  nothing repairs anything: no thawing, no reparenting, no forgetting\n\n", .{});
+
+    var base_child_rms: f32 = 0;
+    var base_precision: f32 = 0;
+    var base_events: u64 = 0;
+    for (set, 0..) |arm, ai| {
+        var new_tp = old_tp;
+        new_tp.shift = arm.shift;
+        var h = try marl.Hierarchy.init(gpa, o.m, o.p);
+        defer h.deinit();
+        try h.stream_n(o.drift_at);
+
+        // Before the move, against the world as it then is.
+        const pr_old = try marl.probesOf(gpa, old_tp, 0xB0B, o.probe_n);
+        defer gpa.free(pr_old.p);
+        defer gpa.free(pr_old.y);
+        const rms_before = try h.rms(pr_old.p, pr_old.y, null);
+        const child_before = try h.childRms(pr_old.p);
+        const prec_before = h.precision();
+
+        try h.drift(gpa, new_tp);
+        const pr = try marl.probesOf(gpa, new_tp, 0xB0B, o.probe_n);
+        defer gpa.free(pr.p);
+        defer gpa.free(pr.y);
+
+        try out.print("  ── {s} ──\n", .{arm.name});
+        try out.print("    before the move: RMS {d:.5}, the child carrying {d:.5}, refinement precision {d:.3} over {d} regions\n", .{ rms_before, child_before, if (prec_before.refined > 0) @as(f32, @floatFromInt(prec_before.on_shell)) / @as(f32, @floatFromInt(prec_before.refined)) else 0, prec_before.refined });
+        try out.print("    {s:>16} {s:>9} {s:>9} {s:>9} {s:>9} {s:>8}\n", .{ "after", "RMS", "parent", "child", "events", "births" });
+
+        // The time series: transient surprise and structural corruption
+        // look the same at one checkpoint and different across four.
+        var last_events: u64 = h.parent.stats.events + h.child.stats.events;
+        var window_events: u64 = 0;
+        const marks = [_]u64{ 1_000, 20_000, 100_000 };
+        var done: u64 = 0;
+        for (marks, 0..) |m, mi| {
+            const kn = h.child.kernels.items.len;
+            try h.stream_n(m - done);
+            done = m;
+            const ev_now = h.parent.stats.events + h.child.stats.events;
+            if (mi == 0) window_events = ev_now - last_events;
+            last_events = ev_now;
+            try out.print("    {s:>16} {d:>9.5} {d:>9.5} {d:>9.5} {d:>9} {d:>8}\n", .{
+                if (mi == 0) "+1k (immediate)" else if (mi == 1) "+20k (early)" else "+100k (late)",
+                try h.rms(pr.p, pr.y, null),
+                try h.parentRms(pr.p, pr.y),
+                try h.childRms(pr.p),
+                ev_now,
+                h.child.kernels.items.len - kn,
+            });
+        }
+
+        const st = h.strandedOf();
+        const prec = h.precision();
+        const pfrac = if (prec.refined > 0) @as(f32, @floatFromInt(prec.on_shell)) / @as(f32, @floatFromInt(prec.refined)) else 0;
+        const child_after = try h.childRms(pr.p);
+        if (ai == 0) {
+            base_child_rms = child_after;
+            base_precision = pfrac;
+            base_events = window_events;
+        }
+        try out.print("    the child is carrying {d:.2}× what the stationary control's does\n", .{if (base_child_rms > 0) child_after / base_child_rms else 1});
+        try out.print("    of {d} child kernels alive at the move: {d} ({d:.3}) are outside the CURRENT band, {d} ({d:.3}) took real gradient after it\n", .{ st.at_drift, st.outside_current, @as(f32, @floatFromInt(st.outside_current)) / @as(f32, @floatFromInt(@max(1, st.at_drift))), st.still_active, @as(f32, @floatFromInt(st.still_active)) / @as(f32, @floatFromInt(@max(1, st.at_drift))) });
+        try out.print("    refinement precision against the CURRENT target {d:.3} ({d:.2}× the control's) over {d} regions\n", .{ pfrac, if (base_precision > 0) pfrac / base_precision else 1, prec.refined });
+        try out.print("    the first 1 000 exemplars after the move cost {d} learning events ({d:.2}× the control's)\n", .{ window_events, if (base_events > 0) @as(f32, @floatFromInt(window_events)) / @as(f32, @floatFromInt(base_events)) else 1 });
+        try out.print("    concentration {d:.2}, mean |w| parent {d:.3} child {d:.3}, {d:.0} updates per child kernel, {d:.3} trained\n\n", .{ h.childConcentration(), h.parent.weightStats().mean_abs, h.child.weightStats().mean_abs, h.child.meanUpdates(), h.child.trainedFraction(10) });
+
+        if (o.hysteresis and ai == 2) {
+            try h.drift(gpa, old_tp);
+            const pr2 = try marl.probesOf(gpa, old_tp, 0xB0B, o.probe_n);
+            defer gpa.free(pr2.p);
+            defer gpa.free(pr2.y);
+            try out.print("    ── and back again (hysteresis) ──\n", .{});
+            try out.print("      the moment it returns: RMS {d:.5} against {d:.5} when it left\n", .{ try h.rms(pr2.p, pr2.y, null), rms_before });
+            try h.stream_n(100_000);
+            try out.print("      after another 100k: RMS {d:.5}, the child carrying {d:.5}, {d} child kernels\n", .{ try h.rms(pr2.p, pr2.y, null), try h.childRms(pr2.p), h.child.kernels.items.len });
+        }
+    }
 }
 
 /// MARL-5's controlled arms. Every arm sees the same exemplars in the same

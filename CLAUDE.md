@@ -43,6 +43,8 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -- --sharpness 4 --arms5        # MARL-5: five arms at one duty — region scheduling loses to per-exemplar bias
     zig build marl -- --sharpness 4 --duty 0.4 --sched hybrid --route-floor 0.05 --route-gain 6 --hier   # the granularity test
     zig build test -Dtest-filter="G22"             # MARL-5's gates; tools/marl5_predict.py, all three of whose numbers were REFUTED
+    zig build marl -- --sharpness 2 --drift6 --hysteresis   # MARL-6: move the world at 200k and watch; then move it back
+    zig build test -Dtest-filter="G23"             # MARL-6's gates; tools/marl6_predict.py, two of whose four held
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -111,7 +113,15 @@ therefore NOT earned — Loam schedules bricks because a brick is its unit
 of work; MARL's unit is one exemplar. And the sharpest form of the
 invariant: uniform routing at 40% duty is FLAT across a fourfold rise in
 exemplars, so spreading a fixed evidence budget evenly does not slow
-learning, it stops it.
+learning, it stops it. MARL-6 then moved the world, and the premise
+survived better than expected: **freezing is vindicated** — letting the
+parent keep learning where the child learns makes the pair much worse
+(0.0666 against 0.0491), because the child is learning `y − parent` while
+the parent moves under it. What does not survive is COMMITTED CAPACITY:
+91% of pre-move child kernels end outside the current band, refinement
+precision against the current target falls to 0.62, and moving the world
+back gives the same spike as moving it away — no memory, only
+accumulation. Erosion (§15) has its first concrete motivation.
 
 ## The ledger
 

@@ -192,6 +192,10 @@ pub const TruthParams = struct {
     sharpness: f32 = 1,
     /// Multiplies the swell's three spatial frequencies.
     frequency: f32 = 1,
+    /// MARL-6: every feature's centre is displaced by this. The world
+    /// moves; nothing else about it changes, so old and new structure stay
+    /// comparable and the hierarchy's response is attributable.
+    shift: [3]f32 = .{ 0, 0, 0 },
 };
 
 pub const Truth = struct {
@@ -222,13 +226,16 @@ pub const Truth = struct {
     /// x ∈ [0.15, 0.45] with radius ≤ 0.20, so the furthest any ridge
     /// reaches is 0.65 — inside the window, and so unable to put
     /// structure where the quiet slab's derivation says there is none.
-    pub fn feature(i: u32) Feature {
-        if (i == 0) return .{ .c = SHELL_C, .r = SHELL_R };
-        var st = rng.Stream.region(0x5348_454C, i, 0); // "SHEL"
-        return .{
-            .c = .{ 0.15 + 0.30 * st.unit(), 0.20 + 0.60 * st.unit(), 0.20 + 0.60 * st.unit() },
-            .r = 0.12 + 0.08 * st.unit(),
+    pub fn feature(tp: TruthParams, i: u32) Feature {
+        var f: Feature = if (i == 0) .{ .c = SHELL_C, .r = SHELL_R } else blk: {
+            var st = rng.Stream.region(0x5348_454C, i, 0); // "SHEL"
+            break :blk .{
+                .c = .{ 0.15 + 0.30 * st.unit(), 0.20 + 0.60 * st.unit(), 0.20 + 0.60 * st.unit() },
+                .r = 0.12 + 0.08 * st.unit(),
+            };
         };
+        inline for (0..3) |a| f.c[a] += tp.shift[a];
+        return f;
     }
 
     /// One at the origin end, zero past `WINDOW_HI`, a raised cosine
@@ -254,7 +261,7 @@ pub const Truth = struct {
         var acc: f32 = 0;
         var i: u32 = 0;
         while (i < tp.features) : (i += 1) {
-            const ft = feature(i);
+            const ft = feature(tp, i);
             const d = [3]f32{ p[0] - ft.c[0], p[1] - ft.c[1], p[2] - ft.c[2] };
             const r = @sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
             const t = (r - ft.r) / w;
@@ -272,7 +279,7 @@ pub const Truth = struct {
         const w = SHELL_W / tp.sharpness;
         var i: u32 = 0;
         while (i < tp.features) : (i += 1) {
-            const ft = feature(i);
+            const ft = feature(tp, i);
             const d = [3]f32{ p[0] - ft.c[0], p[1] - ft.c[1], p[2] - ft.c[2] };
             const r = @sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
             if (@abs(r - ft.r) < 2 * w) return true;
@@ -1567,6 +1574,13 @@ pub const Hierarchy = struct {
     route_stream: rng.Stream,
     /// Per parent region, and only for the refined ones.
     sched: []RegionSched,
+    /// MARL-6's epoch marks. Diagnostics only — nothing reads them to
+    /// decide anything, which is the condition on tagging at all.
+    child_at_drift: usize = 0,
+    parent_at_drift: usize = 0,
+    events_at_drift: u64 = 0,
+    seen_at_drift: u64 = 0,
+    updates_at_drift: []u32 = &.{},
     /// Running mean of the routing score, so a score of any scale
     /// normalises to the target duty. An EWMA rather than a true mean
     /// because the scores move as the model learns, and a normaliser
@@ -1616,6 +1630,7 @@ pub const Hierarchy = struct {
         self.gpa.free(self.covered_events);
         self.gpa.free(self.post_sum);
         self.gpa.free(self.sched);
+        if (self.updates_at_drift.len > 0) self.gpa.free(self.updates_at_drift);
     }
 
     /// The routing score for a region, before normalisation.
@@ -1802,6 +1817,59 @@ pub const Hierarchy = struct {
     /// fires on the smooth swell is buying capacity for something ordinary
     /// deformation had in hand, which is the campaign's §5 failure —
     /// noise mistaken for complexity — wearing a different hat.
+    /// MARL-6: move the world. Only the target changes — no thawing, no
+    /// reparenting, no forgetting. The refined set, the frozen parents and
+    /// every kernel stay exactly as the old world left them, which is the
+    /// whole point: the premise under test is that a frozen coarse level
+    /// plus a residual child survives its function moving.
+    ///
+    /// Kernels are tagged by epoch for DIAGNOSTICS ONLY, and the tag costs
+    /// nothing to keep: the kernel arrays are append-only, so everything
+    /// below `child_at_drift` was born before the world moved. Nothing
+    /// reads the tag to decide anything.
+    pub fn drift(self: *Hierarchy, gpa: std.mem.Allocator, tp: TruthParams) !void {
+        self.parent.opts.truth = tp;
+        self.child.opts.truth = tp;
+        self.child_at_drift = self.child.kernels.items.len;
+        self.parent_at_drift = self.parent.kernels.items.len;
+        self.events_at_drift = self.parent.stats.events + self.child.stats.events;
+        self.seen_at_drift = self.seen;
+        if (self.updates_at_drift.len > 0) gpa.free(self.updates_at_drift);
+        self.updates_at_drift = try gpa.alloc(u32, self.child_at_drift);
+        for (self.child.kernels.items[0..self.child_at_drift], self.updates_at_drift) |*k, *u| u.* = k.updates;
+    }
+
+    /// The magnitude of what the CHILD is holding, on its own. The
+    /// sharpest detector of the semantic failure this phase is looking
+    /// for: a child holding unresolved detail of the current parent is
+    /// small, and a child holding `current target − historical parent`
+    /// has to carry the coarse structure the frozen parent no longer
+    /// explains.
+    pub fn childRms(self: *Hierarchy, pts: []const [3]f32) !f32 {
+        var acc: f64 = 0;
+        for (pts) |p| {
+            const c = try self.child.predict(p);
+            acc += @as(f64, c) * @as(f64, c);
+        }
+        return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len))));
+    }
+
+    /// Of the child kernels that existed when the world moved, how many
+    /// are still outside the band the target now has — and how many have
+    /// taken any real gradient since.
+    pub const Stranded = struct { at_drift: usize, outside_current: usize, still_active: usize };
+
+    pub fn strandedOf(self: *const Hierarchy) Stranded {
+        var outside: usize = 0;
+        var active: usize = 0;
+        for (self.child.kernels.items[0..self.child_at_drift], self.updates_at_drift) |*k, was| {
+            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+            if (!Truth.inShell(self.parent.opts.truth, mu)) outside += 1;
+            if (k.updates > was + 10) active += 1;
+        }
+        return .{ .at_drift = self.child_at_drift, .outside_current = outside, .still_active = active };
+    }
+
     /// The child's shell-band density over its density across the cells it
     /// occupies at all. One definition, used by the gate and the seedbed
     /// alike, because two spellings of a headline number is how a campaign
@@ -2998,4 +3066,118 @@ test "G22 (b) the Pareto improvement MARL-5 was asked for already existed, and i
     try testing.expect(biased.child.trainedFraction(10) >= thresholds.MARL4_TRAINED_FLOOR);
     try testing.expect(biased.child.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
     std.debug.print("  G22 (b): uniform {d:.5} at concentration {d:.2}; static residual bias {d:.5} at {d:.2}, on the same exemplars at the same duty ({s})\n", .{ try uniform.rms(pr.p, pr.y, null), uniform.childConcentration(), try biased.rms(pr.p, pr.y, null), biased.childConcentration(), @tagName(builtin.mode) });
+}
+
+// ── MARL-6's gates ────────────────────────────────────────────────────
+//
+// The first phase that tests the PREMISE. Two of four pre-registered
+// numbers held; the two that did not are recorded in `thresholds.zig`.
+// The outcome is Christian's B — RMS partially recovers while the
+// hierarchy's semantics degrade — which is the one an ordinary benchmark
+// would call success.
+
+test "G23 (a) freezing SURVIVES the world moving — and the first version of this gate was confounded" {
+    // What this gate was written to show, and does not: that the frozen
+    // parent is what breaks under drift. Its first draft compared a
+    // drifted hierarchy's parent against a STATIONARY control's and found
+    // it 1.23× worse — but the control had 160 000 exemplars on one world
+    // and the drifted arm 60 000 on its new one, so any learner whatever
+    // would have shown that. The number measured the budget, not the
+    // mechanism.
+    //
+    // Worse, the named mutation SURVIVED: making `freezeRegion` a no-op
+    // left the parent 1.32× off, no better. That is because freezing was
+    // never the operative commitment — in a refined region `observeOne`
+    // returns after routing, so the parent NEVER OBSERVES THERE AT ALL.
+    // Unfreezing changes only whether a neighbouring region's exemplar can
+    // reach a kernel across the face.
+    //
+    // So the comparison that isolates it is drift against drift, at
+    // identical budget, with the design choices switched off one at a
+    // time. And the answer is the opposite of what this phase set out to
+    // find — both choices are VINDICATED under drift:
+    //
+    //     frozen, parent cut off from refined regions   total 0.04905
+    //     unfrozen, still cut off                             0.05051
+    //     parent also observing in refined regions            0.06662
+    //
+    // Letting the parent keep learning where the child is learning makes
+    // its own error better and the PAIR's much worse, because the child is
+    // learning `y − parent` while the parent moves underneath it. That is
+    // MARL-2's freezing rationale, confirmed by an experiment designed to
+    // break it.
+    //
+    // MUTATION: the parent made to observe in refined regions too — the
+    // total gets worse and the assertion below fails.
+    const gpa = testing.allocator;
+    const tp = TruthParams{ .sharpness = 2 };
+    var moved = tp;
+    moved.shift = .{ 0, -0.10, 0 };
+    const pr = try probesOf(gpa, moved, 0xB0B, 2048);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    var h = try Hierarchy.init(gpa, .{ .truth = tp }, .{});
+    defer h.deinit();
+    try h.stream_n(100_000);
+    try h.drift(gpa, moved);
+    const child_at_move = try h.childRms(pr.p);
+    const parent_at_move = try h.parentRms(pr.p, pr.y);
+    try h.stream_n(60_000);
+
+    // The coarse level does not repair itself: it is neither observing in
+    // the regions that moved nor free to move there.
+    const parent_after = try h.parentRms(pr.p, pr.y);
+    try testing.expect(parent_after > parent_at_move * 0.95);
+    // And the child takes the job on — which is the semantic degradation,
+    // `current target − historical parent` rather than unresolved detail.
+    const child_after = try h.childRms(pr.p);
+    try testing.expect(child_after > child_at_move * 1.2);
+    // The pair still recovers most of the way, which is outcome B: an
+    // ordinary benchmark would call this success.
+    try testing.expect((try h.rms(pr.p, pr.y, null)) < 0.06);
+    std.debug.print("\n  G23 (a): across the move the parent went {d:.5} → {d:.5} (it cannot repair) while the child went {d:.5} → {d:.5} (it takes over); the pair reaches {d:.5} ({s})\n", .{ parent_at_move, parent_after, child_at_move, child_after, try h.rms(pr.p, pr.y, null), @tagName(builtin.mode) });
+}
+
+test "G23 (b) capacity is stranded where the structure used to be, and refinement now describes a world that has gone" {
+    // Kernels cannot follow the world: MARL-0 measured centre drift at
+    // 0.0009 of the domain over a whole run, so a kernel born on the old
+    // ridge dies on the old ridge. And a region, once refined, is never
+    // unrefined — so after a move the refined set describes where
+    // structure USED to be, diluted by wherever it went.
+    //
+    // MUTATION: none is available and none is needed, because the gate
+    // carries its control — the stationary arm runs the same length on the
+    // same seed and is compared against directly. A stranding that is
+    // merely what any run shows would fail the comparison below.
+    const gpa = testing.allocator;
+    const tp = TruthParams{ .sharpness = 2 };
+    var moved = tp;
+    moved.shift = .{ 0, -0.30, 0 }; // large: into regions never pressured
+
+    var control = try Hierarchy.init(gpa, .{ .truth = tp }, .{});
+    defer control.deinit();
+    try control.stream_n(100_000);
+    try control.drift(gpa, tp); // marks the epoch without moving anything
+    try control.stream_n(60_000);
+
+    var drifted = try Hierarchy.init(gpa, .{ .truth = tp }, .{});
+    defer drifted.deinit();
+    try drifted.stream_n(100_000);
+    try drifted.drift(gpa, moved);
+    try drifted.stream_n(60_000);
+
+    const sc = control.strandedOf();
+    const sd = drifted.strandedOf();
+    const frac_c = @as(f32, @floatFromInt(sc.outside_current)) / @as(f32, @floatFromInt(sc.at_drift));
+    const frac_d = @as(f32, @floatFromInt(sd.outside_current)) / @as(f32, @floatFromInt(sd.at_drift));
+    try testing.expect(frac_d >= thresholds.MARL6_STRANDED);
+    try testing.expect(frac_d > frac_c); // not merely what any run shows
+
+    const pc = control.precision();
+    const pd = drifted.precision();
+    const prec_c = @as(f32, @floatFromInt(pc.on_shell)) / @as(f32, @floatFromInt(pc.refined));
+    const prec_d = @as(f32, @floatFromInt(pd.on_shell)) / @as(f32, @floatFromInt(pd.refined));
+    try testing.expect(prec_d <= prec_c * thresholds.MARL6_PRECISION_FALL);
+    std.debug.print("  G23 (b): {d:.3} of pre-move child kernels stranded outside the current band against the control's {d:.3}; refinement precision {d:.3} against {d:.3} ({d:.2}×) ({s})\n", .{ frac_d, frac_c, prec_d, prec_c, prec_d / prec_c, @tagName(builtin.mode) });
 }

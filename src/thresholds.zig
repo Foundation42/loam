@@ -945,4 +945,105 @@ pub const MARL5_LAG_HELPS: f32 = 1.02;
 // learning work — turns out to look like. Measured first, scheduled from
 // never.
 
+// ── MARL-6 (drift: the frozen parent under a moving world) ───────────
+//
+// From `tools/marl6_predict.py`, before its runs. The first experiment
+// that tests the PREMISE rather than a mechanism: the frozen-parent delta
+// semantics say `child ≈ unresolved detail of the current parent`, and
+// this moves the world to find out whether that survives or degrades into
+// `child ≈ current target − historical parent` — the same algebra, a
+// different architecture.
+//
+// Two magnitudes at a known exemplar count, with a stationary control of
+// identical length. Small displacement is 0.6 parent regions; large is
+// 1.8. Nothing repairs anything: no thawing, reparenting or forgetting.
+
+/// G23 (a): the child's RMS contribution after SMALL drift, over the
+/// stationary control's.
+///
+/// PROPOSED, and it disagrees with Christian's expectation 6 on purpose.
+/// He expects large drift to expose the frozen-parent problem more
+/// strongly; for the SEMANTIC failure specifically I predict the opposite,
+/// structurally:
+///
+///   SMALL drift lands the new ridge in regions ALREADY REFINED, whose
+///   parents are frozen and cannot learn it. The child is the only thing
+///   that can, and it must carry the shell's full amplitude rather than a
+///   fine-scale residual — which is "current target − historical parent",
+///   exactly the degradation this phase exists to detect.
+///
+///   LARGE drift lands it in regions never pressured, whose parents are
+///   NOT frozen and learn it normally. The damage there is stranded
+///   capacity in the abandoned regions: a different pathology, and a
+///   cheaper one.
+///
+/// So the same ratio under large drift should be SMALLER than under
+/// small. If it inverts, my reasoning is wrong and his expectation was
+/// right — which is why both are run and why the ordering is gated.
+///
+/// **REFUTED as a magnitude, and the ORDERING is not established either.**
+/// Measured 1.26, 1.50, 1.20, 1.21 for small drift across two sharpnesses
+/// and two seeds — one of four reaches 1.5. And the small-over-large
+/// ordering held 3 of 4, inverting at sharpness ×4 seed 7 (1.20 against
+/// 1.34), so the child's magnitude is too noisy to carry the claim. It was
+/// the wrong instrument: TOTAL RMS separates the two drifts 4 of 4.
+///
+/// On that instrument the reasoning holds, WITH A CONDITION neither of us
+/// stated: small drift is worse than large only once enough of the domain
+/// has been frozen. Damage relative to the stationary control, by how long
+/// the model ran before the world moved —
+///
+///     pre-drift    refined    small    large
+///      100 000        36       1.28×   1.39×    ← large is worse
+///      200 000        38       1.64×   1.54×
+///      300 000        41       1.68×   1.52×    ← small is worse
+///
+/// The harm from a small move GROWS with the model's own age while the
+/// harm from a large one does not. Ossification is an exposure that
+/// deepens, and the crossover is where commitment to the frozen parent
+/// outweighs having a free parent elsewhere. No gate: it needs a
+/// three-point sweep to state at all, and one point of it would be a
+/// number pretending to be a law.
+pub const MARL6_CHILD_MAGNITUDE: f32 = 1.5;
+
+/// G23 (b): child kernels that existed at the drift and are still outside
+/// the CURRENT band when the run ends.
+///
+/// PROPOSED as a floor, and a low one, because they cannot leave: MARL-0
+/// measured centre drift at 0.0009 of the domain on average over a whole
+/// run, so a kernel born on the old ridge stays on the old ridge. Under
+/// large drift the two bands share almost nothing.
+pub const MARL6_STRANDED: f32 = 0.5;
+
+/// G23 (c): learning events in the window after the drift, over the same
+/// window in the stationary control.
+///
+/// PROPOSED: the surprise threshold is 0.02 and the ridge is 0.9 tall, so
+/// every exemplar landing on newly-wrong structure is a learning event,
+/// against a settled rate of about 12% of exemplars by 200 000.
+///
+/// **REFUTED.** Measured 1.11 (small) and 1.28 (large). The derivation was
+/// wrong in a way worth keeping: it assumed every exemplar landing on
+/// newly-wrong structure becomes a learning event, but the band is about
+/// 15% of the domain, the two bands overlap, and most of those exemplars
+/// were provoking events already. The world moving is a much quieter
+/// event than it feels like it should be — which is itself the finding,
+/// because a system that barely notices is a system that will not repair
+/// itself unprompted.
+pub const MARL6_REACTIVATION: f32 = 2.0;
+
+/// G23 (d): refinement precision against the CURRENT target after large
+/// drift, over the stationary control's.
+///
+/// PROPOSED: regions are refined once and never unrefined, so after a move
+/// the refined set describes where structure USED to be. Only a modest
+/// fall is required — newly pressured regions are still refined
+/// correctly, so the set is DILUTED rather than replaced.
+pub const MARL6_PRECISION_FALL: f32 = 0.85;
+
+// NOT gated, at Christian's instruction: that RMS fails to recover. It may
+// recover well, and recovering well while the hierarchy ossifies is
+// outcome B — the one an ordinary benchmark would call success. Reported
+// only, along with the hysteresis run.
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

@@ -4122,6 +4122,149 @@ evenly does not slow learning down, it stops it.** Uniform routing at 40%
 duty is flat across a fourfold increase in exemplars. The budget is not
 merely scarce; where it goes is the whole of the learning.
 
+## MARL-6 — the world moves (Monday 2026-09-07)
+
+The first phase that tests the PREMISE rather than a mechanism. The frozen
+delta semantics say `child ≈ unresolved detail of the current parent`;
+MARL-6 moves the target at a known exemplar count and asks whether that
+survives or degrades into `child ≈ current target − historical parent` —
+the same algebra, a different architecture. Nothing repairs anything: no
+thawing, reparenting, forgetting or child collapse, as instructed.
+
+**The outcome is Christian's B**, and one of his three shapes fits almost
+exactly: RMS recovers most of the way while the hierarchy's semantics
+degrade — the outcome an ordinary benchmark would call success.
+
+### What happened, at sharpness ×2, the world moving at 200 000 exemplars
+
+                        RMS      parent    child   events  births
+    stationary +100k   0.03166   0.07146  0.07386   42772     487
+    small drift +100k  0.05203   0.09281  0.09330   44647     851
+    large drift +100k  0.04882   0.08855  0.08795   47943    1989
+
+The parent barely moves across the whole recovery (0.09351 → 0.09281 under
+small drift) while the child's contribution climbs (0.07191 → 0.09330).
+The coarse level stays wrong about the world it is in and the fine level
+takes the job on. That is the degradation, stated in two columns.
+
+| | predicted | measured | |
+|---|---|---|---|
+| `MARL6_STRANDED` pre-move kernels outside the current band | ≥ 0.5 | 0.795 / 0.917 | ✅ |
+| `MARL6_PRECISION_FALL` precision vs the current target | ≤ 0.85 | 0.69 | ✅ |
+| `MARL6_CHILD_MAGNITUDE` child's contribution, small drift | ≥ 1.5 | 1.20–1.50 | ❌ |
+| `MARL6_REACTIVATION` learning events after the move | ≥ 2.0 | 1.11 / 1.28 | ❌ |
+
+### Two of my own claims, corrected by the data
+
+**I disagreed with Christian's expectation 6 and was half right, on the
+wrong instrument.** He expected large drift to expose the frozen parent
+more strongly; I pre-registered the opposite, reasoning that small drift
+lands the new ridge in regions ALREADY REFINED whose parents cannot learn
+it, while large drift lands it in fresh regions whose parents can. On the
+child's magnitude — the instrument I chose — the ordering held 3 of 4 and
+inverted at sharpness ×4 seed 7. Too noisy to carry it. On TOTAL RMS it
+separates 4 of 4, and the reasoning holds.
+
+But with a condition neither of us stated:
+
+    pre-drift    refined regions    small     large
+     100 000           36           1.28×     1.39×    ← large is worse
+     200 000           38           1.64×     1.54×
+     300 000           41           1.68×     1.52×    ← small is worse
+
+(damage relative to the stationary control at the same length.)
+
+**The harm from a small move grows with the model's own age; the harm from
+a large one does not.** Ossification is an exposure that deepens, and the
+crossover is where commitment to the frozen parent outweighs having a free
+parent somewhere else. One point of that sweep would have been a number
+pretending to be a law, which is why none of it is gated.
+
+**And the world moving is far quieter than predicted.** Learning events
+rose only 1.11× (small) and 1.28× (large) against a predicted 2.0. The
+derivation assumed every exemplar on newly-wrong structure becomes an
+event; the band is 15% of the domain, the two bands overlap, and most of
+those exemplars were provoking events already. A system that barely
+notices its world has moved is a system that will not repair itself
+unprompted — which is the more useful reading of a refuted threshold.
+
+### The gate that was confounded, and what fixing it found
+
+G23 (a)'s first draft compared the drifted hierarchy's parent against a
+STATIONARY control's and found it 1.23× worse. But the control had 160 000
+exemplars on one world and the drifted arm 60 000 on its new one, so any
+learner whatever would have shown that. **The number measured the budget,
+not the mechanism.**
+
+The named mutation then SURVIVED, which is what exposed it: making
+`freezeRegion` a no-op left the parent 1.32× off, no better. Freezing was
+never the operative commitment — in a refined region `observeOne` returns
+after routing, so **the parent never observes there at all**. Unfreezing
+only changes whether a neighbouring region's exemplar can reach a kernel
+across the face.
+
+Rebuilt as drift against drift at identical budget, with each design
+choice switched off in turn:
+
+    frozen, parent cut off from refined regions   total 0.04905
+    unfrozen, still cut off                             0.05051
+    parent also observing in refined regions            0.06662
+
+**Both choices are vindicated by the experiment designed to break them.**
+Letting the parent keep learning where the child is learning improves its
+own error and makes the PAIR's much worse, because the child is learning
+`y − parent` while the parent moves underneath it. That is MARL-2's
+freezing rationale, confirmed under exactly the conditions expected to
+falsify it.
+
+So the honest headline is not "the frozen parent fails under drift". It is:
+
+> **Freezing survives a moving world. What does not survive is the
+> capacity already committed to where the world used to be.**
+
+91.4% of the child kernels alive at a large move are still outside the
+band when the run ends, against a stationary control's 74.0%; refinement
+precision against the current target falls to 0.618 from 0.973. The
+kernels cannot follow — MARL-0 measured centre drift at 0.0009 of the
+domain over a whole run — and a region once refined is never unrefined.
+
+### Hysteresis: no memory, only accumulation
+
+The cheap diagnostic, and it is unambiguous. Moving the shell back to
+where it started:
+
+    the moment it returns   RMS 0.10076   against 0.03528 when it left
+    after another 100 000        0.04113   with 7 883 child kernels (from 4 339)
+
+The return spike is the same magnitude as the original departure — the old
+representation confers **no advantage whatever** on its own former world —
+and the child population nearly doubled without recovering the accuracy it
+had. A residual hierarchy with frozen historical structure does not
+possess a primitive memory. It possesses corrective archaeology, and the
+archaeology accumulates monotonically.
+
+### The gates, and what each was paid for
+
+| gate | mutation | result |
+|---|---|---|
+| G23 (a) freezing survives the move; the parent cannot repair and the child takes over | the parent made to observe in refined regions too | fails |
+| G23 (b) capacity is stranded where structure used to be; refinement describes a world that has gone | none needed — the gate carries a stationary control at the same length | — |
+
+### What MARL-7 has to be about
+
+Not thawing. The experiment says freezing is right and the parent's
+silence in refined regions is right. The thing that does not survive is
+**committed capacity that cannot be recalled**, and the two mechanisms
+that would address it are the two this campaign has deliberately never
+built: unrefining a region whose structure has left, and letting a child
+kernel die. The campaign's §15 called that erosion, and MARL-6 is the
+first phase to produce a concrete reason to want it.
+
+Christian's own ordering still stands ahead of that, though: the
+responsibility-radius debt is a 6× multiplier on the evidence budget, and
+every conclusion about scarcity from MARL-3 onward was measured while
+paying it.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:
