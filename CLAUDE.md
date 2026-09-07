@@ -23,7 +23,14 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -- --exemplars 200000           # MARL-0: local online RBF learning (docs/MARL_CAMPAIGN.md)
     zig build marl -- --exemplars 1000000 --interference --pgm out/m   # the error field as a picture, and what one event disturbed
     zig build marl -- --optimizer adam             # the instrument: the batch optimiser, and why it is wrong per-exemplar
-    zig build test -Dtest-filter="G17"             # MARL's gates; python3 tools/marl_predict.py is where their numbers came from
+    zig build test -Dtest-filter="G17"             # MARL-0's gates; python3 tools/marl_predict.py is where their numbers came from
+    zig build marl -- --arms                       # MARL-1 (1): birth vs deformation at IDENTICAL capacity
+    zig build marl -- --responsibility 3           # MARL-1 (3): who may learn, as against who is summed — a sixth of the work
+    zig build marl -- --features 4 --sharpness 2   # MARL-1 (2): the target's complexity, at fixed coverage
+    zig build marl -- --coverage 0.10              # MARL-1 (4): the under-birth divergence regime
+    zig build marl -- --budget 16                  # MARL-1 (5): saturation, forced
+    zig build marl -- --tsv                        # one line of numbers, for driving a sweep
+    zig build test -Dtest-filter="G18"             # MARL-1's gates; tools/marl1_predict.py is where their numbers came from
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -58,6 +65,14 @@ storage, because kernels are a parameter list and a seam pass would
 interpolate them. MARL's kernel is a deliberate TWIN of `rbf.zig`'s, held
 to it bit for bit by G17 (a): a learning experiment must not be able to
 move the kernel out from under rill and the shader.
+
+Two distinctions MARL will not survive losing. SUPPORT is the full cutoff
+gather and prediction always sums it, so inference semantics never move;
+RESPONSIBILITY is the subset permitted to take a gradient, and the NLMS
+normaliser Σg² is taken over that subset alone (G18 c). And BIRTH is
+topology acquisition while DESCENT is geometry adaptation — they are
+measured apart, at capacity held identical, or the number measures both
+(G18 a).
 
 ## The ledger
 

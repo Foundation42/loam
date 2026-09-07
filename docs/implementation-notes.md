@@ -3350,6 +3350,233 @@ best gain in the sweep, which was luck: it was written before any run.
   at 40% of the widest the clamp allows needs eight times as many of
   itself to satisfy the same coverage, and the budget runs out first.
 
+## MARL-1 — the five experiments, in Christian's order (Monday 2026-09-07)
+
+Christian's ordering after MARL-0's numbers, and the rulings that came
+with it: report the birth-versus-deformation comparison with its capacity
+and work ratios beside it; make target complexity controllable; separate
+support from responsibility; keep the under-birth divergence as an
+explicit failure mode; force the saturation the natural experiment never
+reached. Parallel learning stays untouched.
+
+Every number below was predicted before it was measured, by
+`tools/marl1_predict.py` — a second program that builds a SYNTHETIC basis
+with MARL-0's own birth rule rather than consulting a run. That the
+synthetic basis reproduces the measured overlap (81.6 against 86) is the
+check that it is the right basis to be predicting from.
+
+### 1. At identical capacity, what does deformation buy?
+
+    arm                              RMS   kernels     updates   mean |w|
+    A   births, no descent       0.05149      3264  12 019 596     0.0911
+    B'  A's topology, descent    0.02394      3264   9 210 594     0.0917
+    C   births and descent       0.02390      3648   9 158 380     0.0833
+
+**RMS_A/RMS_B' = 2.15**, against a floor of 2 derived from the greedy-to-
+least-squares ratio of a synthetic basis (1.49 available on the weights
+alone; descent also has the geometry, and beats it). K is identical by
+construction — B' reseeds from A and scores A's RMS exactly before its
+first exemplar, which is the gate's own check that the reseed carries the
+topology and nothing else.
+
+The capacity control turned out not to matter, which is worth saying
+plainly because the control was still the right thing to insist on:
+**RMS_A/RMS_C is 2.15 as well.** Arm C's extra 384 kernels — 12% more
+capacity — buy 0.2%. The confound I warned about was real in principle and
+negligible in fact.
+
+Two things fell out that were not asked for:
+
+- **Arm A is FLAT.** 0.05293 at 40 000 exemplars, then 0.05040, 0.05076,
+  0.05055, 0.05083 at 80 000 through 400 000. Birth-only reaches its
+  ceiling almost immediately and a tenfold increase in experience does
+  nothing for it. Everything after the topology is discovered is
+  deformation.
+- **The ratio therefore compounds**: 1.17, 1.54, 1.80, 2.30, 3.00 across
+  those same horizons. Which exposes a gap in my own pre-registration —
+  `MARL1_DESCENT_GAIN = 2` never said AT WHAT N. A floor on a growing
+  quantity is not a threshold until its horizon is named. Recorded and the
+  horizon named (`MARL1_DESCENT_N = 300 000`, where the ratio is 2.84);
+  the number itself stays where it was written.
+
+Arm A also does MORE work than C — 12.0M updates against 9.2M — because a
+worse model leaves more exemplars above the surprise threshold. Birth-only
+is not the cheap arm.
+
+### 2. Fixed coverage, variable target complexity
+
+`--features N --sharpness S --frequency F`, 200 000 exemplars each, and
+the shell band's volume measured from the target rather than hard-coded
+(it was hard-coded for one sweep, which reported a fall in density where
+the truth was a rise: the band is two widths either side of a ridge, so
+`sharpness` moves it).
+
+    target              kernels   events    rms₀    gain   shell/unit³   quiet
+    1 feature              3648    35 483  0.1440   6.19        8 402       0
+    2 features             3829    39 395  0.2020   6.81        9 129       0
+    4 features             4365    52 821  0.2753   6.54        9 350       0
+    8 features            15 341  100 061  0.3828   0.33       26 608     210
+    sharpness ×2           3718    37 733  0.1222   2.62       10 278       0
+    sharpness ×4           3701    36 884  0.1103   1.80       10 326       0
+    frequency ×2           3782    38 207  0.1443   5.96        8 537       0
+    4 features, sharp ×2   4516    56 506  0.1892   2.24       10 748       0
+
+The answer to "does capacity follow task complexity at fixed coverage" is
+sharper and less flattering than the campaign hoped:
+
+> **Kernels per unit of structured volume barely moves. What follows
+> complexity is how much structure there is to tile, not how hard it is.**
+
+Shell-band density sits between 8 400 and 10 700 across every converging
+configuration — a spread of 1.3 over a fourfold change in feature count
+and a fourfold change in ridge sharpness. Total capacity rises (3 648 →
+4 365 for four features) exactly because the band's volume rises. The
+allocation rule is GEOMETRIC.
+
+The work is not. Events go 35 483 → 39 395 → 52 821 → 100 061 with the
+feature count, and the held-out gain collapses with sharpness (6.19 → 2.62
+→ 1.80) while the capacity spent on the ridge does not move. So MARL-0
+cannot buy resolution with capacity: births stop as soon as space is
+tiled, whether or not the residual there is resolved. **That is the
+concrete case for residual-driven refinement** — the campaign's §5, and
+item 6 on Christian's list — and it is now evidence rather than
+anticipation.
+
+Eight features tips the whole thing into the divergence regime of
+experiment 4 (gain 0.33, 45 261 saturation events) and it is the ONE place
+the quiet slab is not empty. It fails the pre-registered "zero at every
+complexity" claim, and it fails it as a CONSEQUENCE of divergence rather
+than of reach: recorded as a failed claim, not amended, because what it
+teaches is that MARL-0's structural guarantees about where capacity goes
+are conditional on the model converging at all.
+
+### 3. Responsibility is separable from support, and most of the work was waste
+
+Christian's ruling, implemented as he specified: support is the full
+cutoff gather and prediction sums all of it, so inference semantics do not
+move and `rbf.CUTOFF` is untouched; responsibility is the subset permitted
+a gradient, and the NLMS normaliser Σg² is taken over that subset alone.
+
+    R (widths)   predicted   responsible    gain     updates    work
+    5.657 (all)       59.5         86.04    6.19   9 158 383   1.000
+    4.0               21.0         32.57    6.25   3 467 590   0.379
+    3.0                8.9         14.25    6.32   1 519 486   0.166
+    2.5                5.1          8.45    6.18     907 418   0.099
+    2.0                2.6          4.43    6.12     476 681   0.052
+    1.5                1.1          1.95    5.04     216 044   0.024
+
+The packing prediction (R/r_cov)³ tracks the measurement within a factor
+of 1.5 to 1.8 at every radius, inside the pre-registered tolerance of 3.
+
+The result is better than "cheaper for the same accuracy":
+
+> **R = 3 is the most accurate setting tested — 6.32 against 6.19 — at
+> one sixth of the work. R = 2.5 matches full accuracy at a tenth.**
+
+Letting distant kernels learn does not merely cost work, it costs
+ACCURACY. A kernel two hundredths of a unit away and reading 10⁻⁵ is
+handed a share of a residual it cannot represent, and it moves. Only below
+about four responsible kernels does convergence start to suffer (R = 1.5,
+gain 5.04). So the answer to "how few kernels need to participate in
+learning without harming convergence" is **about eight, from
+eighty-six** — and every one of the reasons Christian gave for wanting
+that number small before parallelising still applies, with a factor of ten
+now attached to them.
+
+One reporting bug worth recording: the first version of this sweep printed
+86 at every radius, because the touched count was taken over the SUPPORT
+set. The number that moves is the responsibility count and it had to be
+counted separately. G18 (c) now asserts that it moves AND that the work
+moves with it — a count that falls while the gradient loop still runs over
+everything has saved nothing.
+
+### 4. Under-birth is over-responsibility, by two independent routes
+
+Christian's mechanism claim, pre-registered as `MARL1_OVERRESPONSIBILITY`
+= 1.25, the target's own range: every diverging run must show a mean |w|
+above it and every converging run below it. It separates the two
+populations by two orders of magnitude, with nothing near the line.
+
+    by REFUSAL (coverage)        by BUDGET (kernels per region)
+    cov     gain   mean |w|      budget    gain   mean |w|   saturations
+    0.05   0.790     13.84            4   0.165      13.59      105 538
+    0.08   0.585     14.03            8   0.990      13.05      103 853
+    0.10   0.419     13.83           16   0.918      12.71       95 940
+    0.12   0.679     13.81           24   5.535       0.100        2 697
+    0.15   0.606     13.81           32   6.092       0.086          271
+    0.20   4.716      0.148           64   6.192       0.083            0
+    0.35   6.192      0.083
+    0.50   5.997      0.072
+
+Two mechanisms that have nothing in common — a birth REFUSED because
+coverage was satisfied, and a birth CAPPED because the region was full —
+produce the same pathology and the same signature. Too few kernels are
+made answerable for too much territory, weights leave the target's range
+by an order of magnitude, and the resulting predictions then corrupt the
+coverage decision that would have birthed more. The transition is sharp
+and it is not graceful: coverage 0.15 → 0.20 and budget 16 → 24 are both
+a single step from divergence to a working model.
+
+That the same statistic separates both routes is what makes it a mechanism
+rather than a correlation, and it is why G18 (d) tests both.
+
+### 5. Deliberate saturation
+
+`MARL1_SATURATION_BUDGET = 16` predicted that a budget that small must
+saturate and the default 64 must not; both hold. What the sweep adds is
+that saturation is not a graceful degradation into a smaller model — it is
+a route into experiment 4's regime, and the whole transition sits between
+budget 24 (2 697 saturation events, gain 5.53) and budget 16 (95 940
+events, gain 0.918). A capped region cannot birth the kernel its residual
+is asking for, so the kernels it has absorb the demand instead.
+
+So the campaign's §10 instruction — record the saturation event rather
+than inventing a refinement algorithm — has now been paid off with data,
+and what the data says is that the saturating region needs somewhere for
+the residual to GO. That is refinement's brief.
+
+### The gates, and what each was paid for
+
+| gate | mutation | result |
+|---|---|---|
+| G18 (a) deformation at identical capacity | the births toggle ignored (B' is no longer capacity-controlled) | fails |
+| | B' with both rates zero | executed in the gate: RMS unchanged |
+| G18 (b) capacity per unit structure is set by coverage | birth made unconditional | fails |
+| G18 (c) responsibility separates from support | the responsible count taken over the support set | fails |
+| | gradients over the support set (count moves, work does not) | fails |
+| G18 (d) under-birth is over-responsibility | the gate carries its own control, both routes | — |
+| G18 (e) the budget bites below the natural occupancy | the budget test removed | fails |
+
+G18 (b) needed a second arm before it could fail at all. Stability of
+density across complexity is not a claim a mutation can break — an
+unconditional birth rule produces a stable density too, for an entirely
+different reason. So the gate also asserts the CAUSAL half: moving
+`coverage` at fixed complexity must move the density (5 191 → 9 210), and
+a birth rule that ignores coverage fails that while passing everything
+else. Two mutations were reported as surviving when they had only failed
+to compile; the harness now recognises a build error as inconclusive
+rather than as a bite, which is the second time that distinction has
+mattered.
+
+### What this changes about the campaign
+
+- Capacity allocation in MARL-0 is geometric, not epistemic. It tiles
+  structure. The quiet slab stays empty because it has no structure, not
+  because the model judged it easy — and a sharp ridge gets no more
+  capacity than a smooth swell of the same band volume. **Residual-driven
+  refinement is the fix and experiment 2 is its brief.**
+- Work, by contrast, IS epistemic: events track difficulty even where
+  capacity does not.
+- The responsibility radius is a free order of magnitude, and it should be
+  settled before parallelism rather than after — a tenth of the gradient
+  packets, a tenth of the overlapping commits, and a locality graph with a
+  tenth of the edges is a different parallelisation problem from the one
+  MARL-0 would have handed over.
+- Divergence has one mechanism and two doors. Birth may eventually need to
+  depend on whether the update the existing kernels would need exceeds a
+  bounded responsibility, not only on coverage — which is Christian's
+  suggestion, and experiment 4 is the evidence for it.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

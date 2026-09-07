@@ -180,6 +180,20 @@ pub fn reachOf(s: Shape) f32 {
 /// at 0.70, a kernel reaches at most `h`, and the slab starts at 0.85).
 /// What that slab is for is the capacity question: a learner that spends
 /// nothing there is allocating by epistemic complexity and not by volume.
+/// How complex the target is (MARL-1, Christian: "make target complexity
+/// explicitly controllable, preferably with at least feature count and
+/// spatial frequency/sharpness"). The defaults ARE MARL-0's target, term
+/// for term, so every G17 number still stands.
+pub const TruthParams = struct {
+    /// Sharp shells. Feature 0 is MARL-0's; the rest are placed by a
+    /// counter-based draw inside a box that cannot reach the quiet slab.
+    features: u32 = 1,
+    /// Multiplies 1/W: higher is a thinner ridge and a harder target.
+    sharpness: f32 = 1,
+    /// Multiplies the swell's three spatial frequencies.
+    frequency: f32 = 1,
+};
+
 pub const Truth = struct {
     pub const SHELL_C = [3]f32{ 0.30, 0.62, 0.46 };
     pub const SHELL_R: f32 = 0.20;
@@ -202,6 +216,21 @@ pub const Truth = struct {
 
     const TAU: f32 = 6.283185307179586;
 
+    pub const Feature = struct { c: [3]f32, r: f32 };
+
+    /// Feature i. Zero is MARL-0's shell exactly; the rest sit in
+    /// x ∈ [0.15, 0.45] with radius ≤ 0.20, so the furthest any ridge
+    /// reaches is 0.65 — inside the window, and so unable to put
+    /// structure where the quiet slab's derivation says there is none.
+    pub fn feature(i: u32) Feature {
+        if (i == 0) return .{ .c = SHELL_C, .r = SHELL_R };
+        var st = rng.Stream.region(0x5348_454C, i, 0); // "SHEL"
+        return .{
+            .c = .{ 0.15 + 0.30 * st.unit(), 0.20 + 0.60 * st.unit(), 0.20 + 0.60 * st.unit() },
+            .r = 0.12 + 0.08 * st.unit(),
+        };
+    }
+
     /// One at the origin end, zero past `WINDOW_HI`, a raised cosine
     /// between — so the swell dies smoothly and the quiet slab is not a
     /// second sharp feature.
@@ -212,39 +241,75 @@ pub const Truth = struct {
         return 0.5 * (1 + fmath.cosf(std.math.pi * u));
     }
 
-    pub fn swell(p: [3]f32) f32 {
+    pub fn swell(tp: TruthParams, p: [3]f32) f32 {
+        const f = tp.frequency;
         return SWELL_A *
-            fmath.sinf(TAU * (0.9 * p[0] + 0.13)) *
-            fmath.cosf(TAU * (0.7 * p[1] - 0.21)) *
-            fmath.sinf(TAU * (0.6 * p[2] + 0.37));
+            fmath.sinf(TAU * (0.9 * f * p[0] + 0.13)) *
+            fmath.cosf(TAU * (0.7 * f * p[1] - 0.21)) *
+            fmath.sinf(TAU * (0.6 * f * p[2] + 0.37));
     }
 
-    pub fn shell(p: [3]f32) f32 {
-        const d = [3]f32{ p[0] - SHELL_C[0], p[1] - SHELL_C[1], p[2] - SHELL_C[2] };
-        const r = @sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-        const t = (r - SHELL_R) / SHELL_W;
-        const t2 = t * t;
-        // Past exp(−16) the ridge is a tenth of a millionth of its peak:
-        // cut it, the way a kernel is cut, so "outside the shell" is a
-        // value and not an asymptote.
-        if (t2 > 16) return 0;
-        return SHELL_A * fmath.expf(-t2);
+    pub fn shell(tp: TruthParams, p: [3]f32) f32 {
+        const w = SHELL_W / tp.sharpness;
+        var acc: f32 = 0;
+        var i: u32 = 0;
+        while (i < tp.features) : (i += 1) {
+            const ft = feature(i);
+            const d = [3]f32{ p[0] - ft.c[0], p[1] - ft.c[1], p[2] - ft.c[2] };
+            const r = @sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            const t = (r - ft.r) / w;
+            const t2 = t * t;
+            // Past exp(−16) the ridge is a tenth of a millionth of its
+            // peak: cut it, the way a kernel is cut, so "outside the
+            // shell" is a value and not an asymptote.
+            if (t2 <= 16) acc += SHELL_A * fmath.expf(-t2);
+        }
+        return acc;
     }
 
-    /// Whether p is in the shell's band — within two widths of the ridge.
-    pub fn inShell(p: [3]f32) bool {
-        const d = [3]f32{ p[0] - SHELL_C[0], p[1] - SHELL_C[1], p[2] - SHELL_C[2] };
-        const r = @sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-        return @abs(r - SHELL_R) < 2 * SHELL_W;
+    /// Within two widths of any ridge.
+    pub fn inShell(tp: TruthParams, p: [3]f32) bool {
+        const w = SHELL_W / tp.sharpness;
+        var i: u32 = 0;
+        while (i < tp.features) : (i += 1) {
+            const ft = feature(i);
+            const d = [3]f32{ p[0] - ft.c[0], p[1] - ft.c[1], p[2] - ft.c[2] };
+            const r = @sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (@abs(r - ft.r) < 2 * w) return true;
+        }
+        return false;
     }
 
-    pub fn inQuiet(p: [3]f32) bool {
+    pub fn inQuiet(_: TruthParams, p: [3]f32) bool {
         return p[0] > QUIET_X;
     }
 };
 
+/// The volume of a region of the target, by a fixed deterministic
+/// quadrature. Hard-coding it was wrong the moment `sharpness` existed:
+/// the shell BAND is defined as two widths either side of a ridge, so
+/// halving the width halves the band, and a density divided by the
+/// one-feature volume reports a fall where the truth is a rise.
+pub fn volumeOf(tp: TruthParams, comptime pred: fn (TruthParams, [3]f32) bool) f32 {
+    const N: u32 = 200_000;
+    var st = rng.Stream.region(0x564F_4C55, 0, 0); // "VOLU"
+    var hit: u32 = 0;
+    var i: u32 = 0;
+    while (i < N) : (i += 1) {
+        const p = [3]f32{ st.unit(), st.unit(), st.unit() };
+        if (pred(tp, p)) hit += 1;
+    }
+    return @as(f32, @floatFromInt(hit)) / @as(f32, @floatFromInt(N));
+}
+
+pub fn truthOf(tp: TruthParams, p: [3]f32) f32 {
+    return Truth.window(p[0]) * Truth.swell(tp, p) + Truth.shell(tp, p);
+}
+
+/// MARL-0's target: the defaults, and the one every G17 number was
+/// measured against.
 pub fn truth(p: [3]f32) f32 {
-    return Truth.window(p[0]) * Truth.swell(p) + Truth.shell(p);
+    return truthOf(.{}, p);
 }
 
 // ── The model ─────────────────────────────────────────────────────────
@@ -318,6 +383,36 @@ pub const Options = struct {
     /// costs nothing at the defaults and still bounds the pathological
     /// case. `Stats.trust_clamped` says whether it ever bit.
     trust: f32 = 1.0 / 3.0,
+    /// The target. MARL-1 experiment 2 varies this at fixed `coverage`.
+    truth: TruthParams = .{},
+    /// Births permitted. False FREEZES THE TOPOLOGY — MARL-1 experiment 1
+    /// reruns arm A's discovered kernels with this off, so the question
+    /// "given identical discovered capacity, what does deformation buy?"
+    /// is asked with the capacity actually held identical (Christian: the
+    /// A/C comparison is not a pure descent metric while C ends with 12%
+    /// more kernels).
+    births: bool = true,
+    /// THE RESPONSIBILITY RADIUS, in Mahalanobis widths — the furthest a
+    /// kernel may be from an exemplar and still LEARN from it.
+    ///
+    /// Support and responsibility are different things (Christian's
+    /// ruling). Support is the full cutoff gather and prediction always
+    /// sums it, so inference semantics do not move and `rbf.CUTOFF` is
+    /// not touched. Responsibility is the subset permitted to take a
+    /// gradient, and the NLMS normaliser Σg² is taken over THAT subset —
+    /// over the support set instead, the attribution would divide by a
+    /// sum larger than the corrections it is dividing among, and every
+    /// step would silently under-correct.
+    ///
+    /// The default is `CUTOFF_R`: responsibility equals support, which is
+    /// MARL-0 exactly. A kernel is only USEFUL out to about 1.45 widths
+    /// (where it reads `coverage`), so most of the ninety kernels a
+    /// learning event touches are contributing almost nothing to it.
+    ///
+    /// Note the coupling: below the coverage radius √(−2 ln coverage) no
+    /// kernel can ever be responsible AND covering, so births fire on
+    /// every event. `coverage` and this belong to the same sweep.
+    responsibility: f32 = CUTOFF_R,
     /// The recent-window the running error is averaged over.
     window: u32 = 4096,
 };
@@ -391,9 +486,15 @@ pub const Event = struct {
     learned: bool,
     born: bool,
     saturated: bool,
-    /// Kernels whose support contains the exemplar: the touched set, and
-    /// exactly the set the prediction summed.
+    /// Kernels whose support contains the exemplar: exactly the set the
+    /// prediction summed.
     touched: u32,
+    /// Kernels inside the RESPONSIBILITY radius — the subset that actually
+    /// took a gradient. Equal to `touched` when responsibility is support,
+    /// which is the default. Counted separately because reporting the
+    /// support set for both makes a responsibility sweep look like it
+    /// changes nothing: the number that moves is this one.
+    responsible: u32,
     /// Distinct owning regions among them — the learning cone's width.
     regions_touched: u32,
     /// Kernels a gaussian was computed for, touched or not: the COST,
@@ -410,6 +511,7 @@ pub const Stats = struct {
     births: u64 = 0,
     saturations: u64 = 0,
     touched: u64 = 0,
+    responsible: u64 = 0,
     regions_touched: u64 = 0,
     evaluated: u64 = 0,
     visited: u64 = 0,
@@ -425,6 +527,10 @@ pub const Stats = struct {
     centre_clamped: u64 = 0,
     rehomed: u64 = 0,
     trust_clamped: u64 = 0,
+    /// THE WORK: gradient applications, summed over kernels and steps. A
+    /// count, never a time — the unit that replays across machines, and
+    /// what `work_C/work_A` is measured in.
+    updates: u64 = 0,
 };
 
 pub const Model = struct {
@@ -757,17 +863,24 @@ pub const Model = struct {
     /// steps on the kernels that were responsible — birthing one first if
     /// none of them covers the exemplar well enough.
     pub fn observe(self: *Model, x: [3]f32, y: f32) !Event {
-        var ev = Event{ .residual = 0, .surprise = 0, .learned = false, .born = false, .saturated = false, .touched = 0, .regions_touched = 0, .evaluated = 0, .visited = 0, .pruned = 0 };
+        var ev = Event{ .residual = 0, .surprise = 0, .learned = false, .born = false, .saturated = false, .touched = 0, .responsible = 0, .regions_touched = 0, .evaluated = 0, .visited = 0, .pruned = 0 };
         var pt = std.time.Timer.start() catch null;
 
         try self.gather(x, &ev);
+        const resp2 = self.opts.responsibility * self.opts.responsibility;
         var yhat: f32 = 0;
         var cover: f32 = 0;
         for (self.hit.items) |ki| {
             const k = &self.kernels.items[ki];
-            const g = gaussian(k.shape(), x);
+            const m = mahal(k.shape(), x);
+            const g = if (m.r2 > CUTOFF) 0 else fmath.expf(-0.5 * m.r2);
+            // Prediction is over the SUPPORT set — always, or it stops
+            // being the sum over the model. Coverage is over the
+            // RESPONSIBILITY set, because coverage asks whether some
+            // kernel can be made answerable for this exemplar, and a
+            // kernel that may not learn from it cannot.
             yhat += k.p[W] * g;
-            cover = @max(cover, g);
+            if (m.r2 <= resp2) cover = @max(cover, g);
         }
         if (pt) |*tt| self.stats.predict_ns += tt.read();
         self.stats.predictions += 1;
@@ -799,7 +912,7 @@ pub const Model = struct {
         // The weight is the residual, so the newborn alone answers this
         // exemplar exactly; the descent then has to keep it honest at
         // every other exemplar it reaches.
-        if (cover < self.opts.coverage) {
+        if (cover < self.opts.coverage and self.opts.births) {
             if (reg.own.items.len >= self.opts.budget) {
                 ev.saturated = true;
                 reg.saturated += 1;
@@ -840,14 +953,16 @@ pub const Model = struct {
             var gg: f32 = 0;
             for (self.hit.items) |ki| {
                 const k = &self.kernels.items[ki];
-                const g = gaussian(k.shape(), x);
-                pred += k.p[W] * g;
-                gg += g * g;
+                const m = mahal(k.shape(), x);
+                const g = if (m.r2 > CUTOFF) 0 else fmath.expf(-0.5 * m.r2);
+                pred += k.p[W] * g; // support: the whole sum, always
+                if (m.r2 <= resp2) gg += g * g; // responsibility: who pays
             }
             const e = pred - y;
             switch (self.opts.optimizer) {
                 .adam => for (self.hit.items) |ki| {
                     const k = &self.kernels.items[ki];
+                    if (mahal(k.shape(), x).r2 > resp2) continue;
                     if (!gradOne(k, x, e, &grad)) continue;
                     const mu0 = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
                     adam(k, &grad, self.opts.rate);
@@ -859,6 +974,7 @@ pub const Model = struct {
                     self.moveCentre(k, d);
                     self.clamp(k);
                     k.updates += 1;
+                    self.stats.updates += 1;
                 },
                 .nlms => {
                     const inv = 1 / (gg + 1e-6);
@@ -866,7 +982,7 @@ pub const Model = struct {
                         const k = &self.kernels.items[ki];
                         const sh = k.shape();
                         const m = mahal(sh, x);
-                        if (m.r2 > CUTOFF) continue;
+                        if (m.r2 > resp2) continue;
                         const g = fmath.expf(-0.5 * m.r2);
                         // This kernel's share of the residual.
                         const a = e * g * inv;
@@ -892,6 +1008,7 @@ pub const Model = struct {
                         k.p[OFF + 2] += wa * m.v[1] * m.d[2] * l[2] * l[5];
                         self.clamp(k);
                         k.updates += 1;
+                        self.stats.updates += 1;
                     }
                 },
             }
@@ -908,6 +1025,10 @@ pub const Model = struct {
             }
         }
         ev.regions_touched = seen_reg;
+        for (self.hit.items) |ki| {
+            if (mahal(self.kernels.items[ki].shape(), x).r2 <= resp2) ev.responsible += 1;
+        }
+        self.stats.responsible += ev.responsible;
         self.stats.touched += ev.touched;
         self.stats.regions_touched += ev.regions_touched;
         if (lt) |*tt| self.stats.learn_ns += tt.read();
@@ -920,12 +1041,33 @@ pub const Model = struct {
     /// happened to be done in.
     pub fn observeOne(self: *Model) !Event {
         const x = [3]f32{ self.stream.unit(), self.stream.unit(), self.stream.unit() };
-        return self.observe(x, truth(x));
+        return self.observe(x, truthOf(self.opts.truth, x));
     }
 
     pub fn stream_n(self: *Model, n: u64) !void {
         var i: u64 = 0;
         while (i < n) : (i += 1) _ = try self.observeOne();
+    }
+
+    /// Take another model's DISCOVERED TOPOLOGY — centres, shapes,
+    /// weights — and nothing else: no optimiser state, no update counts,
+    /// no history. Drift is then measured from where this model starts,
+    /// which is the frozen topology, so "how far did deformation move
+    /// what birth found" is a number and not an inference.
+    pub fn reseedFrom(self: *Model, src: *const Model) !void {
+        for (self.regions) |*r| {
+            r.own.clearRetainingCapacity();
+            r.max_reach = 0;
+        }
+        self.kernels.clearRetainingCapacity();
+        for (src.kernels.items) |*k| {
+            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+            const owner = self.regionOf(mu);
+            const ki: u32 = @intCast(self.kernels.items.len);
+            try self.kernels.append(self.gpa, .{ .p = k.p, .owner = owner, .mu0 = mu, .reach = k.reach, .born_at = 0 });
+            try self.regions[owner].own.append(self.gpa, ki);
+            if (k.reach > self.regions[owner].max_reach) self.regions[owner].max_reach = k.reach;
+        }
     }
 
     // ── measurement ───────────────────────────────────────────────────
@@ -968,6 +1110,26 @@ pub const Model = struct {
         return n;
     }
 
+    /// What the kernels are being asked to carry. Christian's reading of
+    /// the coverage-0.10 divergence: under-birth causes OVER-RESPONSIBILITY
+    /// — too few kernels forced to explain too much territory, weights go
+    /// pathological, and the resulting predictions then corrupt the
+    /// coverage decision that would have birthed more. The truth's own
+    /// range is about 1.25, so a mean |w| near that is already a warning
+    /// and a max in the tens is the regime itself.
+    pub const Weights = struct { mean_abs: f32, max_abs: f32 };
+
+    pub fn weightStats(self: *const Model) Weights {
+        if (self.kernels.items.len == 0) return .{ .mean_abs = 0, .max_abs = 0 };
+        var acc: f64 = 0;
+        var mx: f32 = 0;
+        for (self.kernels.items) |*k| {
+            acc += @abs(k.p[W]);
+            mx = @max(mx, @abs(k.p[W]));
+        }
+        return .{ .mean_abs = @floatCast(acc / @as(f64, @floatFromInt(self.kernels.items.len))), .max_abs = mx };
+    }
+
     pub const Drift = struct { mean: f32, max: f32, out_of_region: u32 };
 
     pub fn driftOf(self: *const Model) Drift {
@@ -987,18 +1149,14 @@ pub const Model = struct {
     /// Kernel CENTRES per unit volume in a predicate's region — the
     /// campaign's capacity-allocation question, counted where the
     /// question is asked rather than over the whole cube.
-    pub fn densityIn(self: *const Model, comptime pred: fn ([3]f32) bool, volume: f32) f32 {
-        var n: u32 = 0;
-        for (self.kernels.items) |*k| {
-            if (pred(.{ k.p[MU], k.p[MU + 1], k.p[MU + 2] })) n += 1;
-        }
-        return @as(f32, @floatFromInt(n)) / volume;
+    pub fn densityIn(self: *const Model, comptime pred: fn (TruthParams, [3]f32) bool, volume: f32) f32 {
+        return @as(f32, @floatFromInt(self.countIn(pred))) / volume;
     }
 
-    pub fn countIn(self: *const Model, comptime pred: fn ([3]f32) bool) u32 {
+    pub fn countIn(self: *const Model, comptime pred: fn (TruthParams, [3]f32) bool) u32 {
         var n: u32 = 0;
         for (self.kernels.items) |*k| {
-            if (pred(.{ k.p[MU], k.p[MU + 1], k.p[MU + 2] })) n += 1;
+            if (pred(self.opts.truth, .{ k.p[MU], k.p[MU + 1], k.p[MU + 2] })) n += 1;
         }
         return n;
     }
@@ -1054,7 +1212,9 @@ pub fn adam(k: *Kernel, grad: *const [PARAMS]f32, rate: f32) void {
 }
 
 /// A held-out probe set: points from their own stream, never observed.
-pub fn probes(gpa: std.mem.Allocator, seed: u64, n: usize) !struct { p: [][3]f32, y: []f32 } {
+pub const Probes = struct { p: [][3]f32, y: []f32 };
+
+pub fn probesOf(gpa: std.mem.Allocator, tp: TruthParams, seed: u64, n: usize) !Probes {
     var s = rng.Stream.region(seed, 0x5052_4F42, 0); // "PROB"
     const p = try gpa.alloc([3]f32, n);
     errdefer gpa.free(p);
@@ -1062,9 +1222,13 @@ pub fn probes(gpa: std.mem.Allocator, seed: u64, n: usize) !struct { p: [][3]f32
     errdefer gpa.free(y);
     for (p, y) |*pt, *ty| {
         pt.* = .{ s.unit(), s.unit(), s.unit() };
-        ty.* = truth(pt.*);
+        ty.* = truthOf(tp, pt.*);
     }
     return .{ .p = p, .y = y };
+}
+
+pub fn probes(gpa: std.mem.Allocator, seed: u64, n: usize) !Probes {
+    return probesOf(gpa, .{}, seed, n);
 }
 
 // ── Gates ─────────────────────────────────────────────────────────────
@@ -1341,8 +1505,8 @@ test "G17 (f) capacity follows the target's complexity, not its volume: the shel
     defer m.deinit();
     try m.stream_n(40_000);
 
-    const V_SHELL: f32 = 0.05169; // tools/marl_predict.py
-    const V_QUIET: f32 = 0.09980;
+    const V_SHELL = volumeOf(m.opts.truth, Truth.inShell);
+    const V_QUIET = volumeOf(m.opts.truth, Truth.inQuiet);
     const shell = m.densityIn(Truth.inShell, V_SHELL);
     const quiet = m.densityIn(Truth.inQuiet, V_QUIET);
     try testing.expect(shell > 0); // not vacuous: the shell was found at all
@@ -1390,11 +1554,11 @@ test "the truth has the three parts the campaign asked for: a smooth swell, a sh
     while (i < 200_000) : (i += 1) {
         const p = [3]f32{ st.unit(), st.unit(), st.unit() };
         const t = truth(p);
-        if (Truth.inQuiet(p)) {
+        if (Truth.inQuiet(.{}, p)) {
             quiet += 1;
             try testing.expectEqual(@as(f32, 0), t);
         }
-        if (Truth.inShell(p)) {
+        if (Truth.inShell(.{}, p)) {
             band += 1;
             shell_peak = @max(shell_peak, t);
         }
@@ -1408,4 +1572,243 @@ test "the truth has the three parts the campaign asked for: a smooth swell, a sh
     // 0.70 + 1/6 = 0.8667 quietly exceeded it.
     try testing.expect(Truth.WINDOW_HI + 1.0 / 6.0 < Truth.QUIET_X);
     std.debug.print("\n  the truth: shell peak {d:.4} over {d} band samples, {d} quiet samples all exactly zero; the slab starts {d:.4} past a kernel's furthest reach ({s})\n", .{ shell_peak, band, quiet, Truth.QUIET_X - (Truth.WINDOW_HI + 1.0 / 6.0), @tagName(builtin.mode) });
+}
+
+// ── MARL-1's gates ────────────────────────────────────────────────────
+//
+// Christian's ordering: capacity-controlled birth vs deformation; fixed
+// coverage against variable target complexity; the responsibility-radius
+// sweep; the under-birth divergence regime; deliberate saturation. Every
+// threshold is in thresholds.zig and came out of tools/marl1_predict.py
+// before these ran.
+
+test "G18 (a) at IDENTICAL capacity, deformation buys the predicted gain over birth alone" {
+    // Christian's design, and the reason it is not the A-versus-C
+    // comparison: arm C ends with 12% more kernels than A, so A/C measures
+    // deformation AND the capacity deformation went on to discover. Arm B'
+    // takes A's frozen topology and descends with births off, so K is
+    // identical by construction and only the geometry and the weights
+    // differ.
+    //
+    // The horizon is named because the ratio compounds: arm A plateaus at
+    // RMS ≈ 0.051 within about forty thousand exemplars and never improves
+    // again, while B' keeps going, so the ratio is 1.17 at 40 000 and 3.00
+    // at 400 000. A floor on a growing quantity needs its N stated.
+    //
+    // MUTATION: B' with both rates zero — it then IS arm A, the ratio is
+    // exactly 1, and the gate fails. Checked below rather than by hand,
+    // because it costs one more run of a model that births nothing.
+    const gpa = testing.allocator;
+    const pr = try probes(gpa, 0xB0B, 4096);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    var a = try Model.init(gpa, .{ .rate_w = 0, .rate_geom = 0 });
+    defer a.deinit();
+    try a.stream_n(thresholds.MARL1_DESCENT_N);
+    const rms_a = try a.rms(pr.p, pr.y, null);
+
+    var b = try Model.init(gpa, .{ .births = false });
+    defer b.deinit();
+    try b.reseedFrom(&a);
+    // The reseed carries the topology and NOTHING else: before a single
+    // exemplar, B' scores exactly what A scores.
+    try testing.expectEqual(a.kernels.items.len, b.kernels.items.len);
+    try testing.expectEqual(rms_a, try b.rms(pr.p, pr.y, null));
+    try b.stream_n(thresholds.MARL1_DESCENT_N);
+    const rms_b = try b.rms(pr.p, pr.y, null);
+    // Births really were off, so the capacity control really is exact.
+    try testing.expectEqual(a.kernels.items.len, b.kernels.items.len);
+    try testing.expect(rms_a / rms_b >= thresholds.MARL1_DESCENT_GAIN);
+
+    // The mutation, executed: descent disabled on the same frozen topology
+    // leaves the model exactly where A left it.
+    var dead = try Model.init(gpa, .{ .births = false, .rate_w = 0, .rate_geom = 0 });
+    defer dead.deinit();
+    try dead.reseedFrom(&a);
+    try dead.stream_n(20_000);
+    try testing.expectEqual(rms_a, try dead.rms(pr.p, pr.y, null));
+
+    std.debug.print("\n  G18 (a): at K = {d} held identical, RMS {d:.5} → {d:.5}, deformation buys {d:.2} (predicted ≥ {d:.0} at N = {d}) ({s})\n", .{ a.kernels.items.len, rms_a, rms_b, rms_a / rms_b, thresholds.MARL1_DESCENT_GAIN, thresholds.MARL1_DESCENT_N, @tagName(builtin.mode) });
+}
+
+test "G18 (b) at fixed coverage, capacity follows the VOLUME of structure and its density does not move" {
+    // The question was whether capacity follows task complexity. The
+    // answer this gate pins down is more specific and less flattering than
+    // the campaign hoped: kernels per unit of BAND VOLUME barely moves as
+    // features are added, so what follows complexity is how much structure
+    // there is to tile, not how hard it is. The work follows complexity
+    // properly — events rise with features — but the capacity rule is
+    // geometric. That is the evidence for residual-driven refinement being
+    // MARL-2's, and it is why the gate asserts the density is STABLE
+    // rather than that it grows.
+    //
+    // MUTATION: the birth test made unconditional (every learning event
+    // births) — the density then tracks the event rate instead of the
+    // coverage rule and leaves the band. Verified by hand.
+    const gpa = testing.allocator;
+    var density: [3]f32 = undefined;
+    var counts: [3]u32 = undefined;
+    for ([_]u32{ 1, 2, 4 }, 0..) |features, i| {
+        const tp = TruthParams{ .features = features };
+        var m = try Model.init(gpa, .{ .truth = tp });
+        defer m.deinit();
+        try m.stream_n(40_000);
+        density[i] = m.densityIn(Truth.inShell, volumeOf(tp, Truth.inShell));
+        counts[i] = m.countIn(Truth.inShell);
+        // The quiet slab is unreachable at every complexity: features are
+        // placed inside x ≤ 0.65 and the window ends at 0.70.
+        try testing.expectEqual(@as(u32, 0), m.countIn(Truth.inQuiet));
+        // And each feature is carried: the band's population must not fall
+        // below the pre-registered share of the one-feature count.
+        const per = @as(f32, @floatFromInt(counts[i])) / @as(f32, @floatFromInt(features));
+        try testing.expect(per >= thresholds.MARL1_FEATURE_SCALING * @as(f32, @floatFromInt(counts[0])));
+    }
+    // Not vacuous: the band really did grow, so a stable density is a
+    // statement about allocation and not about an unchanged experiment.
+    try testing.expect(counts[2] > counts[0] * 2);
+    const spread = @max(density[0], @max(density[1], density[2])) / @min(density[0], @min(density[1], density[2]));
+    try testing.expect(spread < 1.5);
+
+    // Stability across complexity is only half the claim, and on its own
+    // it is not a claim a mutation can break — an unconditional birth rule
+    // produces a stable density too, for a completely different reason. So
+    // the other half is CAUSAL: if the coverage rule is what sets the
+    // density, then moving coverage must move it, at complexity held
+    // fixed. A birth rule that ignores coverage fails here and passes
+    // everything above.
+    var by_coverage: [2]f32 = undefined;
+    for ([_]f32{ 0.20, 0.50 }, 0..) |cv, i| {
+        var m = try Model.init(gpa, .{ .coverage = cv });
+        defer m.deinit();
+        try m.stream_n(40_000);
+        by_coverage[i] = m.densityIn(Truth.inShell, volumeOf(.{}, Truth.inShell));
+    }
+    try testing.expect(by_coverage[1] > by_coverage[0] * 1.5);
+    std.debug.print("  G18 (b): shell kernels {d} → {d} → {d} as features 1 → 2 → 4, but density {d:.0} → {d:.0} → {d:.0} per unit³ (spread {d:.2}); moving COVERAGE moves it, {d:.0} → {d:.0} — the tiling is geometric ({s})\n", .{ counts[0], counts[1], counts[2], density[0], density[1], density[2], spread, by_coverage[0], by_coverage[1], @tagName(builtin.mode) });
+}
+
+test "G18 (c) responsibility is separable from support: a fraction of the kernels need to learn, and the prediction stays exact" {
+    // Christian's ruling. Support is the full cutoff gather and prediction
+    // sums all of it, so inference semantics do not move and `rbf.CUTOFF`
+    // is untouched; responsibility is the subset permitted a gradient, and
+    // the NLMS normaliser Σg² is taken over that subset alone.
+    //
+    // MUTATION: the responsibility test dropped from the update loop
+    // (gradients over the whole support set) — the responsible count stops
+    // moving with the radius, which is what the sweep's first version
+    // reported before the count was taken over the right set. Verified by
+    // hand, and it is why this gate asserts the count MOVES.
+    const gpa = testing.allocator;
+    const pr = try probes(gpa, 0xB0B, 2048);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    const radii = [_]f32{ 2.0, 3.0, CUTOFF_R };
+    var resp: [3]f64 = undefined;
+    var gain: [3]f32 = undefined;
+    var work: [3]u64 = undefined;
+    const r_cov = @sqrt(-2 * @log(@as(f32, 0.35)));
+    for (radii, 0..) |rr, i| {
+        var m = try Model.init(gpa, .{ .responsibility = rr });
+        defer m.deinit();
+        const start = try m.rms(pr.p, pr.y, null);
+        m.stats = .{};
+        try m.stream_n(40_000);
+        resp[i] = @as(f64, @floatFromInt(m.stats.responsible)) / @as(f64, @floatFromInt(m.stats.events));
+        gain[i] = start / (try m.rms(pr.p, pr.y, null));
+        work[i] = m.stats.updates;
+        // The packing prediction: one kernel per ball of r_cov, so the
+        // count inside R is the volume ratio.
+        const predicted = @max(1.0, std.math.pow(f64, rr / r_cov, 3));
+        try testing.expect(resp[i] <= predicted * thresholds.MARL1_TOUCHED_TOLERANCE);
+        try testing.expect(resp[i] * thresholds.MARL1_TOUCHED_TOLERANCE >= predicted);
+        // Prediction is still the sum over the model, whatever learns.
+        var st = rng.Stream.region(3, 0xE4AC, 0);
+        var k: usize = 0;
+        while (k < 200) : (k += 1) {
+            const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+            try testing.expectEqual(@as(u32, @bitCast(m.predictAll(q))), @as(u32, @bitCast(try m.predict(q))));
+        }
+    }
+    // The count must actually move with the radius, or the gate is
+    // watching the support set again — which is exactly what the sweep's
+    // first version did, reporting 86 at every radius.
+    try testing.expect(resp[0] * 4 < resp[2]);
+    // And so must the WORK, which is the point of the whole separation: a
+    // count that moves while the gradient loop still runs over everything
+    // has saved nothing.
+    try testing.expect(work[0] * 4 < work[2]);
+    // And the accuracy must survive the cut: a tenth of the work, and no
+    // worse. This is the campaign's cost question answered in the
+    // direction nobody expected — letting distant kernels learn does not
+    // help, and at R = 3 it actively hurts.
+    try testing.expect(gain[1] >= gain[2]);
+    std.debug.print("  G18 (c): responsible {d:.2} / {d:.2} / {d:.2} at R = 2, 3, {d:.3}; gain {d:.2} / {d:.2} / {d:.2}; work {d} / {d} / {d} ({s})\n", .{ resp[0], resp[1], resp[2], CUTOFF_R, gain[0], gain[1], gain[2], work[0], work[1], work[2], @tagName(builtin.mode) });
+}
+
+test "G18 (d) under-birth is over-responsibility: every diverging run carries weights outside the target's range, and every converging one does not" {
+    // Christian's mechanism claim, and the gate is written so it can fail:
+    // if divergence were something other than too few kernels carrying too
+    // much, the weight statistic would not separate the two populations.
+    // Two INDEPENDENT routes to under-birth are tested, refusal and
+    // budget, because a mechanism that only shows up one way is a
+    // coincidence.
+    //
+    // MUTATION: none needed — the gate carries its own control. The
+    // converging arm must sit below the line and the diverging arm above
+    // it, so a statistic that failed to separate them fails the gate.
+    const gpa = testing.allocator;
+    const pr = try probes(gpa, 0xB0B, 2048);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    const Case = struct { name: []const u8, opts: Options, diverges: bool };
+    const cases = [_]Case{
+        .{ .name = "coverage 0.10 (birth refused)", .opts = .{ .coverage = 0.10 }, .diverges = true },
+        .{ .name = "budget 16 (birth capped)", .opts = .{ .budget = 16 }, .diverges = true },
+        .{ .name = "the defaults", .opts = .{}, .diverges = false },
+        .{ .name = "budget 32", .opts = .{ .budget = 32 }, .diverges = false },
+    };
+    for (cases) |c| {
+        var m = try Model.init(gpa, c.opts);
+        defer m.deinit();
+        const start = try m.rms(pr.p, pr.y, null);
+        try m.stream_n(40_000);
+        const end = try m.rms(pr.p, pr.y, null);
+        const w = m.weightStats();
+        const diverged = end > start;
+        try testing.expectEqual(c.diverges, diverged);
+        if (diverged) {
+            try testing.expect(w.mean_abs > thresholds.MARL1_OVERRESPONSIBILITY);
+        } else {
+            try testing.expect(w.mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
+        }
+        std.debug.print("  G18 (d): {s:<30} RMS {d:.5} → {d:.5}, mean |w| {d:.4} against the target's range {d:.2} ({s})\n", .{ c.name, start, end, w.mean_abs, thresholds.MARL1_OVERRESPONSIBILITY, if (diverged) "diverged" else "converged" });
+    }
+}
+
+test "G18 (e) the budget bites when it is below the natural occupancy, and not when it is above" {
+    // The campaign's §10 asked for saturation data and the natural
+    // experiment never produced any: at the default budget of 64 no region
+    // ever fills. So it is forced, and what it shows is that saturation
+    // does not degrade gracefully — it is a route into G18 (d)'s regime.
+    //
+    // MUTATION: the budget test removed from the birth path — nothing ever
+    // saturates and the low-budget arm converges like the high one.
+    // Verified by hand.
+    const gpa = testing.allocator;
+    var tight = try Model.init(gpa, .{ .budget = thresholds.MARL1_SATURATION_BUDGET });
+    defer tight.deinit();
+    try tight.stream_n(40_000);
+    try testing.expect(tight.stats.saturations > 0);
+    try testing.expect(tight.saturatedRegions() > 0);
+
+    var loose = try Model.init(gpa, .{});
+    defer loose.deinit();
+    try loose.stream_n(40_000);
+    try testing.expectEqual(@as(u64, 0), loose.stats.saturations);
+    try testing.expectEqual(@as(u32, 0), loose.saturatedRegions());
+
+    std.debug.print("  G18 (e): budget {d} → {d} saturation events in {d} full regions; budget {d} → none at all ({s})\n", .{ thresholds.MARL1_SATURATION_BUDGET, tight.stats.saturations, tight.saturatedRegions(), loose.opts.budget, @tagName(builtin.mode) });
 }

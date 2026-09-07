@@ -45,6 +45,20 @@ const usage =
     \\                      it changed as a function of distance
     \\  --quiet             checkpoints only
     \\
+    \\ MARL-1
+    \\  --features N        sharp shells in the target (default 1)
+    \\  --sharpness S       multiplies 1/W: higher is a thinner ridge (default 1)
+    \\  --frequency F       multiplies the swell's spatial frequencies (default 1)
+    \\  --responsibility R  the furthest, in Mahalanobis widths, a kernel may be
+    \\                      from an exemplar and still LEARN from it. Support is
+    \\                      separate: prediction always sums the full cutoff
+    \\                      gather (default 5.657, which is support = responsibility)
+    \\  --no-births         freeze the topology; descent only
+    \\  --arms              the capacity-controlled experiment: A births with no
+    \\                      descent, B' descends on A's frozen topology, C does
+    \\                      both. Reports RMS_A/RMS_B' at identical capacity
+    \\  --tsv               one summary line, for driving sweeps
+    \\
 ;
 
 const Opts = struct {
@@ -57,6 +71,8 @@ const Opts = struct {
     pgm: ?[]const u8 = null,
     interference: bool = false,
     quiet: bool = false,
+    arms: bool = false,
+    tsv: bool = false,
 };
 
 fn parseF32(s: []const u8) !f32 {
@@ -115,6 +131,21 @@ fn parse(args: []const []const u8) !?Opts {
             o.interference = true;
         } else if (std.mem.eql(u8, a, "--quiet")) {
             o.quiet = true;
+        } else if (std.mem.eql(u8, a, "--tsv")) {
+            o.tsv = true;
+            o.quiet = true;
+        } else if (std.mem.eql(u8, a, "--arms")) {
+            o.arms = true;
+        } else if (std.mem.eql(u8, a, "--no-births")) {
+            o.m.births = false;
+        } else if (std.mem.eql(u8, a, "--features")) {
+            o.m.truth.features = try std.fmt.parseInt(u32, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--sharpness")) {
+            o.m.truth.sharpness = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--frequency")) {
+            o.m.truth.frequency = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--responsibility")) {
+            o.m.responsibility = try parseF32(try next(args, &i));
         } else {
             std.debug.print("unknown option: {s}\n", .{a});
             return error.UnknownOption;
@@ -150,10 +181,11 @@ pub fn main() !void {
         return;
     };
 
+    if (o.arms) return arms(gpa, o);
     var model = try marl.Model.init(gpa, o.m);
     defer model.deinit();
 
-    const pr = try marl.probes(gpa, 0xB0B, o.probe_n);
+    const pr = try marl.probesOf(gpa, o.m.truth, 0xB0B, o.probe_n);
     defer gpa.free(pr.p);
     defer gpa.free(pr.y);
 
@@ -163,9 +195,11 @@ pub fn main() !void {
         o.m.regions, model.h, model.sigma_max, o.m.birth_width * model.sigma_max, o.m.budget, o.m.threshold, o.m.coverage, o.m.steps, o.m.seed,
     });
     try out.print("  optimizer {s} (rate_w {d:.3}, rate_geom {d:.3}, adam rate {d:.3})\n", .{ @tagName(o.m.optimizer), o.m.rate_w, o.m.rate_geom, o.m.rate });
+    var rms_empty: f32 = 0;
     {
         var mx: f32 = 0;
         const r0 = try model.rms(pr.p, pr.y, &mx);
+        rms_empty = r0;
         try out.print("  the empty model scores RMS {d:.5} on {d} held-out probes (it predicts zero; that is the truth's own RMS)\n", .{ r0, o.probe_n });
         try out.print("  the interference bound, proved: {d:.4} of the domain (thresholds.marl0ReachBound)\n\n", .{th.marl0ReachBound(model.h, o.m.steps, o.m.trust)});
     }
@@ -224,7 +258,8 @@ pub fn main() !void {
     const mean_touch = if (s.events > 0) @as(f64, @floatFromInt(s.touched)) / @as(f64, @floatFromInt(s.events)) else 0;
     const mean_regs = if (s.events > 0) @as(f64, @floatFromInt(s.regions_touched)) / @as(f64, @floatFromInt(s.events)) else 0;
     try out.print("\nlocality (§11) — what one learning event reached\n", .{});
-    try out.print("  kernels touched    {d:>10.1}   predicted ≤ {d} (thresholds.MARL0_MAX_TOUCHED)\n", .{ mean_touch, th.MARL0_MAX_TOUCHED });
+    try out.print("  kernels touched    {d:>10.1}   predicted ≤ {d} (thresholds.MARL0_MAX_TOUCHED) — the SUPPORT set\n", .{ mean_touch, th.MARL0_MAX_TOUCHED });
+    try out.print("  of those, responsible {d:>7.1}   the subset that took a gradient (radius {d:.3} widths)\n", .{ @as(f64, @floatFromInt(s.responsible)) / @as(f64, @floatFromInt(@max(1, s.events))), model.opts.responsibility });
     try out.print("  of the model       {d:>10.4}   predicted ≤ {d:.3}\n", .{ mean_touch / @as(f64, @floatFromInt(@max(1, model.kernels.items.len))), th.MARL0_MAX_TOUCHED_FRACTION });
     try out.print("  regions touched    {d:>10.2}   of 27 a gather may open\n", .{mean_regs});
     try out.print("  kernels evaluated  {d:>10.1}   per prediction (the COST; the touched set is the LOCALITY)\n", .{@as(f64, @floatFromInt(s.evaluated)) / @as(f64, @floatFromInt(@max(1, s.exemplars)))});
@@ -236,11 +271,13 @@ pub fn main() !void {
     try out.print("  clamps bit: reach {d}  width {d}  centre {d}  trust {d}\n", .{ s.reach_clamped, s.width_clamped, s.centre_clamped, s.trust_clamped });
 
     // Capacity allocation (§11): where the kernels went.
-    const V_SHELL: f32 = 0.05169; // tools/marl_predict.py
-    const V_QUIET: f32 = 0.09980;
+    // Measured from the target itself, not hard-coded: the band is two
+    // widths either side of a ridge, so `sharpness` moves it.
+    const V_SHELL = marl.volumeOf(model.opts.truth, marl.Truth.inShell);
+    const V_QUIET = marl.volumeOf(model.opts.truth, marl.Truth.inQuiet);
     const d_shell = model.densityIn(marl.Truth.inShell, V_SHELL);
     const d_quiet = model.densityIn(marl.Truth.inQuiet, V_QUIET);
-    try out.print("\ncapacity (§11) — where the model spent itself\n", .{});
+    try out.print("\ncapacity (§11) — where the model spent itself (band volume {d:.5}, slab {d:.5})\n", .{ V_SHELL, V_QUIET });
     try out.print("  shell band         {d:>6} kernels   {d:>9.1} per unit volume\n", .{ model.countIn(marl.Truth.inShell), d_shell });
     try out.print("  quiet slab         {d:>6} kernels   {d:>9.1} per unit volume   (the truth is zero there)\n", .{ model.countIn(marl.Truth.inQuiet), d_quiet });
     if (d_quiet > 0) {
@@ -261,9 +298,120 @@ pub fn main() !void {
         try out.print("  max |e| {d:.4} → {d:.4}\n", .{ mx0, mx });
     }
 
+    if (o.tsv) {
+        try out.print("{s}\n", .{TSV_HEADER});
+        try tsvLine(&model, pr, rms_empty, out);
+        return;
+    }
     if (o.interference) try interference(&model, gpa, out);
     if (o.slice) |path| try writeSlice(&model, path, o.slice_z, o.slice_res, out);
     if (o.pgm) |prefix| try writePgms(&model, gpa, prefix, o.slice_z, o.slice_res, out);
+}
+
+/// One line of numbers, for driving a sweep from a shell. Tab separated,
+/// with a header on request — a sweep is a table and a table wants to be
+/// read by something other than a person.
+fn tsvLine(model: *marl.Model, pr: marl.Probes, rms0: f32, out: anytype) !void {
+    var mx: f32 = 0;
+    const before = model.stats;
+    const r = try model.rms(pr.p, pr.y, &mx);
+    model.stats = before;
+    const s = model.stats;
+    const d = model.driftOf();
+    const w = model.weightStats();
+    const V_SHELL = marl.volumeOf(model.opts.truth, marl.Truth.inShell);
+    const V_QUIET = marl.volumeOf(model.opts.truth, marl.Truth.inQuiet);
+    const ev: f64 = @floatFromInt(@max(1, s.events));
+    try out.print("{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d:.6}\t{d:.6}\t{d:.4}\t{d:.4}\t{d:.2}\t{d:.2}\t{d:.6}\t{d:.6}\t{d:.4}\t{d:.4}\t{d:.1}\t{d:.1}\n", .{
+        s.exemplars,             model.kernels.items.len,
+        s.events,                s.updates,
+        s.saturations,           model.saturatedRegions(),
+        model.occupiedRegions(), rms0,
+        r,                       rms0 / r,
+        mx,                      @as(f64, @floatFromInt(s.responsible)) / ev,
+        @as(f64, @floatFromInt(s.evaluated)) / @as(f64, @floatFromInt(@max(1, s.exemplars))),
+        d.mean,                  d.max,
+        w.mean_abs,              w.max_abs,
+        model.densityIn(marl.Truth.inShell, V_SHELL),
+        model.densityIn(marl.Truth.inQuiet, V_QUIET),
+    });
+}
+
+pub const TSV_HEADER = "exemplars\tkernels\tevents\tupdates\tsaturations\tsat_regions\toccupied\trms0\trms\tgain\tmaxe\ttouched\tevaluated\tdrift_mean\tdrift_max\tw_mean\tw_max\tshell_density\tquiet_density";
+
+/// MARL-1 experiment 1, Christian's design: the capacity-controlled
+/// birth-versus-deformation question.
+///
+///   A  — births, no descent. The topology surprise discovers on its own.
+///   B' — A's frozen topology, descent on, births off, same stream.
+///   C  — both, which is MARL-0.
+///
+/// A against B' is the honest descent metric because K is identical by
+/// construction. A against C is not, and is reported beside it with the
+/// capacity and work ratios that say why.
+fn arms(gpa: std.mem.Allocator, o: Opts) !void {
+    const out = std.io.getStdOut().writer();
+    const pr = try marl.probesOf(gpa, o.m.truth, 0xB0B, o.probe_n);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    var a_opts = o.m;
+    a_opts.rate_w = 0;
+    a_opts.rate_geom = 0;
+    var a = try marl.Model.init(gpa, a_opts);
+    defer a.deinit();
+    const rms0 = try a.rms(pr.p, pr.y, null);
+    a.stats = .{};
+    try a.stream_n(o.exemplars);
+    const rms_a = try a.rms(pr.p, pr.y, null);
+
+    var b = try marl.Model.init(gpa, .{
+        .seed = o.m.seed,          .regions = o.m.regions,
+        .budget = o.m.budget,      .threshold = o.m.threshold,
+        .coverage = o.m.coverage,  .birth_width = o.m.birth_width,
+        .optimizer = o.m.optimizer, .rate_w = o.m.rate_w,
+        .rate_geom = o.m.rate_geom, .rate = o.m.rate,
+        .steps = o.m.steps,        .truth = o.m.truth,
+        .births = false,           .responsibility = o.m.responsibility,
+        .trust = o.m.trust,        .window = o.m.window,
+    });
+    defer b.deinit();
+    try b.reseedFrom(&a);
+    const rms_b_start = try b.rms(pr.p, pr.y, null);
+    b.stats = .{};
+    try b.stream_n(o.exemplars);
+    const rms_b = try b.rms(pr.p, pr.y, null);
+
+    var c = try marl.Model.init(gpa, o.m);
+    defer c.deinit();
+    try c.stream_n(o.exemplars);
+    const rms_c = try c.rms(pr.p, pr.y, null);
+
+    try out.print("MARL-1 experiment 1 — capacity-controlled birth vs deformation ({s})\n", .{@tagName(builtin.mode)});
+    try out.print("  {d} exemplars, the same stream in every arm, {d} held-out probes\n", .{ o.exemplars, o.probe_n });
+    try out.print("  the empty model scores RMS {d:.5}\n\n", .{rms0});
+    try out.print("  {s:<34} {s:>9} {s:>9} {s:>11} {s:>9}\n", .{ "arm", "RMS", "kernels", "updates", "w_mean" });
+    try out.print("  {s:<34} {d:>9.5} {d:>9} {d:>11} {d:>9.4}\n", .{ "A  births, no descent", rms_a, a.kernels.items.len, a.stats.updates, a.weightStats().mean_abs });
+    try out.print("  {s:<34} {d:>9.5} {d:>9} {d:>11} {d:>9.4}\n", .{ "B' A's topology, descent only", rms_b, b.kernels.items.len, b.stats.updates, b.weightStats().mean_abs });
+    try out.print("  {s:<34} {d:>9.5} {d:>9} {d:>11} {d:>9.4}\n", .{ "C  births and descent", rms_c, c.kernels.items.len, c.stats.updates, c.weightStats().mean_abs });
+    try out.print("\n  B' started from A's topology at RMS {d:.5} — the reseed is exact\n", .{rms_b_start});
+    try out.print("  DEFORMATION, at identical capacity:  RMS_A/RMS_B' = {d:.2}   (predicted ≥ {d:.0}, thresholds.MARL1_DESCENT_GAIN)\n", .{ rms_a / rms_b, th.MARL1_DESCENT_GAIN });
+    try out.print("  K_B'/K_A = {d:.4} — identical by construction, which is the point\n", .{@as(f64, @floatFromInt(b.kernels.items.len)) / @as(f64, @floatFromInt(a.kernels.items.len))});
+    try out.print("\n  and the comparison that is NOT capacity-controlled, beside it:\n", .{});
+    try out.print("    RMS_A/RMS_C = {d:.2}   K_C/K_A = {d:.3}   work_C/work_A = {d:.3}\n", .{
+        rms_a / rms_c,
+        @as(f64, @floatFromInt(c.kernels.items.len)) / @as(f64, @floatFromInt(a.kernels.items.len)),
+        @as(f64, @floatFromInt(c.stats.updates)) / @as(f64, @floatFromInt(@max(1, a.stats.updates))),
+    });
+    // Arm A's updates are ZERO-MAGNITUDE, not absent: both rates are zero,
+    // so the loop runs and applies nothing. It is counted because the
+    // gather and the attribution were still paid for, and because A having
+    // MORE of them than C is the finding — a worse model leaves more
+    // exemplars above the surprise threshold, so birth-only does more work
+    // to reach a worse answer.
+    try out.print("    work_C/work_B' = {d:.3}\n", .{@as(f64, @floatFromInt(c.stats.updates)) / @as(f64, @floatFromInt(@max(1, b.stats.updates)))});
+    const drift = b.driftOf();
+    try out.print("    B' moved A's centres by {d:.5} on average, {d:.5} at most (h = {d:.4})\n", .{ drift.mean, drift.max, b.h });
 }
 
 /// §11's interference, measured rather than argued: freeze the prediction
@@ -273,7 +421,7 @@ pub fn main() !void {
 /// which is a claim about bits and is checked as one.
 fn interference(model: *marl.Model, gpa: std.mem.Allocator, out: anytype) !void {
     const n = 20000;
-    const pr = try marl.probes(gpa, 0xFACE, n);
+    const pr = try marl.probesOf(gpa, model.opts.truth, 0xFACE, n);
     defer gpa.free(pr.p);
     defer gpa.free(pr.y);
     const before = try gpa.alloc(f32, n);

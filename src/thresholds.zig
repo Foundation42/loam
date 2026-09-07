@@ -572,4 +572,83 @@ pub fn marl0ReachBound(h: f32, steps: u32, trust: f32) f32 {
     return h * (2 + @as(f32, @floatFromInt(steps)) * trust);
 }
 
+// ── MARL-1 (Christian's ordering, after MARL-0's numbers) ────────────
+//
+// Written before MARL-1's first run, out of `tools/marl1_predict.py` —
+// which builds a SYNTHETIC basis by MARL-0's own birth rule rather than
+// consulting any run. That the synthetic basis reproduces the measured
+// overlap (81.6 against 86) is the check that it is the right basis.
+
+/// G18 (a): arm A births with no descent; arm B' takes A's frozen
+/// topology and descends with births disabled. Capacity is identical by
+/// construction, so this is deformation's contribution and nothing else.
+/// RMS_A / RMS_B' must clear this.
+///
+/// PROPOSED, from this much theory: with centres and shapes held the
+/// model is LINEAR in its weights, so the best any weight-learner can do
+/// is least squares on that basis, and birth's greedy one-shot weights
+/// are the first iterate of a Gauss-Seidel sweep rather than the
+/// solution. On a synthetic basis built by the same birth rule at the
+/// same overlap, greedy scores 0.09084 and least squares 0.06115 — a
+/// ratio of 1.49 available on the WEIGHTS ALONE. Descent also has the
+/// geometry, which should buy more; three steps an event is not a
+/// least-squares solver, which buys less. Two is a floor that requires
+/// descent to beat the linear-algebra headroom of its own basis.
+///
+/// A GAP IN THIS PRE-REGISTRATION, found by the run and recorded rather
+/// than repaired by moving the number: it never said AT WHAT N. The ratio
+/// compounds with experience — 1.17 at 40 000 exemplars, 1.54 at 80 000,
+/// 1.80 at 120 000, 2.30 at 200 000, 3.00 at 400 000 — because arm A
+/// plateaus at RMS ≈ 0.051 within about forty thousand exemplars and
+/// never improves again, while B' keeps going. A floor on a quantity that
+/// grows is only a threshold once its horizon is named, so the horizon is
+/// named here and the number stays where it was written.
+pub const MARL1_DESCENT_GAIN: f32 = 2;
+pub const MARL1_DESCENT_N: u64 = 300_000;
+
+/// G18 (b): at fixed coverage, kernels whose centres land in the shell
+/// band, per feature, against the one-feature count.
+///
+/// PROPOSED: each shell is a separate surface and needs its own tiling at
+/// the same coverage, so the count should scale about linearly with the
+/// feature count. Half is the floor — a factor of two of slack for shells
+/// that overlap one another and share kernels. The companion claim is
+/// absolute and carries no slack: the quiet slab holds ZERO at every
+/// complexity, because features are placed inside x ≤ 0.65 and the
+/// slab's unreachability is arithmetic.
+pub const MARL1_FEATURE_SCALING: f32 = 0.5;
+
+/// G18 (c): kernels touched per event at responsibility radius R, against
+/// the packing prediction (R/r_cov)³ with r_cov = √(−2 ln coverage).
+///
+/// PROPOSED: the same volume-ratio argument that predicted 59.5 for the
+/// full cutoff and measured 86 — a factor of 1.4 — so three is a bound
+/// with room in it rather than a restatement of the result.
+pub const MARL1_TOUCHED_TOLERANCE: f32 = 3;
+
+/// G18 (d): the target's own range, and the line the mean |w| must not be
+/// on the wrong side of.
+///
+/// PROPOSED as a MECHANISM claim rather than a magnitude, which is what
+/// makes it able to fail: Christian's reading of the coverage-0.10
+/// divergence is that under-birth causes OVER-RESPONSIBILITY — too few
+/// kernels forced to explain too much territory, weights going
+/// pathological, and the resulting predictions then corrupting the
+/// coverage decision that would have birthed more. If that is the
+/// mechanism then every diverging run shows a mean |w| above the target's
+/// own range and every converging one below it. If divergence is
+/// something else, this gate says so.
+pub const MARL1_OVERRESPONSIBILITY: f32 = 1.25;
+
+/// G18 (e): a budget this small must saturate, and the default 64 must
+/// not.
+///
+/// PROPOSED: the natural population is about 4 000 kernels across 155 of
+/// 216 occupied regions — roughly 26 per occupied region — and the
+/// campaign's §10 asked for saturation data that the natural experiment
+/// never produced. Sixteen is below that occupancy and must therefore
+/// bite; where between 16 and 64 the transition actually sits is the
+/// measurement, not the threshold.
+pub const MARL1_SATURATION_BUDGET: u32 = 16;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
