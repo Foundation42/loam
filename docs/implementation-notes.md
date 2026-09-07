@@ -4688,6 +4688,74 @@ twelve moves cannot settle.
 A fixture mutation rather than a code one, which is right here: the claim
 under test is about what the fixture can tell apart.
 
+## MARL-10 — the growth is logarithmic (Monday 2026-09-07)
+
+MARL-9 left one thing twelve moves could not settle: on a fully recurrent
+world the marginal cost of a revisit decays, but to ZERO or to a small
+constant? Logarithmic growth is effectively bounded at any practical
+horizon; linear growth at 159 kernels a move is not.
+
+This was not a threshold picked from a range. `n·ΔK` over MARL-9's twelve
+points is flat at 2034 (spread 1776–2290, no trend), so ΔK ≈ A/n and
+cumulative growth is K₀ + A·H(N). Eighty moves is where that stops being
+indistinguishable from a linear tail. The law was written down, then the
+run was made.
+
+      N    measured   harmonic   linear tail   meas/harm
+     12      12 584     11 938        12 584       1.054
+     20      13 474     12 944        13 856       1.041
+     40      14 737     14 329        17 036       1.029
+     60      15 601     15 145        20 216       1.030
+     80      16 241     15 726        23 396       1.033
+
+**The law holds, at 1.033 against a pre-registered ceiling of 1.15**, where
+a linear tail would have reached 23 396. And it holds throughout rather
+than at the ends — n·ΔK by successive stretches of the run: 1972, 1764,
+1890, 2166, 2252.
+
+**And the model gets better, not merely survives.** RMS goes 0.02635 at
+move 12 to 0.02234 at move 40 to 0.02237 at move 80 — a ratio of 0.849
+against a stability ceiling of 1.25. That check existed because a bounded
+population proves nothing if it is bounded by the thing having stopped
+working, and it is the more interesting half of the result: eighty
+world-changes, and the eightieth world is predicted better than the
+twelfth was.
+
+One honest caveat on the test. The run used 200 000 exemplars a move
+rather than the 100 000 the fit was taken from, because `--drift-repeat`
+reads `--exemplars` and that defaults to 200 000 — a default of mine, not
+a choice. The law survives the unasked-for doubling with A drifting about
+8%, which is a stronger result than the one intended: **the growth
+constant barely depends on how long each world is shown.**
+
+### Not gated, and why
+
+Eighty moves at 200 000 exemplars is roughly ten minutes, which does not
+belong in a suite that runs on every commit. Reproduce with
+
+    zig build marl -- --sharpness 2 --responsibility 3 \
+        --drift-mode cycle --drift-repeat 80
+
+The campaign has one other long-horizon claim recorded this way and the
+same rule applies: a measurement whose cost exceeds the suite's budget is
+recorded with its command, not smuggled in at a scale that no longer tests
+it.
+
+### Where the campaign ends up
+
+    The model pays A/n for the n-th visit to a world it has seen, so
+    total capacity grows as A·log(N) in the number of world-changes and
+    linearly in the number of DISTINCT worlds. Accuracy improves across
+    recurrences and holds.
+
+MARL-7 called this "corrective archaeology", MARL-8 tried to fix it with a
+transplant, and both were describing a pathology that a different fixture
+dissolved. What the architecture actually does with a repeating world is
+consolidate: it pays full price once, a decaying remainder thereafter, and
+ends up more accurate than it began. Whether that survives contact with
+worlds less kind than a translated shell is the campaign's standing
+question and always has been.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

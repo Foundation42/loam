@@ -1224,4 +1224,49 @@ pub const MARL9_RECURRENCE: f32 = 0.9;
 /// capacity spent, and a lower error.
 pub const MARL9_FAIR: f32 = 1.15;
 
+// ── MARL-10 (does recurrent growth plateau?) ─────────────────────────
+//
+// From `tools/marl10_predict.py`, and it is a LAW fitted to MARL-9's
+// twelve points rather than a threshold picked from a range. On a fully
+// recurrent world n·ΔK is flat at 2034 (spread 1776–2290, no trend), so
+// ΔK ≈ A/n and cumulative growth is LOGARITHMIC — unbounded in principle,
+// bounded in any practice. Eighty moves is where that stops being
+// indistinguishable from a linear tail at 159 a move: 15 335 against
+// 22 468.
+
+/// G30: child population after eighty moves, over the harmonic law's
+/// prediction of 15 335.
+///
+/// PROPOSED at a ceiling of 17 635, which is 79% of what a linear tail
+/// would reach. The two hypotheses cannot both pass, which is the whole
+/// reason for running eighty rather than twenty.
+///
+/// **HELD, at 1.033.** Eighty moves reached 16 241 kernels against the
+/// harmonic law's 15 726; a linear tail would have reached 23 396. And
+/// n·ΔK stays flat across the whole run — 1972, 1764, 1890, 2166, 2252 by
+/// successive stretches — so the law is not merely fitted at the ends, it
+/// holds throughout.
+///
+/// One honest caveat on the test: the run used 200 000 exemplars a move
+/// rather than the 100 000 the fit was taken from, because
+/// `--drift-repeat` reads `--exemplars` and its default is 200 000. The
+/// law survives that unasked-for doubling with A drifting about 8%, which
+/// is a stronger result than the one intended — the growth constant barely
+/// depends on how long each world is shown.
+pub const MARL10_LOGARITHMIC: f32 = 1.15;
+
+/// G30, the health check: RMS at move 80 over RMS at move 12.
+///
+/// PROPOSED because a bounded population proves nothing if it is bounded
+/// by the model having stopped working. Eighty world-changes is far
+/// outside anything this campaign has run.
+///
+/// **HELD at 0.849, on the right side of one.** RMS goes 0.02635 at move
+/// 12 to 0.02234 at move 40 to 0.02237 at move 80. The model does not
+/// merely survive eighty world-changes, it gets BETTER across them and
+/// then holds — which is what a bounded population had to be checked
+/// against, because a population bounded by the thing having stopped
+/// working would look identical on the count alone.
+pub const MARL10_STABLE: f32 = 1.25;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

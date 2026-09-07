@@ -179,6 +179,16 @@ architecture already reuses on recurrence with no mechanism at all. A
 campaign that has only tested one kind of world cannot tell what its
 numbers are counting.
 
+MARL-10 then settled the last open end with a fitted LAW rather than a
+threshold: `n·ΔK` is flat at 2034, so growth is `K₀ + A·H(N)` —
+**logarithmic**. Eighty moves reached 16 241 against the law's 15 726
+(1.033×) where a linear tail would have reached 23 396, and RMS IMPROVED
+across the run (0.02635 → 0.02237, ratio 0.849). The model pays A/n for
+the n-th visit to a world it knows: full price once, a decaying remainder
+after, and it ends more accurate than it began. Not gated — eighty moves
+is ten minutes; reproduce with
+`zig build marl -- --sharpness 2 --responsibility 3 --drift-mode cycle --drift-repeat 80`.
+
 ## The ledger
 
 `docs/implementation-notes.md` — every decision made while building, with
