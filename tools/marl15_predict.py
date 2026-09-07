@@ -130,6 +130,55 @@ def main():
     print("   from one array to another, and it is the accuracy cost and the")
     print("   bit count that are under test.")
 
+    # ── The extension, written after the first run and before the second ──
+    print("\n" + "=" * 72)
+    print("EXTENSION — region-relative centres. Written AFTER the sweep above")
+    print("ran and BEFORE this one did, and labelled so the two cannot be")
+    print("confused.")
+    print("""
+   The ablation found the centre is the only expensive field — 0.01872 of
+   excess RMS at eight bits, against 0.00412 for the log-width, 0.00312 for
+   the off-diagonal and EXACTLY ZERO for the weight. And its cost is a SPAN
+   choice rather than a sensitivity: it is quantized over the whole extent,
+   32 units, giving a step of 0.125 against a σ of 1.885 — 0.066σ.
+
+   But a kernel's centre is inside its OWNING REGION by definition; that is
+   what ownership means, and the clamp keeps it there. So the span is not
+   the cube, it is the region: extent/regions. And `marble.setOf` already
+   writes kernels in `predictAll`'s order — region by region, then each
+   region's own list — so the grouping a decoder needs is already in the
+   file. All that has to be stored is a count per region.
+""")
+    for r in (3, 6):
+        import math as _m
+        print(f"   regions = {r}: span falls {r}x, so the centre's error falls {r}x at the")
+        print(f"   same bit count, or {_m.log2(r):.2f} bits an axis are free at the same error")
+        print(f"   ({3*_m.log2(r):.1f} bits a kernel). The cost is a u16 count per region:")
+        print(f"   {r**3} regions = {r**3*2} bytes, against 814 kernels x 54 bits = {814*54//8} bytes.")
+    print()
+    print("   → MARL15_RELATIVE = 2.5, a FLOOR on the centre's 8-bit excess")
+    print("     ABSOLUTE over the same excess RELATIVE, at regions = 3. The")
+    print("     geometry says 3.0; the floor is 2.5 because the excess is a")
+    print("     small difference of two nearby RMS values and does not")
+    print("     measure to three figures.")
+    print()
+    print("   And what it buys, propagated through the ablation's own numbers.")
+    print("   At 6/5/5/6 — 54 bits, which measured 1.086 ABSOLUTE and so")
+    print("   failed the ceiling:")
+    import math as _m2
+    e_mu = 0.01872 * 4 / 3.0   # two bits coarser is 4x; relative is 3x cheaper
+    e_ld = 0.00412 * 8         # five bits is three coarser than eight
+    e_of = 0.00312 * 8
+    tot = _m2.sqrt(e_mu**2 + e_ld**2 + e_of**2)
+    rms = _m2.sqrt(RMS_F32**2 + tot**2)
+    print(f"     centre {e_mu:.4f}, log-width {e_ld:.4f}, off-diagonal {e_of:.4f}, weight 0")
+    print(f"     total excess {tot:.4f} → RMS {rms:.5f} → {rms/RMS_F32:.3f}")
+    print("   → MARL15_RBITS = 1.05, the SAME ceiling as MARL15_BITS, applied")
+    print("     at 54 bits with relative centres — 6.75 bytes a kernel, a")
+    print("     5.9x saving. The point of the number is that a bit budget")
+    print("     which FAILED absolute must PASS relative, or the change has")
+    print("     bought nothing worth the count table.")
+
     print("\n" + "=" * 72)
     print("Frozen for src/thresholds.zig:")
     print("  MARL15_BITS     = 1.05  (ceiling, RMS quantized over f32 at 120 bits)")

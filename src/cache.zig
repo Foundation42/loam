@@ -965,6 +965,23 @@ pub const Bits = struct {
     /// MARL-1 saw mean |w| of 13–17 in its divergent regime and a span is
     /// not a thing to guess.
     w: u6 = 12,
+    /// Centres stored RELATIVE to their owning region's corner rather than
+    /// to the whole cube. Zero means absolute.
+    ///
+    /// A kernel's centre is inside its owning region BY DEFINITION — that
+    /// is what ownership means in this model, and the clamp keeps it
+    /// there. So the span a centre needs is not the cube but the region,
+    /// `extent/regions`, which is `log2(regions)` bits an axis free at the
+    /// same error. And `marble.setOf` already writes kernels in
+    /// `predictAll`'s order — region by region, then each region's own
+    /// list — so the grouping a decoder needs is already in the file; all
+    /// that has to be stored is a count per region, which `bytesFor`
+    /// charges for.
+    ///
+    /// The ablation is what pointed here: the centre is the ONLY expensive
+    /// field (0.01872 of excess at eight bits against the weight's exactly
+    /// zero), and its cost is a SPAN choice rather than a sensitivity.
+    regions: u32 = 0,
 
     pub fn perKernel(self: Bits) u32 {
         return 3 * @as(u32, self.mu) + 3 * @as(u32, self.logd) + 3 * @as(u32, self.off) + @as(u32, self.w);
@@ -973,7 +990,13 @@ pub const Bits = struct {
     /// The packed size: the kernels, plus a header of eight f32 ranges
     /// that every kernel is decoded against.
     pub fn bytesFor(self: Bits, kernels: usize) usize {
-        return (kernels * self.perKernel() + 7) / 8 + 8 * @sizeOf(f32);
+        var b = (kernels * self.perKernel() + 7) / 8 + 8 * @sizeOf(f32);
+        // A u16 count per region, which is what lets a decoder know which
+        // region's corner to add back. Charged in full, empty regions
+        // included, because a format that skipped them would need their
+        // indices instead and that is not cheaper.
+        if (self.regions > 0) b += @as(usize, self.regions) * self.regions * self.regions * 2;
+        return b;
     }
 };
 
@@ -1013,8 +1036,19 @@ pub fn quantizeSet(set: *rbf.Set, b: Bits) Spans {
         w_lo = @min(w_lo, k.w[0]);
         w_hi = @max(w_hi, k.w[0]);
     }
+    const hv: f32 = if (b.regions > 0) set.extent / @as(f32, @floatFromInt(b.regions)) else 0;
     for (set.kernels) |*k| {
-        inline for (0..3) |a| k.mu[a] = quant(k.mu[a], 0, set.extent, b.mu);
+        if (b.regions > 0) {
+            inline for (0..3) |a| {
+                // The owning region is the one holding the centre, which is
+                // `regionOf`'s rule and needs no extra information.
+                const idx = @min(@as(f32, @floatFromInt(b.regions - 1)), @max(0, @floor(k.mu[a] / hv)));
+                const org = idx * hv;
+                k.mu[a] = org + quant(k.mu[a] - org, 0, hv, b.mu);
+            }
+        } else {
+            inline for (0..3) |a| k.mu[a] = quant(k.mu[a], 0, set.extent, b.mu);
+        }
         inline for (.{ 0, 2, 5 }) |i| k.l[i] = @exp(quant(@log(@max(1e-20, k.l[i])), ld_lo, ld_hi, b.logd));
         inline for (.{ 1, 3, 4 }) |i| k.l[i] = quant(k.l[i], of_lo, of_hi, b.off);
         k.w[0] = quant(k.w[0], w_lo, w_hi, b.w);
@@ -1083,6 +1117,7 @@ test "G35 quantization: what a shippable kernel costs, and what it does to MARL-
         .{ .mu = 6, .logd = 5, .off = 5, .w = 6 },
         .{ .mu = 4, .logd = 4, .off = 4, .w = 4 }, // the mutation, and it must fail
     };
+    var ship: struct { bits: Bits, rms: f32, kib: f64 } = undefined;
     var got: [allocs.len]f32 = undefined;
     var kib: [allocs.len]f64 = undefined;
     var spans: Spans = undefined;
@@ -1135,6 +1170,48 @@ test "G35 quantization: what a shippable kernel costs, and what it does to MARL-
         std.debug.print("  G35:   {s:<20} span {d:>9.4}  step {e:>10.3}  RMS {d:.5} ({d:.3}×), excess {d:.5}\n", .{ f.n, f.span, f.span / 256.0, r, r / rms_f32, excess });
     }
 
+    // REGION-RELATIVE CENTRES, which is where the ablation pointed. A
+    // kernel's centre is inside its owning region by definition, so the
+    // span is `extent/regions` and not the cube: log2(regions) bits an
+    // axis free at the same error, for a u16 count per region.
+    //
+    // MUTATION: the same allocation with `regions = 0`. That is the
+    // absolute row already in the sweep above, and it must be worse — if
+    // it is not, the region-relative path is decoding to the same numbers
+    // and the count table is being charged for nothing.
+    {
+        var abs = rbf.Set{ .extent = ref.extent, .columns = ref.columns, .hash = ref.hash, .kernels = try gpa.dupe(rbf.Kernel, ref.kernels) };
+        defer abs.deinit(gpa);
+        var rel = rbf.Set{ .extent = ref.extent, .columns = ref.columns, .hash = ref.hash, .kernels = try gpa.dupe(rbf.Kernel, ref.kernels) };
+        defer rel.deinit(gpa);
+        const only_mu = Bits{ .mu = 8, .logd = 32, .off = 32, .w = 32 };
+        var only_mu_rel = only_mu;
+        only_mu_rel.regions = co.regions;
+        _ = quantizeSet(&abs, only_mu);
+        _ = quantizeSet(&rel, only_mu_rel);
+        const ea = @sqrt(@max(0, @as(f64, rmsOfSetInverted(&abs, pr)) * rmsOfSetInverted(&abs, pr) - @as(f64, rms_f32) * rms_f32));
+        const er = @sqrt(@max(0, @as(f64, rmsOfSetInverted(&rel, pr)) * rmsOfSetInverted(&rel, pr) - @as(f64, rms_f32) * rms_f32));
+        std.debug.print("  G35: region-relative centres, 8 bits alone — excess {d:.5} absolute against {d:.5} relative, {d:.2}× (≥ {d:.1} predicted, {d:.1} from the geometry)\n", .{ ea, er, ea / @max(1e-9, er), thresholds.MARL15_RELATIVE, @as(f32, @floatFromInt(co.regions)) });
+        try testing.expect(ea / @max(1e-9, er) >= thresholds.MARL15_RELATIVE);
+    }
+    {
+        // And what it buys: the 54-bit budget that FAILED absolute.
+        var b = Bits{ .mu = 6, .logd = 5, .off = 5, .w = 6 };
+        b.regions = co.regions;
+        var q = rbf.Set{ .extent = ref.extent, .columns = ref.columns, .hash = ref.hash, .kernels = try gpa.dupe(rbf.Kernel, ref.kernels) };
+        defer q.deinit(gpa);
+        _ = quantizeSet(&q, b);
+        const r = rmsOfSetInverted(&q, pr);
+        std.debug.print("  G35: 6/5/5/6 relative — {d} bits a kernel, {d:.1} KiB (a {d:.2}× saving on f32), RMS {d:.5} = {d:.3}× (≤ {d:.2}); the same budget ABSOLUTE was {d:.3}\n", .{
+            b.perKernel(), @as(f64, @floatFromInt(b.bytesFor(q.kernels.len))) / 1024.0,
+            @as(f32, marl.PARAMS * 32) / @as(f32, @floatFromInt(b.perKernel())),
+            r, r / rms_f32, thresholds.MARL15_RBITS, got[4] / rms_f32,
+        });
+        try testing.expect(r / rms_f32 <= thresholds.MARL15_RBITS);
+        try testing.expect(r < got[4]); // the mutation: absolute, same budget
+        ship = .{ .bits = b, .rms = r, .kib = @as(f64, @floatFromInt(b.bytesFor(q.kernels.len))) / 1024.0 };
+    }
+
     // The pre-registered allocation survives…
     try testing.expect(got[0] / rms_f32 <= thresholds.MARL15_BITS);
     // …and four bits a field does not, or the whole sweep is decoration.
@@ -1142,23 +1219,33 @@ test "G35 quantization: what a shippable kernel costs, and what it does to MARL-
 
     // THE HEADLINE, both sides compressed. The grid gets eight bits over
     // [0, 1], which is what a renderer would ship, and the same bytes.
-    // The headline uses the SMALLEST allocation that stayed inside the
-    // pre-registered ceiling, which is what a production build would pick.
-    var best: usize = 0;
-    for (allocs, 0..) |b, i| {
-        if (got[i] / rms_f32 <= thresholds.MARL15_BITS and b.perKernel() < allocs[best].perKernel()) best = i;
-    }
-    const budget = allocs[best].bytesFor(ref.kernels.len);
+    // THE HEADLINE, at the encoding a production build would actually
+    // pick: 54 bits with region-relative centres, which is the smallest
+    // that stayed inside the ceiling.
+    const budget = ship.bits.bytesFor(ref.kernels.len);
+    // A cubic grid can only step in whole resolutions, so it cannot land
+    // on the budget: at 5.5 KiB it fits 17³ = 4.8 and the next size up is
+    // 18³ = 5.7. Reporting only the one that fits would flatter MARL by
+    // 13% of the memory, so BOTH are measured and the assertion is made
+    // against the larger — the grid given MORE than its share.
     const res = Grid.resFor(budget * 4); // four cells a byte at eight bits
-    const cells: u64 = @as(u64, res) * res * res;
-    var g = try Grid.fill(gpa, &vol, o.ao, res, @intCast(@max(1, o.ray_budget / cells)), o.seed);
-    defer g.deinit(gpa);
-    quantizeGrid(&g, 8);
-    const g_rms = rmsOf(pr, &g);
-    const g_kib = @as(f64, @floatFromInt(cells)) / 1024.0;
-    std.debug.print("  G35: both compressed — MARL {d:.5} at {d:.1} KiB, grid {d:.5} at {d:.1} KiB ({d}³ at 8 bits): {d:.3} (≤ {d:.2} predicted, ≈1.06 derived; MARL-14's f32 number was 0.878)\n", .{
-        got[best], kib[best], g_rms, g_kib, res, got[best] / g_rms, thresholds.MARL15_HEADLINE,
+    var g_rms: [2]f32 = undefined;
+    var g_kib: [2]f64 = undefined;
+    for ([_]u32{ res, res + 1 }, 0..) |r, i| {
+        const cells: u64 = @as(u64, r) * r * r;
+        var g = try Grid.fill(gpa, &vol, o.ao, r, @intCast(@max(1, o.ray_budget / cells)), o.seed);
+        defer g.deinit(gpa);
+        quantizeGrid(&g, 8);
+        g_rms[i] = rmsOf(pr, &g);
+        g_kib[i] = @as(f64, @floatFromInt(cells)) / 1024.0;
+    }
+    std.debug.print("  G35: both compressed — MARL {d:.5} at {d:.1} KiB; grid {d}³ {d:.5} at {d:.1} KiB (under budget) and {d}³ {d:.5} at {d:.1} KiB (over): ratios {d:.3} and {d:.3} (≤ {d:.2} predicted, ≈1.06 derived; MARL-14's f32 number was 0.878)\n", .{
+        ship.rms, ship.kib,
+        res,     g_rms[0], g_kib[0],
+        res + 1, g_rms[1], g_kib[1],
+        ship.rms / g_rms[0], ship.rms / g_rms[1], thresholds.MARL15_HEADLINE,
     });
-    try testing.expect(g_kib <= kib[best] * 1.05);
-    try testing.expect(got[best] / g_rms <= thresholds.MARL15_HEADLINE);
+    // The grid straddles the budget, and the generous side is the test.
+    try testing.expect(g_kib[0] <= ship.kib and g_kib[1] >= ship.kib);
+    try testing.expect(ship.rms / g_rms[1] <= thresholds.MARL15_HEADLINE);
 }

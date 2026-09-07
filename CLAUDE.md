@@ -357,13 +357,35 @@ in the tails of most of the others. A per-element worst case compounded
 over an assumed overlap count multiplies two things that never happen
 together, and is not conservative but wrong.
 
-So the headline goes the other way from the derivation: **0.859 compressed
-against 0.878 in f32.** A kernel compresses 4.7× where an eight-bit grid
-cell compresses 4×, so the packed set gains MORE from compression. A
-distilled, quantized MARL of 814 kernels is 6.8 KiB and beats an 8-bit 19³
-volume texture of the same size by 14%. Still owed: the weights use one
-global span, and MARL-1's divergent regime reached mean |w| of 13–17, which
-would waste most of the levels on outliers.
+The ablation also said WHERE: the centre is the only expensive field
+(0.01872 of excess at 8 bits against the weight's exactly ZERO), and its
+cost is a SPAN choice. A kernel's centre is inside its owning region by
+definition, so the span is `extent/regions` — and `setOf` already writes
+kernels in region order, so only a u16 count per region need be stored.
+**Region-relative centres cut the centre's excess 6.16×** (geometry said
+3.0; read the numerator, the relative excess is at the edge of what 512
+probes resolve). That makes **54 bits — 6.75 bytes — a kernel** the
+production encoding, at NO MEASURABLE COST (0.995×) where the same budget
+with absolute centres cost 8.6%. **5.93× on f32.**
+
+So the headline goes the other way from the derivation, and keeps going:
+**0.878 in f32 → 0.859 at 8-bit absolute → 0.804 at 54-bit
+region-relative** — the last against a grid given MORE than its share,
+because a cubic grid cannot land on a byte budget (17³ is 4.8 KiB, 18³ is
+5.7; both are measured and the gate asserts the generous one). Every step
+of compression moves the comparison further in the packed set's favour,
+because **an adaptive basis compresses better than a uniform one: adaptation
+narrows the dynamic range every field has to carry.**
+
+Recorded, not built. QAT belongs in the DISTILLATION transfer step
+(Christian's, and right) — a student is already re-fitting against a free
+noiseless oracle, so snapping to the grid inside its existing `clamp`
+costs nothing, and "nothing enters the model unprojected" already describes
+it. No headroom at 54 bits; the case is below, where 40 bits measured
+1.608. The caution is that kernels MOVE, so the grid shifts under them and
+a kernel wanting to move less than half a step never moves. Also owed: the
+weights use ONE global span, and MARL-1's divergent regime reached mean |w|
+of 13–17, which would waste most of the levels on outliers.
 
 ## The ledger
 

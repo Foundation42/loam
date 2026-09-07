@@ -5443,10 +5443,74 @@ field.
 
 The centre is the outlier, and its cost is entirely a SPAN choice rather
 than a sensitivity: it is quantized over the whole extent, giving a step of
-0.066σ. Kernels are already stored grouped by owning region (`setOf` writes
-them in `predictAll`'s region order), so storing a per-region origin — 27
-of them, negligible — would cut the span threefold for 1.58 bits an axis
-free. Not built.
+0.066σ.
+
+### Region-relative centres, which is where that pointed
+
+A kernel's centre is inside its owning region BY DEFINITION — that is what
+ownership means in this model, and the clamp keeps it there. So the span a
+centre needs is not the cube but `extent/regions`, which is log2(regions)
+bits an axis free at the same error. And `marble.setOf` already writes
+kernels in `predictAll`'s order — region by region, then each region's own
+list — so the grouping a decoder needs is already in the file; all that has
+to be stored is a u16 count per region, charged in full at 27 × 2 = 54
+bytes.
+
+Pre-registered in `tools/marl15_predict.py`'s second section, written after
+the absolute sweep ran and before this one did.
+
+**MARL15_RELATIVE HELD at 6.16×**, twice the 3.0 the geometry predicts:
+excess 0.01872 absolute against 0.00304 relative, eight bits with the other
+three fields in f32. Read the numerator rather than the ratio, though — the
+relative excess is a difference of 0.00003 in the fourth decimal of an RMS,
+at the edge of what 512 probes resolve. The safe reading is that the centre
+STOPS BEING THE EXPENSIVE FIELD, not that the saving is exactly six-fold.
+
+**MARL15_RBITS HELD at 0.995 — no measurable cost at all** — where the same
+54-bit budget with absolute centres cost 8.6%. That is not "better than
+f32"; it is indistinguishable from it, and half a per cent is not a claim
+worth making.
+
+So the production encoding is **54 bits, 6.75 bytes, a kernel**: 6 bits an
+axis of region-relative centre, 5 of log-diagonal, 5 of off-diagonal, 6 of
+weight. **5.93× on f32**, 5.5 KiB for the 814-kernel model.
+
+### The headline, re-priced, and the grid's granularity
+
+A cubic grid cannot land on a byte budget — at 5.5 KiB it fits 17³ = 4.8
+and the next size up is 18³ = 5.7. Reporting only the one that fits would
+flatter MARL by 13% of the memory, so both are measured and the gate
+asserts against the larger, the grid given MORE than its share:
+
+| | MARL over grid |
+|---|---|
+| f32 (MARL-14) | 0.878 |
+| 8-bit absolute centres | 0.859 |
+| 54-bit region-relative, grid under budget (17³) | 0.769 |
+| **54-bit region-relative, grid over budget (18³)** | **0.804** ← gated |
+
+MARL 0.16230 at 5.5 KiB against 0.20184 at 5.7. Every step of compression
+has moved the comparison FURTHER in the packed set's favour, which is the
+opposite of what the derivation expected and is worth stating plainly: an
+adaptive basis compresses better than a uniform one, because adaptation
+narrows the dynamic range every field has to carry.
+
+### Recorded, not built: QAT belongs in the transfer step
+
+Christian's, and it is the right place for it: quantization-aware training
+should ride the DISTILLATION transfer rather than the original fit. A
+student is already re-fitting from scratch against a free, noiseless,
+unlimited oracle (MARL-14), so snapping to the quantization grid inside its
+existing `clamp` projection costs nothing extra — the model's own rule is
+"nothing enters the model unprojected", and a quantization grid is just a
+finer projection.
+
+There is no headroom for it at 54 bits, where the cost is already
+unmeasurable. Where it would earn its place is below: 40 bits absolute
+measured 1.608, and if QAT made that budget viable it would be another 1.35×
+on top of the 5.93×. The caution is that MARL's kernels MOVE, so the grid a
+centre snaps to keeps shifting under it, and a kernel wanting to move less
+than half a step would never move at all.
 
 
 

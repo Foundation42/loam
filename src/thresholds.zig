@@ -1684,15 +1684,70 @@ pub const MARL15_BITS: f32 = 1.05;
 /// number, and under compression the two representations are expected to
 /// be about level on this field.
 ///
-/// **HELD, at 0.859 — and quantization IMPROVES MARL's position rather
-/// than cancelling it.** MARL 0.16474 at 6.8 KiB against a 19³ eight-bit
-/// grid's 0.19189 at 6.7 KiB, where MARL-14's f32 number on the same
-/// fixture was 0.878.
+/// **HELD, and quantization IMPROVES MARL's position rather than
+/// cancelling it.** The derivation predicted 1.06 on the assumption that a
+/// grid compresses 4× and a kernel only 2.7×. A kernel compresses 4.7×
+/// with absolute centres and **5.9× with region-relative ones**, so the
+/// packed set gains MORE from compression than the texture does and the
+/// f32 comparison was, if anything, unfair to it.
 ///
-/// The derivation predicted 1.06 on the assumption that a grid compresses
-/// 4× and a kernel only 2.7×. A kernel compresses **4.7×**, so the packed
-/// set gains slightly MORE from quantization than the texture does, and
-/// the f32 comparison was if anything unfair to it.
+/// At the production encoding — 54 bits, region-relative — MARL is 0.16230
+/// at 5.5 KiB. A cubic grid cannot land on that budget: 17³ is 4.8 KiB and
+/// 18³ is 5.7, so BOTH are measured and the assertion is made against the
+/// larger, the grid given MORE than its share.
+///
+///     f32, MARL-14                        0.878
+///     8-bit absolute centres              0.859
+///     54-bit region-relative, grid under  0.769
+///     54-bit region-relative, grid over   **0.804**  ← the gated one
 pub const MARL15_HEADLINE: f32 = 1.15;
+
+/// G35, the region-relative extension. From `tools/marl15_predict.py`'s
+/// second section, written after the absolute sweep ran and before this
+/// one did.
+///
+/// G35's ablation found the centre is the ONLY expensive field — 0.01872
+/// of excess RMS at eight bits against the weight's exactly zero — and
+/// that its cost is a SPAN choice rather than a sensitivity: quantized
+/// over the whole extent it steps 0.066σ. But a kernel's centre is inside
+/// its owning region by definition, so the span is `extent/regions`.
+///
+/// The centre's 8-bit excess ABSOLUTE over the same excess RELATIVE.
+/// PROPOSED as a FLOOR at 2.5 where the geometry says 3.0, because the
+/// excess is a small difference of two nearby RMS values and does not
+/// measure to three figures.
+///
+/// **HELD, at 6.16×** — twice the 3.0 the geometry predicts. Excess 0.01872
+/// absolute against 0.00304 relative, at eight bits with the other three
+/// fields left in f32.
+///
+/// Read the numerator, not the ratio. The relative excess is 0.00304 on an
+/// RMS of 0.163, which is a difference of 0.00003 in the fourth decimal —
+/// at the edge of what 512 probes resolve. The safe reading is that the
+/// centre stops being the expensive field, not that the saving is exactly
+/// six-fold.
+pub const MARL15_RELATIVE: f32 = 2.5;
+
+/// The same ceiling as `MARL15_BITS`, applied at 54 bits with relative
+/// centres — 6.75 bytes a kernel, a 5.9× saving. PROPOSED at 1.05 with a
+/// derived expectation of 1.043, propagated through the ablation's own
+/// per-field numbers.
+///
+/// The point of the number is that a bit budget which FAILED absolute
+/// (54 bits measured 1.086) must PASS relative, or the change has bought
+/// nothing worth the count table.
+///
+/// **HELD, at 0.995 — no measurable cost at all**, where the same 54-bit
+/// budget with absolute centres cost 8.6%. 5.5 KiB for the 814-kernel
+/// model, a 5.93× saving on f32.
+///
+/// 0.995 is not "better than f32"; it is indistinguishable from it. The
+/// two are scored on the same probes so the paired difference resolves
+/// well, but half a per cent is not a claim worth making.
+///
+/// So the production encoding is **54 bits — 6.75 bytes — a kernel**:
+/// 6 bits an axis of region-relative centre, 5 of log-diagonal, 5 of
+/// off-diagonal, 6 of weight, plus a u16 count per region.
+pub const MARL15_RBITS: f32 = 1.05;
 
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
