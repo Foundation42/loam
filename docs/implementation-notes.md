@@ -3263,6 +3263,61 @@ The decomposition to work from, all at 200 000 exemplars from an empty
 with 3 648. The descent buys less than half the kernels' worth of capacity
 and more than half the remaining error.
 
+### Growth against deformation, and whether the plateau means anything (Astra's reading, tested)
+
+Astra, on the feedback pass: five times the experience adding only ~12%
+more kernels looks like a transition from growth-dominated learning to
+deformation-dominated refinement, and if K(N) asymptotes then MARL looks
+less like memory and more like function acquisition. The growth curve
+supports the first half strongly:
+
+    exemplars      10 000    100 000    1 000 000
+    kernels          1 974      3 379        4 071
+    held-out RMS   0.06930    0.03121      0.01161
+
+K grows as N^0.233 over the first of those decades and N^0.081 over the
+second, while the RMS falls by 2.69 over that same decade for 20% more
+kernels. Capacity is flattening and the error is not: whatever is buying
+the last decade of accuracy, it is not new kernels.
+
+The second half needed a check rather than a reading, because there is a
+duller explanation available: births stop when some kernel already reads
+above `coverage`, so a plateau could be nothing more than SPACE BEING
+TILED — an artefact of a hyperparameter and the cutoff's geometry, with no
+epistemic content at all. Pure tiling predicts K ∝ r_cov⁻³ for
+r_cov = √(−2 ln coverage). Swept at 300 000 exemplars:
+
+| coverage | r_cov | tiling predicts | measured | ratio | gain |
+|---|---|---|---|---|---|
+| 0.10 | 2.146 | 1 164 | 14 674 | 12.60 | **0.77** |
+| 0.20 | 1.794 | 1 992 | 2 686 | 1.35 | 5.80 |
+| 0.35 | 1.449 | 3 782 | 3 782 | 1.00 | **8.14** |
+| 0.50 | 1.177 | 7 049 | 5 459 | 0.77 | 7.53 |
+| 0.60 | 1.011 | 11 143 | 6 414 | 0.58 | 7.09 |
+
+Over 0.20 to 0.60 the tiling law spans 5.59× and K spans 2.39× — so
+K ~ r_cov⁻¹·⁵, about the SQUARE ROOT of the tiling law, and the ratio
+column walks monotonically from 1.35 to 0.58 rather than sitting at one.
+The plateau is therefore not pure tiling: descent reshapes kernels to
+satisfy coverage that births would otherwise have had to pay for, and it
+does so more the looser the coverage. But the honest limit of this
+evidence is that `coverage` is still the dominant knob on K, so the
+asymptote is set substantially by a hyperparameter. The clean test is to
+vary the TRUTH's complexity at fixed coverage and see whether K(∞) moves;
+that needs a flag on the target and is MARL-1's.
+
+**A third failure mode, and a new one.** `coverage 0.10` does not merely
+learn badly, it DIVERGES — RMS 0.19107 against an empty model's 0.14717 —
+and it does so while birthing 14 674 kernels, four times the default and
+twelve times what tiling predicts. Births are refused so long that the few
+kernels that exist carry weights far too large for the ground they cover;
+the field goes wild, residuals stay above the threshold everywhere, and
+the coverage test then starts failing on its own wreckage. So the three
+ways MARL-0 is known to fail are Adam (a step that ignores the residual),
+births too NARROW (`--width 0.4`, saturation), and coverage too LOW
+(under-coverage, divergence) — and the default 0.35 happens to sit at the
+best gain in the sweep, which was luck: it was written before any run.
+
 ### Recorded, not built
 
 - **Parallel learning needs one ruling first.** Gradient descent is not
