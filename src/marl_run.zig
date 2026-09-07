@@ -66,6 +66,13 @@ const usage =
     \\                      which a region is under representation pressure (0.05)
     \\  --pressure-events N covered events a region must see first (default 200)
     \\  --refine F          the child's region grid, as a multiple (default 2)
+    \\  --child-birth R     coverage (MARL-2, default) | residual | either: how the
+    \\                      CHILD decides to birth — geometric tiling, or persistent
+    \\                      post-update residual. The only thing MARL-3 changes
+    \\  --birth-evidence N  observations a cell needs before it is evidence (8)
+    \\  --birth-scale F     the evidence cell's edge, in coverage spacings (2)
+    \\  --birth-residual F  mean post-update residual it must still carry
+    \\                      (default 0 = the surprise threshold)
     \\
 ;
 
@@ -154,6 +161,15 @@ fn parse(args: []const []const u8) !?Opts {
             o.p.min_events = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--refine")) {
             o.p.refine = try std.fmt.parseInt(u32, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--child-birth")) {
+            const v = try next(args, &i);
+            o.p.child_birth = if (std.mem.eql(u8, v, "coverage")) .coverage else if (std.mem.eql(u8, v, "residual")) .residual else if (std.mem.eql(u8, v, "either")) .either else return error.UnknownBirthRule;
+        } else if (std.mem.eql(u8, a, "--birth-evidence")) {
+            o.m.birth_evidence = try std.fmt.parseInt(u32, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--birth-scale")) {
+            o.m.birth_scale = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--birth-residual")) {
+            o.m.birth_residual = try parseF32(try next(args, &i));
         } else if (std.mem.eql(u8, a, "--no-births")) {
             o.m.births = false;
         } else if (std.mem.eql(u8, a, "--features")) {
@@ -477,7 +493,7 @@ fn hier(gpa: std.mem.Allocator, o: Opts) !void {
 
     try out.print("MARL-2 — the residual hierarchy against flat MARL ({s})\n", .{@tagName(builtin.mode)});
     try out.print("  target: {d} feature(s), sharpness ×{d:.1}, frequency ×{d:.1}; {d} exemplars, {d} probes, seed {d}\n", .{ o.m.truth.features, o.m.truth.sharpness, o.m.truth.frequency, o.exemplars, o.probe_n, o.m.seed });
-    try out.print("  pressure: mean post-update residual > {d:.3} over ≥ {d} covered events; child grid ×{d}\n\n", .{ o.p.threshold, o.p.min_events, o.p.refine });
+    try out.print("  pressure: mean post-update residual > {d:.3} over ≥ {d} events; child grid ×{d}; child births by {s}\n\n", .{ o.p.threshold, o.p.min_events, o.p.refine, @tagName(o.p.child_birth) });
 
     try out.print("  {s:<26} {s:>10} {s:>9} {s:>12} {s:>9}\n", .{ "", "RMS", "kernels", "updates", "mean |w|" });
     try out.print("  {s:<26} {d:>10.5} {d:>9} {d:>12} {d:>9.4}\n", .{ "empty", rms0, 0, 0, 0.0 });
@@ -495,7 +511,19 @@ fn hier(gpa: std.mem.Allocator, o: Opts) !void {
     try out.print("    parent frozen          {d:>6} kernels held in refined regions\n", .{h.parent.frozenCount()});
     try out.print("    child in the shell band {d:>5} kernels, {d:.0} per unit³\n", .{ h.child.countIn(marl.Truth.inShell), child_shell });
     try out.print("    child in the quiet slab {d:>5} kernels          predicted {d} (MARL2_CHILD_QUIET)\n", .{ h.child.countIn(marl.Truth.inQuiet), th.MARL2_CHILD_QUIET });
-    try out.print("    CONCENTRATION          parent {d:>5.2}   child {d:.2}   predicted ≥ {d:.1} (MARL2_CONCENTRATION)\n", .{ parent_conc, child_conc, th.MARL2_CONCENTRATION });
+    const ceil_v: f64 = if (child_occ > 0) child_occ / @as(f64, V_SHELL) else 0;
+    try out.print("    CONCENTRATION          parent {d:>5.2}   child {d:.2}   of a perfect {d:.2} ({d:.0}%)\n", .{ parent_conc, child_conc, ceil_v, if (ceil_v > 0) 100 * child_conc / ceil_v else 0 });
+    try out.print("    child kernels          {d:>6}          MARL-2 spent {d} here (MARL3_CAPACITY_CAP)\n", .{ h.child.kernels.items.len, th.MARL3_MARL2_CHILD_KERNELS[if (o.m.truth.sharpness >= 4) @as(usize, 2) else if (o.m.truth.sharpness >= 2) @as(usize, 1) else @as(usize, 0)] });
+    try out.print("    usable capacity        {d:>6.3} of child kernels have ≥ 10 updates; {d:.0} updates each on average\n", .{ h.child.trainedFraction(10), h.child.meanUpdates() });
+    {
+        const share = h.bandShareOfRefined();
+        const routed_band = if (h.routed > 0) @as(f32, @floatFromInt(h.routed_in_band)) / @as(f32, @floatFromInt(h.routed)) else 0;
+        const child_band = if (h.child.kernels.items.len > 0) @as(f32, @floatFromInt(h.child.countIn(marl.Truth.inShell))) / @as(f32, @floatFromInt(h.child.kernels.items.len)) else 0;
+        try out.print("\n  THE EVIDENCE STREAM — a birth can only happen where an exemplar is\n", .{});
+        try out.print("    the band is             {d:>6.4} of the refined volume\n", .{share});
+        try out.print("    of exemplars routed     {d:>6.4} landed in it — the stream the child learns from\n", .{routed_band});
+        try out.print("    of child kernels        {d:>6.4} landed in it — what the birth rule made of that stream\n", .{child_band});
+    }
 
     // The signal's own separability, printed whatever the threshold did —
     // a refiner that fired on nothing and a refiner that fired on

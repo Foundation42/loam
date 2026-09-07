@@ -34,6 +34,9 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -- --sharpness 2 --hier         # MARL-2: parent + child_delta against flat, on the same exemplars
     zig build marl -- --sharpness 4 --refine 3     # MARL-2: the child's scale — there is an optimum, and past it more is worse
     zig build test -Dtest-filter="G19"             # MARL-2's gates; tools/marl2_predict.py, two of whose five were REFUTED
+    zig build marl -- --sharpness 4 --child-birth residual --hier   # MARL-3: residual-driven child birth — under-births into divergence
+    zig build marl -- --sharpness 4 --child-birth either --hier     # MARL-3: with the coverage floor kept — six extra births in 4345
+    zig build test -Dtest-filter="G20"             # MARL-3's gates; tools/marl3_predict.py, all three of whose numbers were REFUTED
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -81,7 +84,13 @@ child holds means "what the level above could not represent" (G19 a). Two
 of MARL-2's five pre-registered numbers were refuted and are left standing
 in `thresholds.zig` for Christian to strike — refinement turned out to be
 region-granular rather than structure-granular, and more capacity is not
-monotonically better.
+monotonically better. MARL-3 then established that the birth criterion is
+not where that failure lives: **capacity concentration is bounded by
+EVIDENCE concentration**, because a birth can only happen where an
+exemplar is, and the child's stream is uniform over the refined region
+(G20 c). The coverage rule turns out to be a TRAINABILITY floor as much as
+a placement rule — removing it walks into MARL-1's over-responsibility
+regime by a third door.
 
 ## The ledger
 

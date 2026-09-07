@@ -3732,6 +3732,145 @@ BIRTH rule can be residual-driven the way its trigger now is — capacity
 placed where the residual is, not where the tiling has a gap. Recursion on
 top of a geometric allocator would multiply the wrong thing.
 
+## MARL-3 — residual-driven birth, and where the allocator's failure actually lives (Monday 2026-09-07)
+
+Christian's surgical brief: change ONE thing, the child's birth decision,
+from "insufficient geometric coverage" to "persistent post-update
+residual". Keep the MARL-2 parent, the pressure trigger, two levels, the
+frozen-parent delta semantics, the responsibility mechanism, the
+optimiser, the target family. The question:
+
+> Can residual-driven birth make child capacity follow unresolved
+> structure rather than refined-region volume?
+
+**The answer is no, and the experiment says why — the birth criterion was
+never where the failure lived.** All three pre-registered numbers were
+refuted, and they were refuted by a result more useful than the one they
+were written for.
+
+### What a perfect allocator would score
+
+Written before the runs, and it is what makes "materially better" sayable:
+if every child kernel landed in the band, concentration would be the
+refined volume over the band volume inside it — a ceiling that RISES with
+sharpness, because a thinner ridge is a smaller share of the region
+holding it.
+
+    sharpness    ceiling    MARL-2    of ceiling
+        ×1         3.54       1.54        43%
+        ×2         6.48       1.67        26%
+        ×4        11.01       1.65        15%
+
+### Three birth rules, one number that will not move
+
+    rule / sharpness    childK  concen  ceiling   ratio   mean |w|  trained
+    coverage ×1           4594    1.54     3.54    1.12     0.1031    0.985
+    coverage ×2           4339    1.67     6.48    1.32     0.1481    0.990
+    coverage ×4           3760    1.65    11.01    1.38     0.1518    0.989
+    residual ×1           1188    1.60     2.99    0.23    13.6693    0.208
+    residual ×2           1193    1.58     5.79    0.43    16.6195    0.215
+    residual ×4            969    1.72     9.39    0.38    15.8824    0.240
+    either   ×1           4594    1.54     3.54    1.12     0.1031    0.985
+    either   ×2           4345    1.67     6.48    1.32     0.1481    0.990
+    either   ×4           3778    1.67    11.01    1.39     0.1518    0.989
+
+And across four settings of the residual bar at sharpness ×2, spanning 680
+to 4 345 child kernels and convergent to badly divergent, concentration
+stayed between 1.57 and 1.67. **It does not move.** The slope is 1.07 to
+1.08 for every rule against a pre-registered 1.5, while the ceiling
+triples.
+
+### Three findings, in the order they landed
+
+**1. Residual-only birth under-births into MARL-1's over-responsibility
+regime.** Mean |w| of 13.7 to 16.6 against a converging 0.15, with 79% of
+the child's kernels never receiving ten gradient updates. This is the same
+mechanism MARL-1 characterised, arriving through a THIRD door — birth
+refused by coverage, birth capped by budget, and now birth gated on
+residual evidence. So the coverage rule was never only about placement: it
+is a TRAINABILITY FLOOR, and removing it costs more than the placement it
+was being blamed for.
+
+There is a new twist in this door. Once the child diverges, its own
+residual is large everywhere, so the residual signal it uses to place
+capacity is contaminated by its own failure. The allocator loses the
+ability to see where to allocate precisely by allocating badly.
+
+**2. With the floor kept (`either`), residual evidence never gets to
+decide anything.** 4 345 child kernels against coverage's 4 339 — SIX
+births out of four thousand. By the time a cell has accumulated the
+evidence to qualify, coverage has already birthed there. The rules are not
+competing; one of them fires first, everywhere.
+
+**3. Capacity concentration is bounded by EVIDENCE concentration, and the
+child's evidence stream is uniform.** This is the finding.
+
+A birth can only happen where an exemplar is. The child is handed every
+exemplar landing in a refined region, regardless of where the residual is,
+so its stream is uniform over that region — and no birth rule can
+concentrate capacity above the stream it is given. Measured at sharpness
+×4: the band is 8.0% of the refined volume, the routed stream is 9.3% of
+it (a concentration of 1.16, which is nothing), and the birth rule lifts
+the kernels to 15.0% under coverage or 18.4% under residual evidence. The
+rule contributes its 1.6 to 2.0. The stream contributes none of it.
+
+### The diagnosis, tested and not built
+
+A two-line probe — route to the child only exemplars whose parent residual
+exceeds 0.05 — was run to test the diagnosis and then reverted. It is not
+in the tree and it is not MARL-4; it is the measurement that says whether
+the explanation above is the right one.
+
+                       band   stream   kernels   concentration
+    uniform routing    8.0%     9.3%     15.0%           1.65
+    filtered routing   8.0%    22.0%     21.9%           2.11
+
+**The child's kernels land in the band at 21.89% when the stream delivers
+21.95%.** To three digits, placement reproduces the distribution it is
+fed. That is the diagnosis stated as an identity, and it says where an
+allocator can and cannot be fixed: not at the birth criterion, which
+faithfully tiles whatever arrives, but at what arrives.
+
+It also says routing at a fixed bar is not the whole answer either — 22%
+against a ceiling of 100% is better and still not close.
+
+### The gates, and what each was paid for
+
+| gate | mutation | result |
+|---|---|---|
+| G20 (a) a residual birth needs persistence AND magnitude, and spends its evidence | the persistence half dropped — a singleton is evidence | fails |
+| G20 (b) residual birth alone under-births into over-responsibility | `.residual` falls back to coverage — the floor never removed | fails |
+| G20 (c) concentration is bounded by the evidence stream, and the stream is uniform | route only high-residual exemplars (MARL-4's change) | fails |
+
+G20 (c) survived its mutation the first time and the reason was a defect
+in the gate, not in the mutation: `routed` was counted at the top of the
+branch rather than immediately before `child.observe`, so it measured what
+was OFFERED to the child rather than what reached it, and a routing filter
+was invisible to it. Moved. The gate is now the one that will notice when
+routing changes, which is the point of having it.
+
+### What this leaves for MARL-4
+
+The architectural statement stands where Christian put it, one clause
+sharper:
+
+> MARL can detect where representation is inadequate. It cannot place new
+> representation according to the structure of what remains unexplained,
+> **because the evidence it places from is not distributed like that
+> structure.**
+
+Two things follow, and neither is "recurse":
+
+- The coverage rule is doing two jobs — placing capacity and keeping the
+  basis dense enough to train — and MARL-3 established they are separable
+  only if something else takes over the second. Any allocator that
+  concentrates must carry a trainability floor of its own, or it walks
+  into the over-responsibility regime by three known doors.
+- Concentration is bought at the stream, not at the birth. Whether that
+  should be routing, importance-weighted exemplars, or residual-proportional
+  attention is the next question, and the probe above says the first of
+  those moves the number in the right direction without solving it.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

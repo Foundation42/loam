@@ -341,6 +341,18 @@ pub fn truth(p: [3]f32) f32 {
 /// hundred times the capacity, predicting worse. The ledger has the run.
 pub const Optimizer = enum { nlms, adam };
 
+pub const BirthRule = enum {
+    /// MARL-0 through MARL-2: birth where nothing already covers.
+    coverage,
+    /// MARL-3 as specified: birth on persistent post-update residual, and
+    /// on nothing else.
+    residual,
+    /// Either. Keeps the coverage floor — which turns out to be about
+    /// TRAINABILITY rather than placement — and adds residual-driven
+    /// births on top of it.
+    either,
+};
+
 pub const Options = struct {
     seed: u64 = 7,
     /// Regions per axis over the unit cube. The region edge `h` sets the
@@ -383,6 +395,46 @@ pub const Options = struct {
     /// costs nothing at the defaults and still bounds the pathological
     /// case. `Stats.trust_clamped` says whether it ever bit.
     trust: f32 = 1.0 / 3.0,
+    /// How a birth is decided (MARL-3, and the ONLY thing MARL-3 changes).
+    ///
+    /// `.coverage` — MARL-0 through MARL-2: birth where no kernel already
+    /// reads above `coverage`. Geometric. It tiles whatever region it is
+    /// given, which is why MARL-2's child concentrated no better than its
+    /// parent (1.65 against a ceiling of 12.46 at sharpness ×4).
+    ///
+    /// `.residual` — birth where the POST-UPDATE residual has persisted:
+    /// a cell of the evidence grid must have been visited `birth_evidence`
+    /// times and still average more than `birth_residual` of error after
+    /// adaptation. Both halves are needed, and the second is what keeps a
+    /// singleton from being mistaken for structure (§5, "do not confuse
+    /// noise with complexity").
+    ///
+    /// The default stays `.coverage` so that MARL-2 remains a reproducible
+    /// configuration and G19 keeps measuring what it measured.
+    birth_rule: BirthRule = .coverage,
+    /// Observations a cell needs before its mean is evidence at all.
+    birth_evidence: u32 = 8,
+    /// The evidence cell's edge, in coverage spacings.
+    ///
+    /// One spacing is the natural scale — it is the neighbourhood a birth
+    /// would claim — and at this exemplar budget it does not work: the
+    /// refined volume holds about eighteen thousand such cells and receives
+    /// about twenty-nine thousand routed exemplars, which is 1.6
+    /// observations each against the eight required, and the child births
+    /// NOTHING. Pooling over a coarser neighbourhood is the cheapest
+    /// honest fix, and it costs less than it appears to: the cell decides
+    /// WHERE EVIDENCE IS GATHERED, while the kernel is still placed at the
+    /// exemplar, so widening it blurs the question and not the answer.
+    ///
+    /// This is Christian's evidence-per-kernel concern arriving one stage
+    /// earlier than expected — at the birth decision rather than at the
+    /// kernel — and it is the same trade: a finer grid asks a sharper
+    /// question of a smaller sample.
+    birth_scale: f32 = 2,
+    /// Mean post-update residual a cell must still carry. Zero means "the
+    /// surprise threshold" — this cell persistently fails to get under the
+    /// bar the model already cares about, which needs no new number.
+    birth_residual: f32 = 0,
     /// The target. MARL-1 experiment 2 varies this at fixed `coverage`.
     truth: TruthParams = .{},
     /// Births permitted. False FREEZES THE TOPOLOGY — MARL-1 experiment 1
@@ -565,6 +617,15 @@ pub const Model = struct {
     /// The recent window of |residual| (campaign §11), a ring.
     recent: []f32,
     recent_n: u64 = 0,
+    /// The residual evidence grid (`.residual` births only): per cell, how
+    /// many learning events landed there and the sum of what was left
+    /// after adaptation. Cells are one coverage-spacing across, which is
+    /// the scale at which a birth would be placed anyway — finer would be
+    /// evidence about nothing, coarser would place kernels by a rule
+    /// blinder than the one being replaced.
+    ev_cells: u32 = 0,
+    ev_count: []u32 = &.{},
+    ev_sum: []f32 = &.{},
     /// Stamps for counting the distinct regions one event reached, in one
     /// pass over the touched set rather than a pass per member: sixty
     /// kernels is the predicted touch and sixty squared per event is not
@@ -584,11 +645,26 @@ pub const Model = struct {
         errdefer gpa.free(gens);
         @memset(gens, 0);
         const h = 1 / @as(f32, @floatFromInt(opts.regions));
+        const sig_max = h / CUTOFF_R;
+        var ev_cells: u32 = 0;
+        var ev_count: []u32 = &.{};
+        var ev_sum: []f32 = &.{};
+        if (opts.birth_rule != .coverage) {
+            const r_cov = @sqrt(-2 * @log(@max(1e-6, opts.coverage)));
+            ev_cells = @intFromFloat(@ceil(1 / (opts.birth_scale * r_cov * sig_max)));
+            ev_cells = @max(2, ev_cells);
+            const cells: usize = @as(usize, ev_cells) * ev_cells * ev_cells;
+            ev_count = try gpa.alloc(u32, cells);
+            errdefer gpa.free(ev_count);
+            @memset(ev_count, 0);
+            ev_sum = try gpa.alloc(f32, cells);
+            @memset(ev_sum, 0);
+        }
         return .{
             .gpa = gpa,
             .opts = opts,
             .h = h,
-            .sigma_max = h / CUTOFF_R,
+            .sigma_max = sig_max,
             // A width may thin to a sixty-fourth of a region — the shell
             // is a fortieth of the domain thick and a kernel that cannot
             // get thinner than the feature cannot represent it.
@@ -597,6 +673,9 @@ pub const Model = struct {
             .stream = rng.Stream.region(opts.seed, 0x4D41_524C, 0), // "MARL"
             .recent = recent,
             .visit_gen = gens,
+            .ev_cells = ev_cells,
+            .ev_count = ev_count,
+            .ev_sum = ev_sum,
         };
     }
 
@@ -607,6 +686,46 @@ pub const Model = struct {
         self.hit.deinit(self.gpa);
         self.gpa.free(self.recent);
         self.gpa.free(self.visit_gen);
+        if (self.ev_count.len > 0) self.gpa.free(self.ev_count);
+        if (self.ev_sum.len > 0) self.gpa.free(self.ev_sum);
+    }
+
+    fn evIndex(self: *const Model, p: [3]f32) usize {
+        const n = self.ev_cells;
+        var c: [3]u32 = undefined;
+        inline for (0..3) |a| {
+            const v = @floor(p[a] * @as(f32, @floatFromInt(n)));
+            c[a] = if (v < 0) 0 else @min(n - 1, @as(u32, @intFromFloat(v)));
+        }
+        return (@as(usize, c[2]) * n + c[1]) * n + c[0];
+    }
+
+    /// Whether this cell has seen enough, and still carries too much.
+    fn evidenced(self: *const Model, idx: usize) bool {
+        const n = self.ev_count[idx];
+        if (n < self.opts.birth_evidence) return false;
+        const bar = if (self.opts.birth_residual > 0) self.opts.birth_residual else self.opts.threshold;
+        return self.ev_sum[idx] / @as(f32, @floatFromInt(n)) > bar;
+    }
+
+    /// Child kernels that have had enough gradient to have been adapted at
+    /// all. MARL-2's refine sweep showed allocated and usable capacity are
+    /// different things; this is the second of the two, measured and not
+    /// yet used for anything.
+    pub fn trainedFraction(self: *const Model, min_updates: u32) f32 {
+        if (self.kernels.items.len == 0) return 0;
+        var n: u32 = 0;
+        for (self.kernels.items) |*k| {
+            if (k.updates >= min_updates) n += 1;
+        }
+        return @as(f32, @floatFromInt(n)) / @as(f32, @floatFromInt(self.kernels.items.len));
+    }
+
+    pub fn meanUpdates(self: *const Model) f32 {
+        if (self.kernels.items.len == 0) return 0;
+        var acc: u64 = 0;
+        for (self.kernels.items) |*k| acc += k.updates;
+        return @as(f32, @floatFromInt(acc)) / @as(f32, @floatFromInt(self.kernels.items.len));
     }
 
     // ── geometry ──────────────────────────────────────────────────────
@@ -941,11 +1060,22 @@ pub const Model = struct {
         reg.events += 1;
         self.stats.events += 1;
 
-        // Birth: no kernel covers the exemplar usefully (campaign §10).
-        // The weight is the residual, so the newborn alone answers this
-        // exemplar exactly; the descent then has to keep it honest at
-        // every other exemplar it reaches.
-        if (cover < self.opts.coverage and self.opts.births) {
+        // Birth. Under `.coverage` this is the campaign's §10 rule — no
+        // kernel covers the exemplar usefully. Under `.residual` it is
+        // MARL-3's: this neighbourhood has been visited enough times and
+        // still carries too much error AFTER adaptation, so the shortfall
+        // is representational and not merely unlearned.
+        //
+        // Either way the weight is the residual, so the newborn alone
+        // answers this exemplar exactly and the descent has to keep it
+        // honest at every other exemplar it reaches.
+        const ev_idx: usize = if (self.opts.birth_rule != .coverage) self.evIndex(x) else 0;
+        const want_birth = switch (self.opts.birth_rule) {
+            .coverage => cover < self.opts.coverage,
+            .residual => self.evidenced(ev_idx),
+            .either => cover < self.opts.coverage or self.evidenced(ev_idx),
+        };
+        if (want_birth and self.opts.births) {
             if (reg.own.items.len >= self.opts.budget) {
                 ev.saturated = true;
                 reg.saturated += 1;
@@ -974,6 +1104,13 @@ pub const Model = struct {
                 ev.touched += 1;
                 reg.births += 1;
                 self.stats.births += 1;
+                // The evidence has been spent. Without this the same cell
+                // births on every subsequent event until its mean falls,
+                // which is a burst of kernels for one piece of evidence.
+                if (self.opts.birth_rule != .coverage) {
+                    self.ev_count[ev_idx] = 0;
+                    self.ev_sum[ev_idx] = 0;
+                }
             }
         }
 
@@ -1057,6 +1194,18 @@ pub const Model = struct {
                 after += k.p[W] * gaussian(k.shape(), x);
             }
             ev.post_residual = y - after;
+            if (self.opts.birth_rule != .coverage) {
+                self.ev_count[ev_idx] += 1;
+                self.ev_sum[ev_idx] += @abs(ev.post_residual);
+                // Forget by halving, so the mean is over RECENT evidence.
+                // A running mean over a whole run keeps a cell that was
+                // bad early and is fine now looking bad forever, and would
+                // birth on history rather than on the present residual.
+                if (self.ev_count[ev_idx] >= 4 * self.opts.birth_evidence) {
+                    self.ev_count[ev_idx] /= 2;
+                    self.ev_sum[ev_idx] *= 0.5;
+                }
+            }
         }
         self.gen += 1;
         var seen_reg: u32 = 0;
@@ -1251,6 +1400,10 @@ pub const PressureOptions = struct {
     /// two levels only (Christian): enough to establish whether residual
     /// refinement works at all, and recursion is the boring part after.
     refine: u32 = 2,
+    /// How the CHILD decides to birth — MARL-3's one variable. The default
+    /// is MARL-2's, so that experiment stays reproducible from the
+    /// defaults and G19 keeps measuring what it measured.
+    child_birth: BirthRule = .coverage,
 };
 
 /// Two levels, and the prediction is their SUM:
@@ -1281,6 +1434,13 @@ pub const Hierarchy = struct {
     stream: rng.Stream,
     seen: u64 = 0,
     routed: u64 = 0,
+    /// Of the exemplars routed to the child, how many landed in the shell
+    /// band. THE DIAGNOSIS: a birth can only happen where an exemplar is,
+    /// so capacity concentration is bounded by EVIDENCE concentration, and
+    /// this is the evidence's. If it matches the band's share of the
+    /// refined volume, the child's stream is uniform and no birth rule
+    /// whatsoever can concentrate capacity above it.
+    routed_in_band: u64 = 0,
     refined_count: u32 = 0,
 
     pub fn init(gpa: std.mem.Allocator, opts: Options, popts: PressureOptions) !Hierarchy {
@@ -1288,6 +1448,7 @@ pub const Hierarchy = struct {
         errdefer parent.deinit();
         var copts = opts;
         copts.regions = opts.regions * popts.refine;
+        copts.birth_rule = popts.child_birth;
         var child = try Model.init(gpa, copts);
         errdefer child.deinit();
         const n = parent.regions.len;
@@ -1338,8 +1499,16 @@ pub const Hierarchy = struct {
         const r = self.parent.regionOf(x);
         self.seen += 1;
         if (self.refined[r]) {
-            self.routed += 1;
             const held = try self.parent.predict(x);
+            // Counted HERE, immediately before the child sees it, and not
+            // at the top of the branch: the number that matters is the
+            // stream the child actually learns from, so that any future
+            // filter on what reaches it shows up in the measurement. Placed
+            // earlier, a routing change would be invisible and G20 (c)
+            // would go on reporting a uniform stream that no longer was
+            // one — which is exactly what it did until this was moved.
+            self.routed += 1;
+            if (Truth.inShell(self.parent.opts.truth, x)) self.routed_in_band += 1;
             _ = try self.child.observe(x, y - held);
             return;
         }
@@ -1437,6 +1606,25 @@ pub const Hierarchy = struct {
     /// fires on the smooth swell is buying capacity for something ordinary
     /// deformation had in hand, which is the campaign's §5 failure —
     /// noise mistaken for complexity — wearing a different hat.
+    /// The band's share of the refined volume — what a uniform stream
+    /// would deliver, and therefore the concentration ceiling any birth
+    /// rule is working under.
+    pub fn bandShareOfRefined(self: *const Hierarchy) f32 {
+        const N: u32 = 120_000;
+        var st = rng.Stream.region(0x5348_4152, 0, 0); // "SHAR"
+        var refined: u32 = 0;
+        var in_band: u32 = 0;
+        var i: u32 = 0;
+        while (i < N) : (i += 1) {
+            const p = [3]f32{ st.unit(), st.unit(), st.unit() };
+            if (!self.refined[self.parent.regionOf(p)]) continue;
+            refined += 1;
+            if (Truth.inShell(self.parent.opts.truth, p)) in_band += 1;
+        }
+        if (refined == 0) return 0;
+        return @as(f32, @floatFromInt(in_band)) / @as(f32, @floatFromInt(refined));
+    }
+
     pub const Precision = struct { refined: u32, on_shell: u32, false_positive: u32 };
 
     pub fn precision(self: *const Hierarchy) Precision {
@@ -2274,4 +2462,120 @@ test "G19 (c) the hierarchy beats flat MARL on the same exemplars and does LESS 
     try testing.expect(h.parent.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
     try testing.expect(h.child.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
     std.debug.print("  G19 (c): empty {d:.5}, flat {d:.5}, parent alone {d:.5}, parent + child {d:.5}; work {d:.3} of flat's (predicted ≤ {d:.1}) ({s})\n", .{ empty, rms_flat, rms_parent, rms_hier, work, thresholds.MARL2_WORK_RATIO, @tagName(builtin.mode) });
+}
+
+// ── MARL-3's gates ────────────────────────────────────────────────────
+//
+// MARL-3 changed exactly one thing — the child's birth decision — and all
+// three of its pre-registered numbers were REFUTED. They stand unstruck in
+// `thresholds.zig`; no gate asserts them. What is gated below is what the
+// experiment established instead, which is more useful than what it set
+// out to show.
+
+test "G20 (a) a residual birth needs BOTH persistence and magnitude, and spends its evidence" {
+    // The campaign's §5 as arithmetic: "do not confuse noise with
+    // complexity". One large residual is a singleton; `birth_evidence`
+    // observations averaging above the bar is structure. And the evidence
+    // is SPENT on the birth, or one piece of it births a kernel on every
+    // subsequent event until the mean falls.
+    //
+    // MUTATION: the count requirement dropped from `evidenced` — every
+    // learning event whose cell is over the bar births, the child's
+    // population runs away, and the check below on it fails. Verified by
+    // hand.
+    const gpa = testing.allocator;
+    var strict = try Hierarchy.init(gpa, .{ .truth = .{ .sharpness = 2 } }, .{ .child_birth = .residual });
+    defer strict.deinit();
+    try strict.stream_n(80_000);
+    // It does birth — and only just. Thirty-odd kernels at this horizon,
+    // where the coverage rule births thousands on the same stream, which
+    // is G20 (b)'s finding showing up here first.
+    try testing.expect(strict.child.kernels.items.len > 10);
+
+    // Raising the bar must reduce the population, or the magnitude half of
+    // the rule is not being read.
+    var high = try Hierarchy.init(gpa, .{ .truth = .{ .sharpness = 2 }, .birth_residual = 0.10 }, .{ .child_birth = .residual });
+    defer high.deinit();
+    try high.stream_n(80_000);
+    try testing.expect(high.child.kernels.items.len < strict.child.kernels.items.len);
+
+    // …and so must demanding more evidence, which is the other half.
+    var patient = try Hierarchy.init(gpa, .{ .truth = .{ .sharpness = 2 }, .birth_evidence = 40 }, .{ .child_birth = .residual });
+    defer patient.deinit();
+    try patient.stream_n(80_000);
+    try testing.expect(patient.child.kernels.items.len < strict.child.kernels.items.len);
+
+    std.debug.print("\n  G20 (a): residual births {d}; bar ×5 → {d}; evidence ×5 → {d} ({s})\n", .{ strict.child.kernels.items.len, high.child.kernels.items.len, patient.child.kernels.items.len, @tagName(builtin.mode) });
+}
+
+test "G20 (b) residual birth alone under-births into MARL-1's over-responsibility regime, and the coverage floor is what prevents it" {
+    // The finding, and it is MARL-1's mechanism arriving through a THIRD
+    // door. Birth refused by coverage and birth capped by budget both
+    // produced mean |w| near 13 against a converging 0.08; birth gated on
+    // residual evidence does it too. Too few kernels are made answerable
+    // for too much, and — the new part — a diverged child's own residual
+    // then contaminates the very signal it was using to place capacity.
+    //
+    // So the coverage rule was never only about placement. It is a
+    // TRAINABILITY floor, and MARL-3's result is that removing it costs
+    // more than the placement it was blamed for.
+    //
+    // MUTATION: none needed — the gate carries its control. `.either`
+    // keeps the floor and stays convergent on the same target and stream.
+    const gpa = testing.allocator;
+    var alone = try Hierarchy.init(gpa, .{ .truth = .{ .sharpness = 2 } }, .{ .child_birth = .residual });
+    defer alone.deinit();
+    try alone.stream_n(80_000);
+
+    var floored = try Hierarchy.init(gpa, .{ .truth = .{ .sharpness = 2 } }, .{ .child_birth = .either });
+    defer floored.deinit();
+    try floored.stream_n(80_000);
+
+    try testing.expect(alone.child.weightStats().mean_abs > thresholds.MARL1_OVERRESPONSIBILITY);
+    try testing.expect(floored.child.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
+    // And the reason, in the two numbers that say it: far fewer kernels,
+    // each with far less evidence.
+    try testing.expect(alone.child.kernels.items.len * 2 < floored.child.kernels.items.len);
+    try testing.expect(alone.child.trainedFraction(10) < 0.5);
+    try testing.expect(floored.child.trainedFraction(10) > 0.9);
+    std.debug.print("  G20 (b): residual alone — {d} kernels, {d:.3} trained, mean |w| {d:.2}; with the coverage floor — {d} kernels, {d:.3} trained, mean |w| {d:.3} ({s})\n", .{ alone.child.kernels.items.len, alone.child.trainedFraction(10), alone.child.weightStats().mean_abs, floored.child.kernels.items.len, floored.child.trainedFraction(10), floored.child.weightStats().mean_abs, @tagName(builtin.mode) });
+}
+
+test "G20 (c) capacity concentration is bounded by EVIDENCE concentration, and the child's evidence stream is uniform" {
+    // Why no birth rule fixed the allocator. A birth can only happen where
+    // an exemplar is, so the most a birth rule can do is concentrate
+    // capacity relative to the stream it is given — and the child's stream
+    // is uniform over the refined region, because every exemplar landing
+    // there is routed regardless of where the residual is.
+    //
+    // Measured at sharpness ×4: the band is 8.0% of the refined volume,
+    // the routed exemplars are 9.3% of it — a concentration of 1.16, which
+    // is nothing — and the birth rule lifts the kernels to 15.0%
+    // (coverage) or 18.4% (residual). The rule contributes its 1.6 to 2.0;
+    // the stream contributes none of it. That is the whole of the
+    // concentration failure, and it is not in the birth criterion.
+    //
+    // MUTATION: route only high-residual exemplars to the child — the
+    // stream stops being uniform and the first assertion below fails. That
+    // is not a mutation, it is MARL-4, and this gate is what will notice
+    // when it lands.
+    const gpa = testing.allocator;
+    var h = try Hierarchy.init(gpa, .{ .truth = .{ .sharpness = 4 } }, .{});
+    defer h.deinit();
+    try h.stream_n(80_000);
+    try testing.expect(h.routed > 1000);
+
+    const band_share = h.bandShareOfRefined();
+    const routed_share = @as(f32, @floatFromInt(h.routed_in_band)) / @as(f32, @floatFromInt(h.routed));
+    const kernel_share = @as(f32, @floatFromInt(h.child.countIn(Truth.inShell))) /
+        @as(f32, @floatFromInt(h.child.kernels.items.len));
+
+    // The stream is uniform: what reaches the child in the band is the
+    // band's share of the volume, and nothing more.
+    try testing.expect(routed_share < band_share * 1.3);
+    // The birth rule does concentrate, above the stream it is given…
+    try testing.expect(kernel_share > routed_share * 1.3);
+    // …and nowhere near the ceiling, which is all of them.
+    try testing.expect(kernel_share < 0.4);
+    std.debug.print("  G20 (c): the band is {d:.4} of the refined volume; the routed stream {d:.4}; the child's kernels {d:.4}; ceiling 1.0 ({s})\n", .{ band_share, routed_share, kernel_share, @tagName(builtin.mode) });
 }

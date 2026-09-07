@@ -743,4 +743,76 @@ pub const MARL2_SHARPNESS_RETENTION: f32 = 1.5;
 /// it. Half again is generous for that.
 pub const MARL2_WORK_RATIO: f32 = 1.5;
 
+// ── MARL-3 (residual-driven birth) ───────────────────────────────────
+//
+// From `tools/marl3_predict.py`, before its runs. MARL-3 changes exactly
+// one thing — the child's birth decision, from "insufficient geometric
+// coverage" to "persistent post-update residual" — and everything else is
+// held, so any movement in these numbers is attributable.
+//
+// What a PERFECT allocator would score, which is what makes "materially
+// better" sayable at all: if every child kernel landed in the band, the
+// concentration would be the refined volume over the band volume inside
+// it, and that ceiling RISES with sharpness because a thinner ridge is a
+// smaller share of the region containing it.
+//
+//     sharpness    band vol   refined vol   ceiling   MARL-2   of ceiling
+//         ×1        0.05149      0.19444      3.78      1.54       41%
+//         ×2        0.02541      0.17593      6.92      1.67       24%
+//         ×4        0.01263      0.15741     12.46      1.65       13%
+//
+// MARL-2 falls away from perfect as the target sharpens, which is the
+// signature of an allocator that fills regions rather than structure.
+
+/// G20 (a): the child's shell-band concentration at sharpness ×2.
+///
+/// PROPOSED as `MARL2_CONCENTRATION`'s number, unchanged and reused. That
+/// prediction stands unstruck and was not wrong about what good placement
+/// looks like — it was wrong about which allocator would deliver it. Three
+/// is 43% of a perfect allocator at ×2, which is a real ask and a
+/// reachable one.
+///
+/// **REFUTED, and left standing.** Measured 1.58 (residual births), 1.67
+/// (coverage), 1.67 (either) at sharpness ×2 — and 1.57 to 1.67 across
+/// four settings of the residual bar spanning 680 to 4 345 child kernels,
+/// convergent to badly divergent. The number does not move. The birth
+/// criterion is not where the concentration failure lives.
+pub const MARL3_CONCENTRATION: f32 = 3;
+
+/// G20 (b): concentration at sharpness ×4 over concentration at ×1.
+///
+/// PROPOSED, and the crisper of the two claims because birthing more
+/// kernels everywhere cannot meet it: the ceiling rises 3.78 → 12.46 as
+/// the ridge thins, so an allocator that follows structure must rise with
+/// it. MARL-2's went 1.54 → 1.67 → 1.65 — flat, and slightly down at the
+/// end. A perfect allocator would score 3.30 on this ratio; half of that,
+/// floored, is the ask.
+///
+/// **REFUTED, and left standing.** Measured 1.07 (coverage), 1.08
+/// (residual), 1.08 (either) while the ceiling went 3.54 → 11.01. Every
+/// rule tracks the ceiling equally badly, which is the same statement as
+/// the one above from the other end.
+pub const MARL3_CONCENTRATION_SLOPE: f32 = 1.5;
+
+/// G20 (c): the child's population, against what MARL-2's allocator spent
+/// at the same sharpness.
+///
+/// PROPOSED at parity, because a concentration win is manufacturable by
+/// birthing far more kernels and letting the band's share rise with them
+/// (Christian: "so an apparent concentration win cannot hide unconditional
+/// capacity growth"). The claim under test is BETTER PLACEMENT, not more
+/// of it, so the budget is what MARL-2 already used.
+///
+/// **HELD, and vacuously.** `.residual` births 969 to 1 193 against
+/// MARL-2's 3 760 to 4 594 — well under, and for the wrong reason: it
+/// under-births into divergence. `.either` lands at 4 594 / 4 345 / 3 778
+/// against 4 594 / 4 339 / 3 760, over by 0 to 18 kernels, which is
+/// residual evidence contributing SIX births out of 4 345. The cap was
+/// written to stop a concentration win hiding capacity growth; there was
+/// no concentration win to hide anything.
+pub const MARL3_CAPACITY_CAP: f32 = 1.0;
+/// MARL-2's measured child populations at sharpness ×1, ×2, ×4 — a
+/// baseline the cap is taken against, not a threshold in itself.
+pub const MARL3_MARL2_CHILD_KERNELS = [3]u32{ 4594, 4339, 3760 };
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
