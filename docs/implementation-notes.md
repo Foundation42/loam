@@ -5407,6 +5407,49 @@ Worth keeping as a method note: a per-element worst-case sensitivity
 analysis over an overlapping basis is not conservative, it is wrong, and
 the direction of the error is predictable.
 
+### Which field, decomposed — and Christian's adaptive-refinement guess
+
+He asked whether the forgiveness was down to the adaptive refinement. It
+is, in part, and the ablation says exactly where. Each field starved to
+eight bits alone with the other three left in f32:
+
+| field | span | 8-bit step | excess RMS |
+|---|---|---|---|
+| centre | 32.0 (the whole extent) | 0.125 | **0.01872** |
+| log-width | **1.0361** | 0.0040 | 0.00412 |
+| off-diagonal | **1.1304** | 0.0044 | 0.00312 |
+| weight | 1.8741 | 0.0073 | **0.00000** |
+
+Three things fall out.
+
+**The sensitivity RANKING was right and only the magnitude was wrong.** The
+centre dominates, as predicted; it just costs 0.019 at eight bits rather
+than the 0.110 derived.
+
+**The adaptation shows up in the SPANS, and that is Christian's point.**
+The log-width span is 1.04 NATS where the prediction assumed four — a
+quarter, and a straight factor of four on that field's error. The reason is
+structural: an adaptive learner refines by PLACING MORE KERNELS, not by
+making them wildly different sizes, so the population stays tightly
+clustered in scale and never needs the dynamic range the clamp would allow.
+A fixed-count basis forced to cover the same detail range would have to
+spread its widths and would pay for it in bits. The off-diagonals are
+narrow for the same reason.
+
+**The weight, the field most feared, costs exactly nothing at eight bits.**
+The cancellation risk the prediction worried about never materialised: the
+span is narrow, and δw·g is attenuated by g < 1 before it reaches the
+field.
+
+The centre is the outlier, and its cost is entirely a SPAN choice rather
+than a sensitivity: it is quantized over the whole extent, giving a step of
+0.066σ. Kernels are already stored grouped by owning region (`setOf` writes
+them in `predictAll`'s region order), so storing a per-region origin — 27
+of them, negligible — would cut the span threefold for 1.58 bits an axis
+free. Not built.
+
+
+
 ### The headline: quantization IMPROVES MARL's position
 
 | | RMS | KiB |

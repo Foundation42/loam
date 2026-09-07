@@ -1112,6 +1112,29 @@ test "G35 quantization: what a shippable kernel costs, and what it does to MARL-
     const wspan = @max(@abs(spans.w[0]), @abs(spans.w[1]));
     std.debug.print("  G35: the weights span {d:.4} … {d:.4}, so |w| ≈ {d:.3} — ABOVE the 1.0 assumed, so the weights are not why the prediction was pessimistic; peak sensitivity and peak overlap simply do not coincide\n", .{ spans.w[0], spans.w[1], wspan });
 
+    // WHICH FIELD is forgiving, decomposed. Each is starved to eight bits
+    // alone with the other three left in f32, so the 1.010 above is split
+    // into its parts instead of argued about. The spans are printed with
+    // them, because a field's cost is its sensitivity TIMES its range and
+    // the range is what an adapted basis would narrow.
+    const F = struct { n: []const u8, b: Bits, span: f32 };
+    const solo = [_]F{
+        .{ .n = "centre only", .b = .{ .mu = 8, .logd = 32, .off = 32, .w = 32 }, .span = ref.extent },
+        .{ .n = "log-width only", .b = .{ .mu = 32, .logd = 8, .off = 32, .w = 32 }, .span = spans.logd[1] - spans.logd[0] },
+        .{ .n = "off-diagonal only", .b = .{ .mu = 32, .logd = 32, .off = 8, .w = 32 }, .span = spans.off[1] - spans.off[0] },
+        .{ .n = "weight only", .b = .{ .mu = 32, .logd = 32, .off = 32, .w = 8 }, .span = spans.w[1] - spans.w[0] },
+    };
+    std.debug.print("  G35: per-field, each starved to 8 bits alone —\n", .{});
+    for (solo) |f| {
+        var q = rbf.Set{ .extent = ref.extent, .columns = ref.columns, .hash = ref.hash, .kernels = try gpa.dupe(rbf.Kernel, ref.kernels) };
+        defer q.deinit(gpa);
+        _ = quantizeSet(&q, f.b);
+        const r = rmsOfSetInverted(&q, pr);
+        // The excess in quadrature — what this field alone contributed.
+        const excess = @sqrt(@max(0, @as(f64, r) * r - @as(f64, rms_f32) * rms_f32));
+        std.debug.print("  G35:   {s:<20} span {d:>9.4}  step {e:>10.3}  RMS {d:.5} ({d:.3}×), excess {d:.5}\n", .{ f.n, f.span, f.span / 256.0, r, r / rms_f32, excess });
+    }
+
     // The pre-registered allocation survives…
     try testing.expect(got[0] / rms_f32 <= thresholds.MARL15_BITS);
     // …and four bits a field does not, or the whole sweep is decoration.
