@@ -1404,6 +1404,28 @@ pub const PressureOptions = struct {
     /// is MARL-2's, so that experiment stays reproducible from the
     /// defaults and G19 keeps measuring what it measured.
     child_birth: BirthRule = .coverage,
+    /// MARL-4, and the only thing MARL-4 changes: an exemplar in a refined
+    /// region reaches the child with probability
+    ///
+    ///     p = min(1, route_floor + route_gain · |y − parent(x)|)
+    ///
+    /// MARL-3 established that capacity can only concentrate where the
+    /// STREAM concentrates — the child's kernels landed in the band at
+    /// 21.89% when a filtered stream delivered 21.95%, to three digits —
+    /// so the stream is what MARL-4 moves.
+    ///
+    /// The two terms are two different jobs, and the reason a hard filter
+    /// is the wrong answer. `route_floor` is the TRAINABILITY floor: the
+    /// coverage rule was silently supplying one, and MARL-3 walked into
+    /// the over-responsibility regime through the third known door by
+    /// removing it. `route_gain` is the epistemic bias. Starve the floor
+    /// and the child's kernels are too sparse to train; drop the gain and
+    /// the stream is uniform and no birth rule can concentrate above it.
+    ///
+    /// Defaults are MARL-2's: floor 1, gain 0 — route everything — so
+    /// G19 and G20 keep measuring what they measured.
+    route_floor: f32 = 1,
+    route_gain: f32 = 0,
 };
 
 /// Two levels, and the prediction is their SUM:
@@ -1441,7 +1463,16 @@ pub const Hierarchy = struct {
     /// refined volume, the child's stream is uniform and no birth rule
     /// whatsoever can concentrate capacity above it.
     routed_in_band: u64 = 0,
+    /// Exemplars that landed in a refined region at all — the pool routing
+    /// selects from. `routed / offered` is the router's duty cycle.
+    offered: u64 = 0,
+    offered_in_band: u64 = 0,
     refined_count: u32 = 0,
+    /// The routing coin, keyed apart from the exemplar stream so that
+    /// biasing the stream does not change WHICH exemplars arrive — only
+    /// which of them the child is shown. Two routing settings therefore
+    /// see the same world.
+    route_stream: rng.Stream,
 
     pub fn init(gpa: std.mem.Allocator, opts: Options, popts: PressureOptions) !Hierarchy {
         var parent = try Model.init(gpa, opts);
@@ -1470,6 +1501,7 @@ pub const Hierarchy = struct {
             .covered_events = ce,
             .post_sum = ps,
             .stream = rng.Stream.region(opts.seed, 0x4D41_524C, 0), // "MARL", the flat model's key
+            .route_stream = rng.Stream.region(opts.seed, 0x524F_5554, 0), // "ROUT"
         };
     }
 
@@ -1499,16 +1531,24 @@ pub const Hierarchy = struct {
         const r = self.parent.regionOf(x);
         self.seen += 1;
         if (self.refined[r]) {
+            const in_band = Truth.inShell(self.parent.opts.truth, x);
+            self.offered += 1;
+            if (in_band) self.offered_in_band += 1;
+            // The residual has to be known to decide, which means the
+            // parent's prediction is paid for whether or not the exemplar
+            // is routed. That is the router's honest cost and it is what
+            // `work` will show.
             const held = try self.parent.predict(x);
+            const p = @min(1, self.popts.route_floor + self.popts.route_gain * @abs(y - held));
+            if (self.route_stream.unit() >= p) return;
             // Counted HERE, immediately before the child sees it, and not
             // at the top of the branch: the number that matters is the
-            // stream the child actually learns from, so that any future
-            // filter on what reaches it shows up in the measurement. Placed
-            // earlier, a routing change would be invisible and G20 (c)
-            // would go on reporting a uniform stream that no longer was
-            // one — which is exactly what it did until this was moved.
+            // stream the child actually learns from, so that any filter on
+            // what reaches it shows up in the measurement. Placed earlier,
+            // a routing change was invisible and G20 (c) went on reporting
+            // a uniform stream that no longer was one.
             self.routed += 1;
-            if (Truth.inShell(self.parent.opts.truth, x)) self.routed_in_band += 1;
+            if (in_band) self.routed_in_band += 1;
             _ = try self.child.observe(x, y - held);
             return;
         }
@@ -1606,6 +1646,21 @@ pub const Hierarchy = struct {
     /// fires on the smooth swell is buying capacity for something ordinary
     /// deformation had in hand, which is the campaign's §5 failure —
     /// noise mistaken for complexity — wearing a different hat.
+    /// The child's shell-band density over its density across the cells it
+    /// occupies at all. One definition, used by the gate and the seedbed
+    /// alike, because two spellings of a headline number is how a campaign
+    /// ends up arguing with itself.
+    pub fn childConcentration(self: *const Hierarchy) f64 {
+        const n: f64 = @floatFromInt(self.child.opts.regions);
+        const cell = 1 / (n * n * n);
+        const occ = @as(f64, @floatFromInt(self.child.occupiedRegions())) * cell;
+        if (occ <= 0 or self.child.kernels.items.len == 0) return 0;
+        const density = @as(f64, @floatFromInt(self.child.kernels.items.len)) / occ;
+        const band_v = volumeOf(self.parent.opts.truth, Truth.inShell);
+        const band_d = @as(f64, @floatFromInt(self.child.countIn(Truth.inShell))) / @as(f64, band_v);
+        return band_d / density;
+    }
+
     /// The band's share of the refined volume — what a uniform stream
     /// would deliver, and therefore the concentration ceiling any birth
     /// rule is working under.
@@ -2578,4 +2633,112 @@ test "G20 (c) capacity concentration is bounded by EVIDENCE concentration, and t
     // …and nowhere near the ceiling, which is all of them.
     try testing.expect(kernel_share < 0.4);
     std.debug.print("  G20 (c): the band is {d:.4} of the refined volume; the routed stream {d:.4}; the child's kernels {d:.4}; ceiling 1.0 ({s})\n", .{ band_share, routed_share, kernel_share, @tagName(builtin.mode) });
+}
+
+// ── MARL-4's gates ────────────────────────────────────────────────────
+//
+// MARL-3 established that capacity concentrates only where the STREAM
+// concentrates. MARL-4 changes the stream and nothing else. All four of
+// its pre-registered numbers held, which is the first time in this
+// campaign that happened — and they held at a cost the pre-registration
+// did not ask about, which G21 (b) is where that is recorded.
+
+test "G21 (a) biasing the stream concentrates it, more so the sharper the target, and capacity follows it" {
+    // The chain Christian named: sharpness rises → the residual localises →
+    // routing probability concentrates → evidence density concentrates →
+    // child capacity follows. Each arrow is a number here.
+    //
+    // MUTATION: `route_gain` set to zero, which is uniform routing with a
+    // floor — the stream stops concentrating (slope 0.96 against 1.40) and
+    // the slope assertion fails. Executed below rather than described,
+    // because it costs one more run and the gate is about the difference.
+    const gpa = testing.allocator;
+    const P = PressureOptions{ .route_floor = 0.02, .route_gain = 3 };
+    var conc: [2]f32 = undefined;
+    var track: [2]f32 = undefined;
+    for ([_]f32{ 1, 4 }, 0..) |sharp, i| {
+        var h = try Hierarchy.init(gpa, .{ .truth = .{ .sharpness = sharp } }, P);
+        defer h.deinit();
+        try h.stream_n(80_000);
+        const band = h.bandShareOfRefined();
+        const stream = @as(f32, @floatFromInt(h.routed_in_band)) / @as(f32, @floatFromInt(h.routed));
+        const kern = @as(f32, @floatFromInt(h.child.countIn(Truth.inShell))) /
+            @as(f32, @floatFromInt(h.child.kernels.items.len));
+        conc[i] = stream / band;
+        track[i] = kern / stream;
+        // Capacity tracks the stream it is given — MARL-3's diagnosis,
+        // still holding once the stream is no longer uniform.
+        try testing.expect(track[i] >= thresholds.MARL4_TRACKING_LO);
+        try testing.expect(track[i] <= thresholds.MARL4_TRACKING_HI);
+        // The router routes strictly less than everything, or the floor
+        // and the gain are doing nothing.
+        try testing.expect(h.routed < h.offered);
+    }
+    try testing.expect(conc[1] / conc[0] >= thresholds.MARL4_STREAM_SLOPE);
+
+    // The mutation, run: no gain, and the slope goes away.
+    var flat_slope: [2]f32 = undefined;
+    for ([_]f32{ 1, 4 }, 0..) |sharp, i| {
+        var h = try Hierarchy.init(gpa, .{ .truth = .{ .sharpness = sharp } }, .{});
+        defer h.deinit();
+        try h.stream_n(80_000);
+        const band = h.bandShareOfRefined();
+        const stream = @as(f32, @floatFromInt(h.routed_in_band)) / @as(f32, @floatFromInt(h.routed));
+        flat_slope[i] = stream / band;
+    }
+    try testing.expect(flat_slope[1] / flat_slope[0] < thresholds.MARL4_STREAM_SLOPE);
+    std.debug.print("\n  G21 (a): stream concentration {d:.2} → {d:.2} as sharpness goes ×1 → ×4, a slope of {d:.2} (predicted ≥ {d:.1}); uniform routing scores {d:.2}; capacity tracks at {d:.2} and {d:.2} ({s})\n", .{ conc[0], conc[1], conc[1] / conc[0], thresholds.MARL4_STREAM_SLOPE, flat_slope[1] / flat_slope[0], track[0], track[1], @tagName(builtin.mode) });
+}
+
+test "G21 (b) the floor keeps the child trainable, and the bias is paid for in evidence per kernel" {
+    // Both halves matter and they pull against each other. `route_floor`
+    // is the trainability floor the coverage rule was silently supplying —
+    // MARL-3 removed it and walked into the over-responsibility regime by
+    // the third known door. `route_gain` is the concentration. Turning the
+    // gain up spends evidence per kernel to buy placement, and this gate
+    // asserts BOTH that the floor holds and that the price is real, so
+    // neither can be quietly optimised away.
+    //
+    // The exchange rate, measured at sharpness ×4 and 200 000 exemplars:
+    //
+    //     floor/gain   RMS      kernels  updates/kernel  concentration
+    //      1 / 0       0.04423     3760        461            1.65
+    //      0.05 / 6    0.04477     2736        305            2.13
+    //      0.02 / 3    0.05082     2135        217            2.50
+    //
+    // So most of the placement is available for almost nothing and the
+    // last of it is dear — which is the shape a campaign should know
+    // before it picks an operating point.
+    //
+    // MUTATION: `route_floor` set to zero. Verified by hand.
+    const gpa = testing.allocator;
+    const tp = TruthParams{ .sharpness = 4 };
+
+    var biased = try Hierarchy.init(gpa, .{ .truth = tp }, .{ .route_floor = 0.02, .route_gain = 3 });
+    defer biased.deinit();
+    try biased.stream_n(200_000);
+    var uniform = try Hierarchy.init(gpa, .{ .truth = tp }, .{});
+    defer uniform.deinit();
+    try uniform.stream_n(200_000);
+
+    const child_conc = biased.childConcentration();
+    try testing.expect(child_conc >= thresholds.MARL4_CONCENTRATION);
+    // And it really is better placed than uniform routing's, not merely
+    // above a number.
+    try testing.expect(child_conc > uniform.childConcentration() * 1.2);
+
+    // The floor is a floor.
+    try testing.expect(biased.child.trainedFraction(10) >= thresholds.MARL4_TRAINED_FLOOR);
+    try testing.expect(biased.child.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
+    try testing.expect(biased.parent.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
+
+    // And the price is real: the same budget buys fewer kernels and far
+    // less evidence for each of them.
+    try testing.expect(biased.child.meanUpdates() < uniform.child.meanUpdates() * 0.75);
+    try testing.expect(biased.child.kernels.items.len < uniform.child.kernels.items.len);
+    // Routing less can only do less work, so this is a control.
+    const work = @as(f64, @floatFromInt(biased.parent.stats.updates + biased.child.stats.updates)) /
+        @as(f64, @floatFromInt(uniform.parent.stats.updates + uniform.child.stats.updates));
+    try testing.expect(work < thresholds.MARL2_WORK_RATIO);
+    std.debug.print("  G21 (b): concentration {d:.2} (predicted ≥ {d:.1}); {d} kernels at {d:.0} updates each against uniform's {d} at {d:.0}; trained {d:.3}, mean |w| {d:.3} ({s})\n", .{ child_conc, thresholds.MARL4_CONCENTRATION, biased.child.kernels.items.len, biased.child.meanUpdates(), uniform.child.kernels.items.len, uniform.child.meanUpdates(), biased.child.trainedFraction(10), biased.child.weightStats().mean_abs, @tagName(builtin.mode) });
 }

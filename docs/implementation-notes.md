@@ -3871,6 +3871,140 @@ Two things follow, and neither is "recurse":
   attention is the next question, and the probe above says the first of
   those moves the number in the right direction without solving it.
 
+## MARL-4 — routing: attention is what makes adaptive capacity possible (Monday 2026-09-07)
+
+Christian's brief after MARL-3, and it is the sharper question:
+
+> Can MARL concentrate the learning stream according to post-update
+> residual while preserving enough baseline exposure to keep the child
+> trainable?
+
+Explicitly not a hard filter — MARL-3's probe showed one reaches 22%
+against a 100% ceiling and starves the trainability floor. So the stream
+becomes probabilistic:
+
+    p(route) = min(1, route_floor + route_gain · |y − parent(x)|)
+
+`route_floor` is the floor the coverage rule had been silently supplying;
+`route_gain` is the epistemic bias. Defaults are floor 1, gain 0 — route
+everything — so MARL-2 and MARL-3 stay reproducible and G19 and G20 keep
+measuring what they measured. Nothing else changed.
+
+**All four pre-registered numbers held.** That is the first time in this
+campaign, and they held at a cost the pre-registration did not think to
+ask about, which is the more interesting half.
+
+### The chain, one number per arrow
+
+At floor 0.02, gain 3 — the gain chosen because the ramp should span the
+residual range actually seen (max |e| ≈ 0.33 at this sharpness, so
+1/0.33 ≈ 3), not because it was the setting that passed:
+
+    sharpness   band vol   stream   stream conc   kernels   concen   RMS ratio
+       ×1        0.2661    0.6196      2.33         2606     1.88      0.99
+       ×2        0.1456    0.4182      2.87         2545     2.20      1.14
+       ×4        0.0801    0.2762      3.45         2135     2.50      1.21
+
+against MARL-2's uniform routing on the same targets:
+
+       ×1        0.2661    0.2941      1.11           —      1.54      1.12
+       ×2        0.1456    0.1556      1.07           —      1.67      1.32
+       ×4        0.0801    0.0933      1.17           —      1.65      1.38
+
+Christian's chain, measured end to end: sharpness rises → the residual
+localises → routing concentrates the stream (2.33 → 3.45, a slope of
+**1.48** against a predicted 1.3, where uniform routing scores 1.05) →
+capacity follows (**1.88 → 2.20 → 2.50**, where MARL-2's was flat at 1.54
+→ 1.67 → 1.65).
+
+| | predicted | measured | |
+|---|---|---|---|
+| `MARL4_TRACKING` kernels over stream | 0.8 – 1.7 | 0.86 – 1.61 | ✅ |
+| `MARL4_STREAM_SLOPE` ×4 over ×1 | ≥ 1.3 | 1.48 | ✅ |
+| `MARL4_TRAINED_FLOOR` | ≥ 0.8 | 0.958 – 0.973 | ✅ |
+| `MARL4_CONCENTRATION` at ×4 | ≥ 2.5 | 2.50 | ✅ |
+| `MARL2_WORK_RATIO` | ≤ 1.5 | 0.35 – 0.48 | ✅ |
+
+MARL-3's diagnosis survives its own remedy: capacity still tracks the
+stream, at 0.86 to 1.61, now that the stream is no longer uniform. The
+allocator was never broken. It was being fed.
+
+### What the pre-registration did not ask, and should have
+
+**Concentration is bought with evidence per kernel, and the exchange rate
+is steep at the end.** At sharpness ×4, 200 000 exemplars:
+
+    floor / gain     RMS      kernels   updates/kernel   concentration
+      1   / 0      0.04423      3760          461            1.65
+      0.05 / 6     0.04477      2736          305            2.13
+      0.02 / 3     0.05082      2135          217            2.50
+
+Most of the placement is nearly free — 0.05/6 buys a 29% rise in
+concentration for 1.2% of RMS — and the last of it is dear: pushing to
+2.50 costs 15%. The axis is not the floor and it is not the gain; it is
+updates per kernel, and RMS tracks it monotonically across every setting
+tried.
+
+**And more exemplars do not buy it back.** At sharpness ×4, tripling the
+budget moves the biased model from 0.05082 to 0.04806 and never reaches
+uniform routing's 0.04423 — while flat MARL improves faster still, so the
+hierarchy's advantage over flat FALLS from 1.21 to 0.97. The cost is not
+a shortage of exemplars. It is that a kernel placed in a starved
+neighbourhood is placed and not fitted, and a badly fitted kernel is worse
+than none.
+
+That is the same invariant for the fourth time, now from a fourth
+direction: MARL-2's refine ×6 (11 895 kernels at 17 updates each, beaten
+by 3 927 at 349), MARL-3's residual-only birth (6% trained, |w| of 16),
+MARL-1's under-birth divergence, and now routing. **Capacity you cannot
+train is worse than capacity you do not have** — and every mechanism this
+campaign has added for placing capacity better has had to be paid for in
+the evidence available to fit it.
+
+### The gates, and what each was paid for
+
+| gate | mutation | result |
+|---|---|---|
+| G21 (a) the stream concentrates, more so the sharper the target, and capacity follows | the gain ignored — uniform routing behind a floor | fails |
+| G21 (b) the floor keeps the child trainable, and the bias is paid for in evidence | the floor removed | fails |
+
+G21 (a) runs its own mutation rather than describing it, because the claim
+is about the DIFFERENCE between biased and uniform routing and a gate that
+only measured one of them would be asserting a magnitude.
+
+### Where the architecture now stands
+
+Christian's reading, which the numbers support:
+
+> Representation does not merely grow where surprise exists. Attention
+> must first reshape the learning stream so that local representation has
+> enough evidence to form correctly.
+
+MARL-4 adds the clause the campaign paid for:
+
+> …and the same reshaping starves the representation it has already
+> placed. Concentration and sufficiency are in tension at a fixed budget,
+> and the exchange rate is the thing to design against.
+
+Four mechanisms have now been separated, and each turned out to be doing a
+second job nobody assigned it:
+
+- **birth** places capacity — and supplies the basis density that keeps
+  the model trainable (MARL-3);
+- **deformation** fits it — and is what buys everything after the topology
+  is found, since birth-only is flat from forty thousand exemplars on
+  (MARL-1);
+- **refinement** decides where the current level cannot represent — and
+  does it precisely, while allocating inside that decision geometrically
+  (MARL-2);
+- **routing** concentrates the evidence — and is the only thing that can
+  make capacity concentrate at all, at the price of the evidence it
+  withdraws from everywhere else (MARL-4).
+
+The open question is no longer where to put capacity. It is how to spend a
+fixed evidence budget across regions that need different amounts of it —
+which is a scheduling problem, and Loam has had one of those since R17.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

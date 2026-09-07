@@ -37,6 +37,9 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -- --sharpness 4 --child-birth residual --hier   # MARL-3: residual-driven child birth — under-births into divergence
     zig build marl -- --sharpness 4 --child-birth either --hier     # MARL-3: with the coverage floor kept — six extra births in 4345
     zig build test -Dtest-filter="G20"             # MARL-3's gates; tools/marl3_predict.py, all three of whose numbers were REFUTED
+    zig build marl -- --sharpness 4 --route-floor 0.02 --route-gain 3 --hier   # MARL-4: bias the STREAM — concentration 1.65 → 2.50
+    zig build marl -- --sharpness 4 --route-floor 0.05 --route-gain 6 --hier   # MARL-4: most of the placement for almost none of the accuracy
+    zig build test -Dtest-filter="G21"             # MARL-4's gates; tools/marl4_predict.py, all four of whose numbers HELD
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -90,7 +93,13 @@ EVIDENCE concentration**, because a birth can only happen where an
 exemplar is, and the child's stream is uniform over the refined region
 (G20 c). The coverage rule turns out to be a TRAINABILITY floor as much as
 a placement rule — removing it walks into MARL-1's over-responsibility
-regime by a third door.
+regime by a third door. MARL-4 then changed the STREAM —
+`p(route) = min(1, floor + gain·|residual|)` — and capacity concentration
+finally moved, 1.65 → 2.50, rising with sharpness as it should (G21). The
+price is the campaign's fourth sighting of one invariant: **capacity you
+cannot train is worse than capacity you do not have.** Every mechanism
+added for placing capacity better has been paid for in the evidence
+available to fit it, and RMS tracks updates-per-kernel monotonically.
 
 ## The ledger
 

@@ -70,6 +70,10 @@ const usage =
     \\                      CHILD decides to birth — geometric tiling, or persistent
     \\                      post-update residual. The only thing MARL-3 changes
     \\  --birth-evidence N  observations a cell needs before it is evidence (8)
+    \\  --route-floor E     baseline probability an exemplar in a refined region
+    \\                      reaches the child — the trainability floor (default 1)
+    \\  --route-gain B      added per unit of |parent residual| — the epistemic
+    \\                      bias (default 0; floor 1 gain 0 is MARL-2's routing)
     \\  --birth-scale F     the evidence cell's edge, in coverage spacings (2)
     \\  --birth-residual F  mean post-update residual it must still carry
     \\                      (default 0 = the surprise threshold)
@@ -166,6 +170,10 @@ fn parse(args: []const []const u8) !?Opts {
             o.p.child_birth = if (std.mem.eql(u8, v, "coverage")) .coverage else if (std.mem.eql(u8, v, "residual")) .residual else if (std.mem.eql(u8, v, "either")) .either else return error.UnknownBirthRule;
         } else if (std.mem.eql(u8, a, "--birth-evidence")) {
             o.m.birth_evidence = try std.fmt.parseInt(u32, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--route-floor")) {
+            o.p.route_floor = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--route-gain")) {
+            o.p.route_gain = try parseF32(try next(args, &i));
         } else if (std.mem.eql(u8, a, "--birth-scale")) {
             o.m.birth_scale = try parseF32(try next(args, &i));
         } else if (std.mem.eql(u8, a, "--birth-residual")) {
@@ -475,11 +483,9 @@ fn hier(gpa: std.mem.Allocator, o: Opts) !void {
     const prec = h.precision();
 
     const hc: f64 = @floatFromInt(h.child.opts.regions);
-    const child_cell = 1.0 / (hc * hc * hc);
-    const child_occ = @as(f64, @floatFromInt(h.child.occupiedRegions())) * child_cell;
-    const child_density = if (child_occ > 0) @as(f64, @floatFromInt(h.child.kernels.items.len)) / child_occ else 0;
+    const child_occ = @as(f64, @floatFromInt(h.child.occupiedRegions())) / (hc * hc * hc);
     const child_shell = h.child.densityIn(marl.Truth.inShell, V_SHELL);
-    const child_conc = if (child_density > 0) @as(f64, child_shell) / child_density else 0;
+    const child_conc = h.childConcentration();
 
     const pc: f64 = @floatFromInt(o.m.regions);
     const parent_cell = 1.0 / (pc * pc * pc);
@@ -493,7 +499,7 @@ fn hier(gpa: std.mem.Allocator, o: Opts) !void {
 
     try out.print("MARL-2 — the residual hierarchy against flat MARL ({s})\n", .{@tagName(builtin.mode)});
     try out.print("  target: {d} feature(s), sharpness ×{d:.1}, frequency ×{d:.1}; {d} exemplars, {d} probes, seed {d}\n", .{ o.m.truth.features, o.m.truth.sharpness, o.m.truth.frequency, o.exemplars, o.probe_n, o.m.seed });
-    try out.print("  pressure: mean post-update residual > {d:.3} over ≥ {d} events; child grid ×{d}; child births by {s}\n\n", .{ o.p.threshold, o.p.min_events, o.p.refine, @tagName(o.p.child_birth) });
+    try out.print("  pressure: mean post-update residual > {d:.3} over ≥ {d} events; child grid ×{d}; child births by {s}\n  routing: p = min(1, {d:.3} + {d:.2}·|residual|)\n\n", .{ o.p.threshold, o.p.min_events, o.p.refine, @tagName(o.p.child_birth), o.p.route_floor, o.p.route_gain });
 
     try out.print("  {s:<26} {s:>10} {s:>9} {s:>12} {s:>9}\n", .{ "", "RMS", "kernels", "updates", "mean |w|" });
     try out.print("  {s:<26} {d:>10.5} {d:>9} {d:>12} {d:>9.4}\n", .{ "empty", rms0, 0, 0, 0.0 });
@@ -521,7 +527,14 @@ fn hier(gpa: std.mem.Allocator, o: Opts) !void {
         const child_band = if (h.child.kernels.items.len > 0) @as(f32, @floatFromInt(h.child.countIn(marl.Truth.inShell))) / @as(f32, @floatFromInt(h.child.kernels.items.len)) else 0;
         try out.print("\n  THE EVIDENCE STREAM — a birth can only happen where an exemplar is\n", .{});
         try out.print("    the band is             {d:>6.4} of the refined volume\n", .{share});
-        try out.print("    of exemplars routed     {d:>6.4} landed in it — the stream the child learns from\n", .{routed_band});
+        const offered_band = if (h.offered > 0) @as(f32, @floatFromInt(h.offered_in_band)) / @as(f32, @floatFromInt(h.offered)) else 0;
+        try out.print("    of exemplars OFFERED    {d:>6.4} landed in it — before routing\n", .{offered_band});
+        try out.print("    of exemplars ROUTED     {d:>6.4} landed in it — the stream the child learns from\n", .{routed_band});
+        try out.print("    the router's duty cycle {d:>6.4}   stream concentration {d:.2}   kernels/stream {d:.2}\n", .{
+            if (h.offered > 0) @as(f32, @floatFromInt(h.routed)) / @as(f32, @floatFromInt(h.offered)) else 0,
+            if (share > 0) routed_band / share else 0,
+            if (routed_band > 0) child_band / routed_band else 0,
+        });
         try out.print("    of child kernels        {d:>6.4} landed in it — what the birth rule made of that stream\n", .{child_band});
     }
 

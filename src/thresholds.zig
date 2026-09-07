@@ -815,4 +815,63 @@ pub const MARL3_CAPACITY_CAP: f32 = 1.0;
 /// baseline the cap is taken against, not a threshold in itself.
 pub const MARL3_MARL2_CHILD_KERNELS = [3]u32{ 4594, 4339, 3760 };
 
+// ── MARL-4 (routing: biasing the learning stream) ────────────────────
+//
+// From `tools/marl4_predict.py`, before its runs. MARL-3's result set the
+// brief: capacity can only concentrate where the STREAM concentrates, so
+// MARL-4 changes the stream and nothing else —
+//
+//     p(route) = min(1, route_floor + route_gain · |y − parent(x)|)
+//
+// the floor protecting the trainability the coverage rule was silently
+// supplying, the gain concentrating evidence on unresolved structure.
+//
+// What MARL-3 measured, and what these are derived from:
+//
+//     sharpness   band vol   stream   kernels   kernels/stream
+//        ×1        0.2205    0.2298    0.3129        1.36
+//        ×2        0.1456    0.1556    0.2574        1.65
+//        ×4        0.0801    0.0933    0.1497        1.60
+//        ×4 probe  0.0801    0.2195    0.2189        1.00   (hard filter)
+
+/// G21 (a): the child's band share over the STREAM's band share, at every
+/// routing setting.
+///
+/// PROPOSED as a band rather than a target, because the claim under test
+/// is TRACKING and not magnitude: MARL-3 measured 1.36 to 1.65 over a
+/// uniform stream and 1.00 over a concentrated one — the birth rule adds a
+/// bounded local gain that shrinks as the stream does the work. Outside
+/// this band, placement has stopped following its input and MARL-3's
+/// diagnosis is wrong.
+pub const MARL4_TRACKING_LO: f32 = 0.8;
+pub const MARL4_TRACKING_HI: f32 = 1.7;
+
+/// G21 (b): stream concentration (the stream's band share over the band's
+/// volume share) at sharpness ×4 over the same at ×1.
+///
+/// PROPOSED: a sharper target localises the residual, so a
+/// residual-biased router should concentrate MORE where the structure is
+/// harder. Uniform routing already scores 1.12 on this ratio — the
+/// residual leans on the band a little without any help — so the ask is
+/// that a router beat that by a clear margin, not merely exceed one.
+pub const MARL4_STREAM_SLOPE: f32 = 1.3;
+
+/// G21 (c): child kernels with at least ten gradient updates.
+///
+/// PROPOSED: MARL-3's residual-only birth collapsed to 6% to 24% trained
+/// with mean |w| of 13 to 17, and a routing floor doing its job keeps the
+/// child where MARL-2 was — 0.99 trained, |w| 0.15. This is the number
+/// that says the floor is a floor. `MARL1_OVERRESPONSIBILITY` holds on
+/// both levels unchanged.
+pub const MARL4_TRAINED_FLOOR: f32 = 0.8;
+
+/// G21 (d): the child's shell-band concentration at sharpness ×4.
+///
+/// PROPOSED: MARL-2 and MARL-3 sat at 1.65 whatever the birth rule. A hard
+/// filter at |r| > 0.05 reached 2.11 while starving low-residual regions
+/// entirely; a graded bias with a protected floor should do better on
+/// placement AND on health. The ceiling is 11.01, so 2.5 is 23% of
+/// perfect — an ask, and well short of claiming the problem solved.
+pub const MARL4_CONCENTRATION: f32 = 2.5;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
