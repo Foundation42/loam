@@ -2942,6 +2942,61 @@ carries the rest forward. G15's numbers PROPOSED beside G14's.
 | Frontier into partly filled cubes | `materialiseFrontier` skips an inner node | a diffusion mass check across a gauge boundary that leaks |
 | A stack-allocated cursor | `ray.Cursor` takes a gpa for its queue | matryoshka's traversal wanting no allocator |
 
+## The RBF set left home (2026-09-07, `src/rbf.zig` — a gate only)
+
+rill grew a generic RBF evaluator (`rill/src/rbf.zig`, `rill/src/ops_rbf.zig`),
+and nothing in this repo changed to let it. What happened is spindrift's
+observation from the day before: **an RBF set does not care that its query
+point is a position.** `fire.rill` read `Set.eval` at a particle's STATE —
+cooled, sooted, thinned — and the same evaluator that skins the marble skinned
+a flame. So the sum of gaussians is an interpolation primitive, `State → Field
+→ Properties`, and rill took the model: the Mahalanobis form, the cutoff, and
+an N-D centre with M channels in place of this repo's 3 and 9.
+
+It took the model and nothing else. The nine-channel schema is bark's,
+`compose` and `columns` are bark's, the extent and the mirror fold are the
+volume's, the hash is the sim's, the `.lrbf` file is an asset's, and the fit
+is a tool's — `loam-run --rbf` stays exactly where it is, because 2000 Adam
+iterations over a pool of 32768 points is not a dataflow operator.
+
+**What this repo owes now, and it is one thing.** There are two CPU copies of
+one model (here and rill) and a third on the GPU (`dynamic_trace.glsl`, kind
+3). Neither repo depends on the other and neither should — rill sits UNDER
+loam, not beside it, and an edge in either direction to carry a test would
+invert that for nothing — so the two CPU copies are held together by a frozen
+table that lives identically in both: `PIN_KERNELS`/`PIN_ROWS` here, the same
+numbers in `rill/src/tests.zig`. Byte equality in f32, not an epsilon. An
+epsilon lets two implementations of one model drift in the last places until a
+host that swaps one for the other renders something else and nobody is told.
+
+Four kernels — isotropic, axis-aligned, fully anisotropic (every off-diagonal
+of L non-zero and distinct, so a transposed index moves the answer), and one
+that sits at r2 = 36 from one query and 31.36 from another with weights of
+4096. That last one is the cutoff's, and it had to be built that way: a kernel
+merely parked far away pins nothing, because exp of a large negative
+underflows to zero on its own and `CUTOFF` could then be deleted without
+moving a bit. The gate also asserts the far read is exactly +0 on every
+channel — not a denormal residue, not a −0 — which is the same claim the note
+on `CUTOFF` makes ("a denormal exp once left 1e-42 of gold on the matrix").
+
+rill also transcribed `fmath.exp` from here, for the same reason this repo has
+it, and pinned it to the same frozen output bits. Worth knowing, because it
+was measured on the way: over all 1,098,907,649 f32 arguments the gaussian can
+ever produce, glibc's `exp` and this repo's Sun `e_exp` differ in f64 on
+11,626,851 of them by 1 ulp, and **zero** of those differences survive
+narrowing to f32. So for the gaussian specifically the transcription is
+insurance rather than a fix. It is not insurance for the rest of this repo —
+sin, cos and the f64 path through the sim are where P2.1 actually bit.
+
+**Mutations, three, all bitten** by the new gate: the `mahal` index swapped
+(`l[2]` for `l[3]`); `CUTOFF` widened from 32 to 64; the half in
+`exp(−½ r2)` moved to 0.4999.
+
+**What a reader must do when this file changes.** If the kernel, the cutoff or
+the packing of L moves here, it moves in rill in the same beat. The gate
+failing IS that notification — it is not a flake, and it is not rill's problem
+to notice later.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

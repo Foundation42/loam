@@ -569,6 +569,71 @@ pub fn fit(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, opts: Fit
 
 // ── Gates ─────────────────────────────────────────────────────────────
 
+/// **The cross-repo pin.** rill grew a generic RBF evaluator (`rill/src/rbf.zig`,
+/// 2026-09-07): the same sum of gaussians over N-D centres and M channels,
+/// because a set does not care that its query point is a position — spindrift
+/// read this evaluator at a particle's STATE and got an appearance out of it,
+/// and the shape `State → Field → Properties` is an interpolation primitive
+/// rather than anything of loam's.
+///
+/// Neither repo depends on the other and neither should: rill sits UNDER
+/// loam, not beside it, and creating an edge in either direction to carry a
+/// test would invert that for no reason. So the two copies are held together
+/// by this table, which lives identically in `rill/src/tests.zig`, and by
+/// `fmath.exp`, which rill transcribes from this repo. It is byte equality in
+/// f32, not an epsilon — an epsilon lets two implementations of one model
+/// drift in the last places until a host that swaps one for the other renders
+/// something else and nobody is told.
+///
+/// **What a reader must do when this file changes.** If the kernel, the
+/// cutoff or the packing of L moves here, it moves in rill in the same beat.
+/// This gate failing IS that notification; it is not a flake and it is not
+/// rill's problem to notice later.
+const PIN_KERNELS = [_]Kernel{
+    // isotropic at the origin, nine distinct weights
+    .{ .mu = .{ 0, 0, 0 }, .l = .{ 2.5, 0, 2.5, 0, 0, 2.5 }, .w = .{ 0.9, 0.81, 0.42, 0.13, 0.77, 0.05, 3.5, 1.25, 0.4 } },
+    // an axis-aligned ellipsoid, off the origin
+    .{ .mu = .{ 0.6, -0.25, 0.4 }, .l = .{ 1.25, 0, 3.75, 0, 0, 0.8 }, .w = .{ 0.55, 0.2, 0.21, 0.24, 0.6, 0.02, 0.15, 0.1, 0.09 } },
+    // fully anisotropic: every off-diagonal non-zero and distinct, so a
+    // transposed index or a swapped term in `mahal` moves the answer
+    .{ .mu = .{ -0.4, 0.7, -0.2 }, .l = .{ 1.7, -0.65, 2.2, 0.35, -1.1, 3.1 }, .w = .{ 0.31, 0.66, 0.12, 0.9, 0.28, 0.71, 0.04, 0.5, 0.33 } },
+    // the CUTOFF's kernel: six units out, weights of 4096 so what it
+    // contributes on either side of the test is visible in f32. At (0,0,0)
+    // its r2 is 36 and it is cut; at (0.4,0,0) its r2 is 31.36 and it is not.
+    // A kernel merely parked far away would pin nothing — exp of a large
+    // negative underflows to zero by itself and CUTOFF could then be deleted.
+    .{ .mu = .{ 6, 0, 0 }, .l = .{ 1, 0, 1, 0, 0, 1 }, .w = .{ 4096, -4096, 4096, -4096, 4096, -4096, 4096, -4096, 4096 } },
+};
+
+const PIN_ROWS = [_]struct { q: [3]f32, y: [9]u32 }{
+    .{ .q = .{ 0, 0, 0 }, .y = .{ 0x3f9719bb, 0x3f755afc, 0x3f06f871, 0x3ea270b0, 0x3f8917a6, 0x3df4b0ab, 0x4064a756, 0x3fab584d, 0x3ef06de6 } },
+    .{ .q = .{ 0.5, 0.5, 0.5 }, .y = .{ 0x3dccb723, 0x3daf4011, 0x3d3c9359, 0x3cbb3ec2, 0x3db4a5f5, 0x3c1d4061, 0x3eae057e, 0x3dff68fb, 0x3d31ccbb } },
+    .{ .q = .{ -0.4, 0.7, -0.2 }, .y = .{ 0x3ed44356, 0x3f410015, 0x3e2cd1bd, 0x3f6a4be2, 0x3ebd376b, 0x3f373ed0, 0x3ee3f95a, 0x3f250f9e, 0x3ec0b348 } },
+    .{ .q = .{ 0.61, -0.24, 0.39 }, .y = .{ 0x3f3290b5, 0x3ea8c626, 0x3e8f478e, 0x3e84be6a, 0x3f39f37a, 0x3cd8729f, 0x3f384840, 0x3e9a2b7b, 0x3e207eb6 } },
+    .{ .q = .{ 1.3, -0.9, 0.15 }, .y = .{ 0x3d7f42f5, 0xbd135878, 0x3d4ecbb2, 0xbd0ec80f, 0x3d830a1d, 0xbd2dc917, 0x3d4b21cc, 0xbd20b3cf, 0x3d3debc2 } },
+    .{ .q = .{ 0.4, 0, 0 }, .y = .{ 0x3f61cfa7, 0x3f21009a, 0x3ec460aa, 0x3e7d4456, 0x3f54fe49, 0x3d8041bd, 0x400dad0e, 0x3f54ea78, 0x3e9ce624 } },
+    .{ .q = .{ -2, 2, -2 }, .y = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0 } },
+};
+
+test "the set reads the same bits rill's evaluator reads — the cross-repo pin" {
+    var kernels = PIN_KERNELS;
+    const set = Set{ .extent = 1, .columns = 0, .kernels = &kernels, .hash = [_]u8{0} ** 32 };
+    for (PIN_ROWS, 0..) |row, r| {
+        const y = set.eval(row.q);
+        for (y, row.y, 0..) |got, want, c| {
+            const bits: u32 = @bitCast(got);
+            if (bits != want) {
+                std.debug.print("pin row {d} channel {d}: this repo says 0x{x:0>8} ({d}), rill says 0x{x:0>8}\n", .{ r, c, bits, got, want });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+    // Every kernel beyond the cutoff sums to exactly +0 — not a denormal
+    // residue, not a −0. A read out there must be the entry EXACTLY, which
+    // is what the note on CUTOFF above is about.
+    for (set.eval(.{ -2, 2, -2 })) |v| try std.testing.expectEqual(@as(u32, 0), @as(u32, @bitCast(v)));
+}
+
 test "a set of one kernel reads its weights back at its centre through the entry, the entry alone far away, and folds by the mirror" {
     const gpa = std.testing.allocator;
     var set = Set{ .extent = 8, .columns = bark.ALL_COLUMNS, .kernels = try gpa.alloc(Kernel, 1), .hash = undefined };
