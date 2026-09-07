@@ -2742,7 +2742,17 @@ way too much" — the drive and gain had been raised TWICE against the
 diluted record, so they were tuned to the breakage; halved on the
 chain (4 and 0.3). A NUMBER TUNED AGAINST A BROKEN SIGNAL IS TUNED TO
 THE BREAKAGE, which is the general form of the finding and is written
-into matryoshka's §7.8a.
+into matryoshka's §7.8a — and is why they are KNOBS now, at his word
+("awesome idea to add knobs. Let's expose them"): `render/bloom/
+aura_gain`, `aura_drive` and `aura_spread`, on the FX page under an
+Aura fold beside Bloom, gain 0 being off. Gain and drive ride
+`oklab2.zw` (the post push range is full at the 256-byte spec floor
+and those were the spare lanes nothing read); spread is a renderer
+field beside `bloom_scatter`. THE GATE: at the defaults the frame is
+BYTE-IDENTICAL to the constants they replaced (RMSE 0), and driven
+from the console — `--exec "write render/bloom/aura_gain 0.9"`, the
+verb is `write`, not `set` — 0 / 0.3 / 0.9 give no aura, the default
+and a strong one (0.028 and 0.038 RMSE from the default).
 
 THEN THE LEAK, and his eye again ("some of that cube's aura is
 lighting up down at the bottom, or side of the screen, and all the
