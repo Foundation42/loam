@@ -1412,4 +1412,59 @@ pub const MARL11_DISCOVERY: f32 = 1.0;
 /// than by changing anything.
 pub const MARL11_ONLINE_COST: f32 = 2.0;
 
+// ── MARL-12 (nine channels on one geometry) ──────────────────────────
+//
+// From `tools/marl12_predict.py`. MARL-11 measured one channel — the
+// vein's blend, where a vein's geometry lives. `rbf.fit` fits NINE, and
+// the nine share one centre and one shape; that sharing is the entire
+// reason a packed set is cheaper than a volume texture, and the campaign
+// could not test it until the kernel's weight was widened from one float
+// to C of them.
+//
+// The refactor's own gate is not a threshold: at C = 1 every number from
+// G17 to G31 must be IDENTICAL, and that is checked by diffing the suite
+// against HEAD rather than by a bound.
+
+/// G32 (a): kernels at nine channels over kernels at one, same stream.
+///
+/// PROPOSED as a CEILING at 1.15. A birth needs surprise above θ AND no
+/// existing kernel covering within the responsibility radius, and the
+/// second test is PURELY GEOMETRIC — a max over gaussians that knows
+/// nothing about channels. So nine channels cannot buy a birth that one
+/// would not have bought in the same place. What they do change is how
+/// often surprise clears θ, since the magnitude is a max over channels and
+/// so never smaller than channel 0's alone.
+///
+/// Above this ceiling, "the geometry is paid for once" is false and a
+/// packed set is not the saving it is sold as.
+pub const MARL12_COUNT: f32 = 1.15;
+
+/// G32 (b): the BLEND's own error learned with eight other channels, over
+/// the same channel learned alone.
+///
+/// PROPOSED as a CEILING at 1.25. Inside one material every channel is
+/// A(x) times a constant, so the nine are exactly collinear and a shared
+/// basis carries all of them at no loss — which is why the fixture carries
+/// TWO materials split across x. A fixture that can only agree with the
+/// hypothesis is not a fixture.
+///
+/// A kernel is σ = 0.943 wide in the volume's units against an extent of
+/// 32, so the seam compromises about 6% of the sheet, and on a 2-D
+/// structure whose error goes as N^(−1/2) that is about 1.03. The ceiling
+/// is eight times that margin because the geometry's descent is not
+/// confined to the seam — the centres now move on the sum over nine
+/// channels of each weight's attribution — and this is the first time
+/// anyone has looked.
+pub const MARL12_SHARING: f32 = 1.25;
+
+/// G32 (c): arm D over arm B at nine channels.
+///
+/// PROPOSED as a CEILING at 2.0 — deliberately the same shape AND the same
+/// value as `MARL11_ONLINE_COST`. MARL-11 found the binding constraint is
+/// EVIDENCE and not placement, and the widening changes no exemplar count:
+/// the same stream arrives, each exemplar now carrying nine numbers
+/// instead of one. If what binds has not moved, this should sit where the
+/// one-channel number sat.
+pub const MARL12_ONLINE_COST: f32 = 2.0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

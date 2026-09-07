@@ -118,14 +118,35 @@ pub fn sheetPhi(extent: f32, p: [3]f32) f32 {
 /// channels never move and the fit is a single-channel fit with eight
 /// inert passengers. Reading `rms_channel[0]` would have measured the
 /// same thing while letting the shared geometry be spent on nine.
-pub fn sheetVolume(gpa: std.mem.Allocator, res: u32, extent: f32) !bark.Volume {
+/// The two materials the sheet carries when it is asked for any — a
+/// graphite half and an ember half, split across x.
+///
+/// TWO and not one, and that is what makes the nine-channel question
+/// non-trivial. With a single material every channel is the blend times a
+/// constant, the nine are globally collinear, and a shared basis is free
+/// by construction — which would be a fixture that could only agree with
+/// the hypothesis. Split, the material changes across the sheet while the
+/// GEOMETRY does not, so a kernel spanning the seam has to carry two
+/// different constants on the same Gaussian and the sharing has somewhere
+/// to actually cost something.
+///
+/// The ranges are the real marble's: emissive reaches 6 where the blend
+/// reaches 1, which is what makes per-channel normalisation necessary
+/// rather than tidy.
+const SHEET_MATERIALS = [2]bark.Material{
+    .{ .albedo = .{ 0.16, 0.17, 0.19 }, .roughness = 0.62, .metallic = 0.1, .emissive = .{ 0, 0, 0 } },
+    .{ .albedo = .{ 0.55, 0.15, 0.05 }, .roughness = 0.35, .metallic = 0, .emissive = .{ 6, 2.5, 0.7 } },
+};
+
+pub fn sheetVolume(gpa: std.mem.Allocator, res: u32, extent: f32, columns: bark.Columns) !bark.Volume {
     const cell = extent / @as(f32, @floatFromInt(res));
+    const stride = bark.strideOf(columns);
     var v = bark.Volume{
         .res = res,
         .extent = extent,
-        .columns = 0,
-        .stride = bark.strideOf(0),
-        .data = try gpa.alloc(f32, @as(usize, res) * res * res * bark.strideOf(0)),
+        .columns = columns,
+        .stride = stride,
+        .data = try gpa.alloc(f32, @as(usize, res) * res * res * stride),
         .hash = [_]u8{0} ** 32,
         .min = 0,
         .max = 0,
@@ -144,7 +165,15 @@ pub fn sheetVolume(gpa: std.mem.Allocator, res: u32, extent: f32) !bark.Volume {
                     (@as(f32, @floatFromInt(k)) + 0.5) * cell,
                 };
                 const f = sheetPhi(extent, p);
-                v.data[v.index(i, j, k)] = f;
+                const rec = v.data[v.index(i, j, k)..][0..stride];
+                rec[0] = f;
+                if (columns != 0) {
+                    const m = SHEET_MATERIALS[if (p[0] < extent * 0.5) 0 else 1];
+                    rec[1..4].* = m.albedo;
+                    rec[4] = m.roughness;
+                    rec[5] = m.metallic;
+                    rec[6..9].* = m.emissive;
+                }
                 lo = @min(lo, f);
                 hi = @max(hi, f);
             }
@@ -176,7 +205,11 @@ pub fn blendAt(vol: *const bark.Volume, vein: f32, q: [3]f32) f32 {
 /// then each region's own list — and not in `model.kernels` order, because
 /// float addition does not commute and a set built in a different order
 /// would be right to an ulp instead of right.
-pub fn setOf(gpa: std.mem.Allocator, model: *const marl.Model, extent: f32, columns: bark.Columns, hash: [32]u8) !rbf.Set {
+pub fn setOf(gpa: std.mem.Allocator, model: anytype, extent: f32, columns: bark.Columns, hash: [32]u8, scale: rbf.Channels) !rbf.Set {
+    // The model's channel count comes off its TYPE, so one function serves
+    // `Marl(1)` and `Marl(9)` and a caller cannot pass the wrong number.
+    const C = @TypeOf(model.*).CHANNELS;
+    comptime std.debug.assert(C <= rbf.CHANNELS);
     var ks = try std.ArrayListUnmanaged(rbf.Kernel).initCapacity(gpa, model.kernels.items.len);
     errdefer ks.deinit(gpa);
     const inv = 1 / extent;
@@ -185,7 +218,12 @@ pub fn setOf(gpa: std.mem.Allocator, model: *const marl.Model, extent: f32, colu
             const k = &model.kernels.items[ki];
             const s = k.shape();
             var w: rbf.Channels = [_]f32{0} ** rbf.CHANNELS;
-            w[0] = k.weight();
+            // Scaled back out of the normalised units the model learned in,
+            // exactly as `rbf.fit` does at the end of its own descent. At a
+            // scale of one this is a multiply by 1.0, which is exact — so
+            // G31 (a)'s bit equality survives the widening untouched.
+            const kw = k.weightsConst();
+            inline for (0..C) |c| w[c] = kw[c] * scale[c];
             ks.appendAssumeCapacity(.{
                 .mu = .{ s.mu[0] * extent, s.mu[1] * extent, s.mu[2] * extent },
                 .l = .{ s.l[0] * inv, s.l[1] * inv, s.l[2] * inv, s.l[3] * inv, s.l[4] * inv, s.l[5] * inv },
@@ -260,6 +298,11 @@ pub const Arm = struct {
     /// is 9% vein is 91% a test of predicting zero, and both arms pass
     /// that trivially.
     rms_band: f32 = 0,
+    /// The BLEND alone, on the band probes — channel 0, whatever the arm
+    /// weighed. It is the one number a C = 1 arm and a C = 9 arm can be
+    /// compared on directly, and the whole of MARL-12's sharing question
+    /// is the ratio between two of them.
+    rms_c0: f32 = 0,
     /// (kernels in the band / all kernels) ÷ (the band's volume fraction).
     /// One means a uniform allocator; 1/fraction means every kernel sits
     /// on structure.
@@ -279,6 +322,8 @@ pub const Arms = struct {
     d: Arm = .{}, // MARL, uniform stream
     /// The fixture's birth-eligible fraction, measured.
     fraction: f32 = 0,
+    /// Channels the arms weighed.
+    channels: usize = 1,
 };
 
 pub const ArmOptions = struct {
@@ -294,12 +339,27 @@ pub const ArmOptions = struct {
     m: marl.Options = .{ .responsibility = 3 },
     /// Report progress as the arms run — a tool's flag, never a gate's.
     verbose: bool = false,
+    /// Learn NORMALISED targets, per-channel, and scale the weights back
+    /// into the field's units at the end — `rbf.fit`'s own treatment.
+    ///
+    /// Off by default, and that is deliberate rather than lazy: at one
+    /// channel the scale is the blend's own range and normalising moves
+    /// nothing that gets measured, so leaving it off keeps every MARL-11
+    /// number reproducible. At nine it is necessary — emissive reaches 6
+    /// where the blend reaches 1, and an unnormalised learner spends its
+    /// geometry on whichever channel happens to carry the largest units.
+    normalise: bool = false,
 };
 
 /// A held-out probe set and its answers.
 const Probes = struct {
     q: [][3]f32,
-    y: []f32,
+    /// All NINE channels at every probe, whatever the arm under test
+    /// weighs. One probe set serves a C = 1 run and a C = 9 run, so the
+    /// two are answering questions about the same points and the same
+    /// draws — which is the only way `rms` at one channel count is
+    /// comparable with `rms` at another.
+    y: []rbf.Channels,
 
     fn deinit(self: *Probes, gpa: std.mem.Allocator) void {
         gpa.free(self.q);
@@ -310,22 +370,63 @@ const Probes = struct {
 fn probesOf(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, veins: []const u32, n: u32, seed: u64) !Probes {
     var st = rng.Stream.region(seed, 0x4d41_5242, 0);
     const cell = vol.extent / @as(f32, @floatFromInt(vol.res));
-    var p = Probes{ .q = try gpa.alloc([3]f32, n), .y = try gpa.alloc(f32, n) };
+    var p = Probes{ .q = try gpa.alloc([3]f32, n), .y = try gpa.alloc(rbf.Channels, n) };
     errdefer p.deinit(gpa);
     for (p.q, p.y) |*q, *y| {
         q.* = drawPoint(&st, vol, veins, vol.extent, cell);
-        y.* = blendAt(vol, vein, q.*);
+        y.* = rbf.target(vol, vein, q.*);
     }
     return p;
 }
 
-fn rmsOfSet(set: *const rbf.Set, pr: Probes) f32 {
+/// Held-out RMS over the first `C` channels, in the channels' own units.
+/// Both learners are read through `rbf.Set.eval` — the same evaluator, the
+/// same cutoff, the same summation order — so what is compared is the two
+/// sets and not two ways of asking them.
+fn rmsOfSet(comptime C: usize, set: *const rbf.Set, pr: Probes) f32 {
     var acc: f64 = 0;
     for (pr.q, pr.y) |q, y| {
-        const e = set.eval(q)[0] - y;
+        const yh = set.eval(q);
+        inline for (0..C) |c| {
+            const e = yh[c] - y[c];
+            acc += @as(f64, e) * @as(f64, e);
+        }
+    }
+    return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pr.q.len * C))));
+}
+
+/// One channel of a set, on one probe set — `rmsOfSet` with C = 1 pinned
+/// to a particular channel rather than to the first.
+fn rmsOfChannel(set: *const rbf.Set, pr: Probes, comptime c: usize) f32 {
+    var acc: f64 = 0;
+    for (pr.q, pr.y) |q, y| {
+        const e = set.eval(q)[c] - y[c];
         acc += @as(f64, e) * @as(f64, e);
     }
     return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pr.q.len))));
+}
+
+/// Per-channel scale: the largest magnitude the channel reaches over a
+/// draw from the field, floored so a channel the archetype does not model
+/// cannot divide by zero. `rbf.fit`'s own, transcribed — it normalises its
+/// targets this way and scales the weights back at the end.
+///
+/// It matters far more at nine channels than at one: emissive reaches 6
+/// where the blend reaches 1, so an unnormalised fit spends its geometry
+/// on whichever channel happens to have the largest units. At C = 1 the
+/// scale is the blend's own range and normalising changes nothing that is
+/// measured, which is why `ArmOptions.normalise` defaults OFF and the
+/// campaign's C = 1 numbers do not move.
+fn scalesOf(vol: *const bark.Volume, vein: f32, veins: []const u32, n: u32, seed: u64) rbf.Channels {
+    var st = rng.Stream.region(seed, 0x5343_414c, 0); // "SCAL"
+    const cell = vol.extent / @as(f32, @floatFromInt(vol.res));
+    var scale: rbf.Channels = [_]f32{1e-3} ** rbf.CHANNELS;
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        const y = rbf.target(vol, vein, drawPoint(&st, vol, veins, vol.extent, cell));
+        inline for (0..rbf.CHANNELS) |c| scale[c] = @max(scale[c], @abs(y[c]));
+    }
+    return scale;
 }
 
 /// The fraction of a set's kernels whose CENTRE sits where the blend
@@ -344,25 +445,31 @@ fn bandShare(set: *const rbf.Set, vol: *const bark.Volume, vein: f32, threshold:
 
 /// One MARL arm: `pool` distinct exemplars, drawn uniformly or vein-biased,
 /// each observed exactly once and never again.
-fn marlArm(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, veins: []const u32, o: ArmOptions, uni: Probes, band: Probes, fraction: f32) !struct { arm: Arm, set: rbf.Set } {
-    var model = try marl.Model.init(gpa, o.m);
+fn marlArm(comptime C: usize, gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, veins: []const u32, o: ArmOptions, uni: Probes, band: Probes, fraction: f32) !struct { arm: Arm, set: rbf.Set } {
+    var model = try marl.Marl(C).Model.init(gpa, o.m);
     defer model.deinit();
     var st = rng.Stream.region(o.seed, 0x4d41_524c, 0);
     const cell = vol.extent / @as(f32, @floatFromInt(vol.res));
     const inv = 1 / vol.extent;
+    const one: rbf.Channels = [_]f32{1} ** rbf.CHANNELS;
+    const scale = if (o.normalise) scalesOf(vol, vein, veins, o.pool, o.seed) else one;
     var timer = try std.time.Timer.start();
     var n: u32 = 0;
     while (n < o.pool) : (n += 1) {
         const q = drawPoint(&st, vol, veins, vol.extent, cell);
-        _ = try model.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, blendAt(vol, vein, q));
+        const t = rbf.target(vol, vein, q);
+        var y: [C]f32 = undefined;
+        inline for (0..C) |c| y[c] = t[c] / scale[c];
+        _ = try model.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, y);
     }
     const secs = @as(f64, @floatFromInt(timer.read())) / 1e9;
-    var set = try setOf(gpa, &model, vol.extent, vol.columns, vol.hash);
+    var set = try setOf(gpa, &model, vol.extent, vol.columns, vol.hash, scale);
     errdefer set.deinit(gpa);
     return .{ .arm = .{
         .kernels = @intCast(model.kernels.items.len),
-        .rms_uniform = rmsOfSet(&set, uni),
-        .rms_band = rmsOfSet(&set, band),
+        .rms_uniform = rmsOfSet(C, &set, uni),
+        .rms_band = rmsOfSet(C, &set, band),
+        .rms_c0 = rmsOfChannel(&set, band, 0),
         .concentration = bandShare(&set, vol, vein, o.m.threshold) / @max(1e-6, fraction),
         .exemplars = o.pool,
         .seconds = secs,
@@ -372,7 +479,7 @@ fn marlArm(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, veins: []
 }
 
 /// One rbf arm, at a kernel count MARL discovered.
-fn rbfArm(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, o: ArmOptions, kernels: u32, oracle: bool, uni: Probes, band: Probes, fraction: f32) !Arm {
+fn rbfArm(comptime C: usize, gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, o: ArmOptions, kernels: u32, oracle: bool, uni: Probes, band: Probes, fraction: f32) !Arm {
     var timer = try std.time.Timer.start();
     var fitted = try rbf.fit(gpa, vol, vein, .{
         .kernels = kernels,
@@ -388,8 +495,9 @@ fn rbfArm(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, o: ArmOpti
     const secs = @as(f64, @floatFromInt(timer.read())) / 1e9;
     return .{
         .kernels = @intCast(fitted.set.kernels.len),
-        .rms_uniform = rmsOfSet(&fitted.set, uni),
-        .rms_band = rmsOfSet(&fitted.set, band),
+        .rms_uniform = rmsOfSet(C, &fitted.set, uni),
+        .rms_band = rmsOfSet(C, &fitted.set, band),
+        .rms_c0 = rmsOfChannel(&fitted.set, band, 0),
         .concentration = bandShare(&fitted.set, vol, vein, o.m.threshold) / @max(1e-6, fraction),
         .exemplars = o.pool,
         .seconds = secs,
@@ -400,14 +508,14 @@ fn rbfArm(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, o: ArmOpti
 /// gradient, for reading a result rather than gating one. It builds its own
 /// probe sets so a caller can sweep the stream without carrying the rest of
 /// the 2×2 along.
-pub fn blindArm(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, o: ArmOptions) !Arm {
+pub fn blindArm(comptime C: usize, gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, o: ArmOptions) !Arm {
     var veins = try veinsOf(gpa, vol, vein, o.m.threshold);
     defer veins.deinit(gpa);
     var uni = try probesOf(gpa, vol, vein, &.{}, o.probes, o.seed ^ 0x9e37);
     defer uni.deinit(gpa);
     var band = try probesOf(gpa, vol, vein, veins.idx.items, o.probes, o.seed ^ 0x517c);
     defer band.deinit(gpa);
-    var r = try marlArm(gpa, vol, vein, &.{}, o, uni, band, veins.fraction);
+    var r = try marlArm(C, gpa, vol, vein, &.{}, o, uni, band, veins.fraction);
     r.set.deinit(gpa);
     return r.arm;
 }
@@ -415,7 +523,7 @@ pub fn blindArm(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, o: A
 /// The 2×2, run in the order that lets capacity be matched: both MARL arms
 /// first, then each rbf arm at the count the MARL arm beside it
 /// discovered.
-pub fn run(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, o: ArmOptions) !Arms {
+pub fn run(comptime C: usize, gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, o: ArmOptions) !Arms {
     var veins = try veinsOf(gpa, vol, vein, o.m.threshold);
     defer veins.deinit(gpa);
 
@@ -424,21 +532,21 @@ pub fn run(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, o: ArmOpt
     var band = try probesOf(gpa, vol, vein, veins.idx.items, o.probes, o.seed ^ 0x517c);
     defer band.deinit(gpa);
 
-    var out = Arms{ .fraction = veins.fraction };
+    var out = Arms{ .fraction = veins.fraction, .channels = C };
 
-    var d = try marlArm(gpa, vol, vein, &.{}, o, uni, band, veins.fraction);
+    var d = try marlArm(C, gpa, vol, vein, &.{}, o, uni, band, veins.fraction);
     d.set.deinit(gpa);
     out.d = d.arm;
     if (o.verbose) std.debug.print("  D  MARL, uniform          {d:>5} kernels\n", .{out.d.kernels});
 
-    var c = try marlArm(gpa, vol, vein, veins.idx.items, o, uni, band, veins.fraction);
+    var c = try marlArm(C, gpa, vol, vein, veins.idx.items, o, uni, band, veins.fraction);
     c.set.deinit(gpa);
     out.c = c.arm;
     if (o.verbose) std.debug.print("  C  MARL, vein-biased      {d:>5} kernels\n", .{out.c.kernels});
 
-    out.b = try rbfArm(gpa, vol, vein, o, out.d.kernels, false, uni, band, veins.fraction);
+    out.b = try rbfArm(C, gpa, vol, vein, o, out.d.kernels, false, uni, band, veins.fraction);
     if (o.verbose) std.debug.print("  B  rbf, no oracle         {d:>5} kernels\n", .{out.b.kernels});
-    out.a = try rbfArm(gpa, vol, vein, o, out.c.kernels, true, uni, band, veins.fraction);
+    out.a = try rbfArm(C, gpa, vol, vein, o, out.c.kernels, true, uni, band, veins.fraction);
     if (o.verbose) std.debug.print("  A  rbf, both oracles      {d:>5} kernels\n", .{out.a.kernels});
 
     return out;
@@ -456,7 +564,7 @@ pub fn report(w: anytype, arms: Arms) !void {
     // concentration across two fields is the mistake this column exists
     // to stop.
     const ceil = 1 / @max(1e-6, arms.fraction);
-    try w.print("\n  arm  {s:<26} {s:>7} {s:>10} {s:>10} {s:>7} {s:>7} {s:>8}\n", .{ "learner", "kernels", "RMS band", "RMS unif", "conc.", "/ceil", "seconds" });
+    try w.print("\n  arm  {s:<26} {s:>7} {s:>10} {s:>10} {s:>10} {s:>7} {s:>7} {s:>8}\n", .{ "learner", "kernels", "RMS band", "RMS blend", "RMS unif", "conc.", "/ceil", "seconds" });
     const rows = [_]struct { n: []const u8, l: []const u8, a: Arm }{
         .{ .n = "A", .l = "rbf, batch Adam, oracle", .a = arms.a },
         .{ .n = "B", .l = "rbf, batch Adam, blind", .a = arms.b },
@@ -464,9 +572,10 @@ pub fn report(w: anytype, arms: Arms) !void {
         .{ .n = "D", .l = "MARL, online NLMS, blind", .a = arms.d },
     };
     for (rows) |r| {
-        try w.print("  {s:<4} {s:<26} {d:>7} {d:>10.5} {d:>10.5} {d:>7.2} {d:>7.2} {d:>8.2}\n", .{ r.n, r.l, r.a.kernels, r.a.rms_band, r.a.rms_uniform, r.a.concentration, r.a.concentration / ceil, r.a.seconds });
+        try w.print("  {s:<4} {s:<26} {d:>7} {d:>10.5} {d:>10.5} {d:>10.5} {d:>7.2} {d:>7.2} {d:>8.2}\n", .{ r.n, r.l, r.a.kernels, r.a.rms_band, r.a.rms_c0, r.a.rms_uniform, r.a.concentration, r.a.concentration / ceil, r.a.seconds });
     }
-    try w.print("\n  the band is {d:.4} of the cube, so concentration's ceiling is {d:.2}\n", .{ arms.fraction, 1 / @max(1e-6, arms.fraction) });
+    try w.print("\n  {d} channel(s); the band is {d:.4} of the cube, so concentration's ceiling is {d:.2}\n", .{ arms.channels, arms.fraction, 1 / @max(1e-6, arms.fraction) });
+    try w.print("  a kernel is {d} floats here against {d} for {d} separate scalar models\n", .{ 9 + arms.channels, arms.channels * 10, arms.channels });
     try w.print("  B/A {d:.3}  the seed and pool oracles, priced\n", .{arms.b.rms_band / arms.a.rms_band});
     try w.print("  D/B {d:.3}  discovery against seeding, neither side told\n", .{arms.d.rms_band / arms.b.rms_band});
     try w.print("  C/A {d:.3}  online against batch, the oracle held equal\n", .{arms.c.rms_band / arms.a.rms_band});
@@ -493,7 +602,7 @@ const testing = std.testing;
 
 test "G31 (a) a MARL model carried into a volume's units IS an rbf set, bit for bit" {
     const gpa = testing.allocator;
-    var vol = try sheetVolume(gpa, FIXTURE_RES, FIXTURE_EXTENT);
+    var vol = try sheetVolume(gpa, FIXTURE_RES, FIXTURE_EXTENT, 0);
     defer vol.deinit(gpa);
     var veins = try veinsOf(gpa, &vol, FIXTURE_VEIN, 0.02);
     defer veins.deinit(gpa);
@@ -506,11 +615,11 @@ test "G31 (a) a MARL model carried into a volume's units IS an rbf set, bit for 
     var n: u32 = 0;
     while (n < 8000) : (n += 1) {
         const q = drawPoint(&st, &vol, veins.idx.items, vol.extent, cell);
-        _ = try model.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, blendAt(&vol, FIXTURE_VEIN, q));
+        _ = try model.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, .{blendAt(&vol, FIXTURE_VEIN, q)});
     }
     try testing.expect(model.kernels.items.len > 16);
 
-    var set = try setOf(gpa, &model, vol.extent, vol.columns, vol.hash);
+    var set = try setOf(gpa, &model, vol.extent, vol.columns, vol.hash, [_]f32{1} ** rbf.CHANNELS);
     defer set.deinit(gpa);
     try testing.expectEqual(model.kernels.items.len, set.kernels.len);
 
@@ -522,7 +631,7 @@ test "G31 (a) a MARL model carried into a volume's units IS an rbf set, bit for 
     defer probes.deinit(gpa);
     var checked: u32 = 0;
     for (probes.q) |q| {
-        const there = model.predictAll(.{ q[0] * inv, q[1] * inv, q[2] * inv });
+        const there = model.predictAll(.{ q[0] * inv, q[1] * inv, q[2] * inv })[0];
         const here = set.eval(q)[0];
         if (@as(u32, @bitCast(there)) != @as(u32, @bitCast(here))) {
             std.debug.print("marble: at ({d:.4},{d:.4},{d:.4}) the model says 0x{x:0>8} and the set says 0x{x:0>8}\n", .{ q[0], q[1], q[2], @as(u32, @bitCast(there)), @as(u32, @bitCast(here)) });
@@ -537,12 +646,12 @@ test "G31 (a) a MARL model carried into a volume's units IS an rbf set, bit for 
     // or so — which is precisely why the gate is bitwise. If this ever
     // stops disagreeing, the gate has stopped testing the rounding
     // argument and is only testing that the algebra was transcribed.
-    var odd = try setOf(gpa, &model, 40, vol.columns, vol.hash);
+    var odd = try setOf(gpa, &model, 40, vol.columns, vol.hash, [_]f32{1} ** rbf.CHANNELS);
     defer odd.deinit(gpa);
     var differed: u32 = 0;
     for (probes.q) |q| {
         const x = [3]f32{ q[0] * inv, q[1] * inv, q[2] * inv };
-        const there = model.predictAll(x);
+        const there = model.predictAll(x)[0];
         const here = odd.eval(.{ x[0] * 40, x[1] * 40, x[2] * 40 })[0];
         if (@as(u32, @bitCast(there)) != @as(u32, @bitCast(here))) differed += 1;
     }
@@ -551,7 +660,7 @@ test "G31 (a) a MARL model carried into a volume's units IS an rbf set, bit for 
 
 test "G31 (a) the fixture is the sheet the predictor measured, and the volume reads it back" {
     const gpa = testing.allocator;
-    var vol = try sheetVolume(gpa, FIXTURE_RES, FIXTURE_EXTENT);
+    var vol = try sheetVolume(gpa, FIXTURE_RES, FIXTURE_EXTENT, 0);
     defer vol.deinit(gpa);
     var veins = try veinsOf(gpa, &vol, FIXTURE_VEIN, 0.02);
     defer veins.deinit(gpa);
@@ -613,9 +722,9 @@ test "G31 (b) MARL places capacity where a blind batch optimiser cannot, and sti
     // the gate varies on the axis it claims to measure. The second
     // mutation is the oracle on the rbf side, which is arms A against B.
     const gpa = testing.allocator;
-    var vol = try sheetVolume(gpa, FIXTURE_RES, FIXTURE_EXTENT);
+    var vol = try sheetVolume(gpa, FIXTURE_RES, FIXTURE_EXTENT, 0);
     defer vol.deinit(gpa);
-    const out = try run(gpa, &vol, FIXTURE_VEIN, .{});
+    const out = try run(1, gpa, &vol, FIXTURE_VEIN, .{});
 
     try report(std.io.getStdErr().writer(), out);
 
@@ -678,13 +787,13 @@ test "G31 (c) the gap to batch Adam is EVIDENCE, not placement: it closes with t
     // claim that says the extra data is being spent on fitting the
     // capacity rather than on placing more of it.
     const gpa = testing.allocator;
-    var vol = try sheetVolume(gpa, FIXTURE_RES, FIXTURE_EXTENT);
+    var vol = try sheetVolume(gpa, FIXTURE_RES, FIXTURE_EXTENT, 0);
     defer vol.deinit(gpa);
     const base = ArmOptions{};
-    const one = try blindArm(gpa, &vol, FIXTURE_VEIN, base);
+    const one = try blindArm(1, gpa, &vol, FIXTURE_VEIN, base);
     var four_o = base;
     four_o.pool = base.pool * 4;
-    const four = try blindArm(gpa, &vol, FIXTURE_VEIN, four_o);
+    const four = try blindArm(1, gpa, &vol, FIXTURE_VEIN, four_o);
     std.debug.print("  G31 (c): {d} exemplars RMS {d:.5} conc {d:.2} ({d} kernels) → {d} exemplars RMS {d:.5} conc {d:.2} ({d} kernels) ({s})\n", .{
         one.exemplars,  one.rms_band,  one.concentration,  one.kernels,
         four.exemplars, four.rms_band, four.concentration, four.kernels,
@@ -698,4 +807,73 @@ test "G31 (c) the gap to batch Adam is EVIDENCE, not placement: it closes with t
     // And it is still concentrating far above a uniform allocator, so the
     // extra kernels are not being sprayed over the matrix.
     try testing.expect(four.concentration >= thresholds.MARL11_CONCENTRATION);
+}
+
+// ── MARL-12's gates ───────────────────────────────────────────────────
+//
+// From `tools/marl12_predict.py`. The widening's own gate is not here and
+// is not a threshold: at C = 1 every number from G17 to G31 must be
+// IDENTICAL, checked by diffing the suite against the commit before it.
+// G31 (a) carries the sharpest form of it — the same 975 kernels, the same
+// 1024 probes, still bit-for-bit equal through `rbf.Set.eval`.
+
+test "G32 nine channels on one geometry cost no extra kernels and no accuracy — once the geometry's step is corrected for the channel count" {
+    // THE POINT OF THE WIDENING. `rbf.fit` has always fitted nine channels
+    // sharing one centre and one shape; that sharing is the whole reason a
+    // packed set beats a volume texture, and the campaign could not test
+    // it while a kernel carried one weight.
+    //
+    // The fixture carries TWO materials split across x. With one material
+    // every channel is the blend times a constant, the nine are exactly
+    // collinear, and a shared basis is free BY CONSTRUCTION — a fixture
+    // that can only agree is not a fixture. Split, the material changes
+    // while the geometry does not, so a kernel spanning the seam has to
+    // put two different constants on one Gaussian.
+    //
+    // What the first run found, at the C = 1 geometry rate: DIVERGENCE, in
+    // exactly MARL-1's shape. The vein-biased arm births 3 666 kernels
+    // against the uniform arm's 1 896 and scores worse with them (0.629
+    // against 0.352) — more capacity, less accuracy, which is the
+    // over-capacity-under-evidence signature. The cause is that the
+    // geometry descends on `Σ_c w_c a_c`, one term per channel, and that
+    // sum grows as √C. `Ch.GEOM_RATE` is the correction and this gate is
+    // what it was paid for.
+    const gpa = testing.allocator;
+    var vol = try sheetVolume(gpa, FIXTURE_RES, FIXTURE_EXTENT, bark.ALL_COLUMNS);
+    defer vol.deinit(gpa);
+
+    var o = ArmOptions{};
+    const c1 = try blindArm(1, gpa, &vol, FIXTURE_VEIN, o);
+    o.normalise = true; // emissive reaches 6 where the blend reaches 1
+    const c9 = try blindArm(9, gpa, &vol, FIXTURE_VEIN, o);
+
+    const count = @as(f32, @floatFromInt(c9.kernels)) / @as(f32, @floatFromInt(c1.kernels));
+    const sharing = c9.rms_c0 / c1.rms_c0;
+    std.debug.print("\n  G32: one channel {d} kernels, blend RMS {d:.5}; nine channels {d} kernels, blend RMS {d:.5} — count {d:.3} (≤ {d:.2}), sharing {d:.3} (≤ {d:.2}); {d} floats a kernel against {d} for nine scalar models ({s})\n", .{
+        c1.kernels, c1.rms_c0, c9.kernels, c9.rms_c0,
+        count,      thresholds.MARL12_COUNT,
+        sharing,    thresholds.MARL12_SHARING,
+        9 + @as(usize, 9), 9 * 10, @tagName(builtin.mode),
+    });
+
+    // The geometry is paid for ONCE: nine channels buy no extra kernels,
+    // because a birth is gated by COVERAGE and coverage is a max over
+    // gaussians that knows nothing about channels.
+    try testing.expect(count <= thresholds.MARL12_COUNT);
+    // And the blend does not get worse for having eight passengers.
+    try testing.expect(sharing <= thresholds.MARL12_SHARING);
+    // The saving, as arithmetic rather than as a bound: a kernel is
+    // 9 + C floats where C separate scalar models are C × (9 + 1).
+    try testing.expectEqual(@as(usize, 18), 9 + marl.Marl(9).CHANNELS);
+    try testing.expectEqual(@as(usize, 90), 9 * (9 + marl.Marl(1).CHANNELS));
+
+    // MUTATION, executable: undo the √C correction by scaling `rate_geom`
+    // back up by √9. That is the exact step the first run took, and it
+    // must fail this gate — if it does not, `GEOM_RATE` is decoration and
+    // the divergence above had some other cause.
+    var bad = o;
+    bad.m.rate_geom = o.m.rate_geom * 3;
+    const un = try blindArm(9, gpa, &vol, FIXTURE_VEIN, bad);
+    std.debug.print("  G32 mutation, the correction undone: {d} kernels, blend RMS {d:.5} — {d:.2}× the corrected run's\n", .{ un.kernels, un.rms_c0, un.rms_c0 / c9.rms_c0 });
+    try testing.expect(un.rms_c0 / c1.rms_c0 > thresholds.MARL12_SHARING);
 }

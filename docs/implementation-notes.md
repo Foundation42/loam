@@ -4963,6 +4963,136 @@ What is still owed: the nine-channel widening (`w: f32` → `w: [9]f32`),
 which is the only thing standing between this and fitting the marble's
 actual materials rather than its geometry alone.
 
+## MARL-12 — nine channels on one geometry, and the √C the campaign had never met (Monday 2026-09-07)
+
+MARL-11 measured one channel: the vein's blend, where a vein's geometry
+lives. `rbf.fit` has always fitted NINE — the blend and the eight material
+columns it multiplies — and the nine share one centre and one shape. That
+sharing is the entire reason a packed set beats a volume texture, and the
+campaign could not test it while a kernel carried a single weight.
+
+### The widening, and why it changed no call site
+
+`marl.zig` becomes `pub fn Marl(comptime C: usize) type`, with
+`pub const Scalar = Marl(1)` and a facade of aliases — `Model`,
+`Hierarchy`, `Kernel`, `PARAMS` — under the plain names every gate and both
+runners already used. Weights live at `p[W..W+C]`, INSIDE the kernel, so
+the NLMS inner loop reads them from the cache line it just read the shape
+from; a runtime channel count would put them in a second array and cost a
+miss per kernel per step on a path that touches ninety kernels an event.
+
+Zig forbids a nested container from shadowing a file-level declaration, so
+the generic's 109 internal references go through `const Ch = @This()`.
+That is the whole of the ugliness and it buys the facade.
+
+`Options` and `PressureOptions` stay OUTSIDE the generic: they are
+configuration, and a `Marl(1)` and a `Marl(9)` must be configurable by the
+same values. `Region`, `Stats`, `Event`, `RegionSched` moved inside
+without complaint, because nothing outside constructs them.
+
+### Inert at C = 1, and two places where it nearly was not
+
+The refactor's gate is not a threshold. Every number the campaign has
+recorded must be IDENTICAL, and it is — the whole suite diffed against the
+commit before, and G31 (a) still reading the same 975 kernels over the same
+1024 probes bit for bit through `rbf.Set.eval`.
+
+How it was checked, because "the suite still passes" is not the claim:
+a `git worktree` at the commit before, with `../common` and `../struple`
+symlinked beside it (the build resolves its siblings by relative path and
+a bare worktree cannot), both suites run to completion, and their printed
+gate lines diffed with wall-clock fields normalised away. **81 lines,
+character for character identical**; the only difference is G32's own two.
+
+Two things had to be written deliberately for that:
+
+- **The channel magnitude is a MAX, not a Euclidean norm.** At C = 1 that
+  is `@abs` exactly. It also happens to be the right semantic and Loam's
+  own — R15 merges attention by max on each field separately, because the
+  question is whether ANY channel is surprising here, and an average lets
+  one badly wrong channel hide behind eight right ones.
+- **The geometry's attribution accumulates FROM channel 0**, not from a
+  zero: `0 + (−0.0)` is `+0.0`, and a sign of zero there reaches
+  `moveCentre`.
+
+### The finding: the geometry's step grows as √C
+
+The first nine-channel run DIVERGED, in exactly MARL-1's shape. The
+vein-biased arm birthed 3 666 kernels against the uniform arm's 1 896 and
+scored **worse** with them — 0.629 against 0.352. More capacity, less
+accuracy, which is the over-capacity-under-evidence signature the campaign
+has seen three times.
+
+The cause is structural and had no way of showing up before. The centre and
+shape descend on `ew = Σ_c w_c a_c` — one term per channel, because nine
+weights pull on one Gaussian and each gets a say in where it goes. For
+channel errors that are not perfectly aligned that sum grows as **√C**, so
+the rate that is right at one channel is √C too large at C of them. Three
+settings, blind arm at nine channels:
+
+| rate_geom | kernels | blend RMS | K(9)/K(1) | D/B |
+|---|---|---|---|---|
+| 0.2 (the C = 1 rate) | 1896 | 0.21178 | 1.198 | 2.568 |
+| 0.2/√9 | 1575 | — | 0.963 | 1.762 |
+| 0.2/9 | 1634 | — | 0.974 | 1.878 |
+
+`rate/C` is slightly WORSE than `rate/√C`, which is the evidence that the
+growth is √C rather than C — not merely that something smaller was needed.
+So it is in the code as `Ch.GEOM_RATE`, a division by exactly 1.0 at C = 1,
+and not in a threshold. G32's mutation undoes it and the gate fails, which
+is what says the correction is load-bearing rather than decoration.
+
+### What sharing costs, and what it saves
+
+With the correction, at the default rate, two seeds:
+
+| | kernels | blend RMS | floats/kernel |
+|---|---|---|---|
+| one channel (seed 7) | 1583 | 0.14255 | 10 |
+| nine channels (seed 7) | 1578 | 0.14071 | 18 |
+| one channel (seed 11) | 1551 | 0.14598 | 10 |
+| nine channels (seed 11) | 1561 | 0.13949 | 18 |
+
+- **K(9)/K(1) = 0.997 and 1.006** against a ceiling of 1.15. The geometry
+  really is paid for once, and the reason is exact rather than lucky: a
+  birth is gated by COVERAGE, which is a max over gaussians and knows
+  nothing about channels, so nine channels cannot buy a birth that one
+  would not have bought in the same place.
+- **The blend's own error is 0.987 and 0.956** of what it is learned alone,
+  against a ceiling of 1.25. Learning eight other channels on the same
+  geometry makes the blend very slightly BETTER, not worse. The eight are
+  extra constraints on where a centre should sit, and on this fixture they
+  agree with the blend about that.
+- **18 floats a kernel against 90** for nine separate scalar models — a
+  fifth of the memory, and it is arithmetic, so G32 asserts it as equality
+  of counts rather than as a bound.
+- **D/B at nine channels is 1.764**, against MARL-11's 1.987 at one on the
+  same fixture. What binds did not move, which is what the ceiling was set
+  at 2.0 to check.
+
+The fixture carries TWO materials split across x, and that is load-bearing.
+With one material every channel is the blend times a constant, the nine are
+exactly collinear, and a shared basis is free by construction — a fixture
+that can only agree with the hypothesis is not a fixture.
+
+### Not gated, and why
+
+The nine-channel 2×2 against `rbf.fit` (`marl-run --marble9`) runs its two
+rbf arms at 3 666 and 1 896 kernels, which is 22 s of suite for a number
+whose shape MARL-11 already established. G32 gates the MARL-against-MARL
+sharing pair, which is 0.5 s and is the question the widening was for.
+`MARL12_ONLINE_COST` stands in `thresholds.zig` with what the tool run
+measured, on MARL-10's precedent.
+
+### Where this leaves the marble
+
+    Nine channels cost no extra kernels, cost the blend nothing, and fit
+    in a fifth of the memory nine models would need — provided the
+    geometry's step is divided by √C.
+
+Which is the marble's second half done, and the last thing that stood
+between the campaign and a real material field.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

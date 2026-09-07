@@ -58,6 +58,8 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -- --marble                     # MARL-11: the 2×2 against rbf.fit's batch Adam — the first EXTERNAL baseline
     zig build run -Doptimize=ReleaseSafe -- --scene marble --steps 110 --rbf-arms   # ... the same arms on the REAL marble (a tool run)
     zig build test -Dtest-filter="G31"             # MARL-11's gates; tools/marl11_predict.py, two of whose four were REFUTED
+    zig build marl -- --marble9                    # MARL-12: NINE channels on one geometry — two materials, so the sharing can cost something
+    zig build test -Dtest-filter="G32"             # MARL-12's gate; tools/marl12_predict.py. The widening's own gate is the suite being UNCHANGED
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -231,8 +233,41 @@ The conversion is gated bitwise: a model on the unit cube becomes an
 `rbf.Set` in a volume's units by μ′ = Eμ, L′ = L/E, EXACT in f32 for a
 power-of-two extent because rounding a difference commutes with scaling by
 one. So a MARL model IS the asset a renderer loads, not something close to
-it (G31 a). Still owed before the marble's materials rather than its
-geometry: `w: f32` → `w: [9]f32`.
+it (G31 a).
+
+MARL-12 then widened the kernel from one weight to C of them —
+`pub fn Marl(comptime C: usize) type`, with `Scalar = Marl(1)` and a facade
+of aliases under the plain names, so **no call site anywhere changed**.
+Weights sit at `p[W..W+C]` INSIDE the kernel, because a runtime channel
+count would cost a cache miss per kernel per step on a path that touches
+ninety kernels an event. The refactor's gate is not a threshold: at C = 1
+every number the campaign recorded is IDENTICAL, checked by diffing the
+whole suite, and G31 (a) still reads bit-for-bit equal. Two things had to
+be written deliberately for that — the channel magnitude is a MAX (which is
+`@abs` at C = 1, and is also Loam's R15 semantics), and the geometry's
+attribution accumulates FROM channel 0 rather than from a zero, because
+`0 + (−0.0)` is `+0.0` and a sign of zero there reaches `moveCentre`.
+
+The finding is a scaling law the campaign could not have met before.
+**The geometry's step grows as √C**: the centre and shape descend on
+`Σ_c w_c a_c`, one term per channel, and at the C = 1 rate nine channels
+DIVERGE in exactly MARL-1's shape — the vein-biased arm births 3 666
+kernels against the uniform arm's 1 896 and scores WORSE with them (0.629
+against 0.352). `rate/√C` is stable; `rate/C` was tested and is slightly
+worse, which is the evidence that the growth is √C rather than merely that
+something smaller was needed. It lives in the code as `Ch.GEOM_RATE`, a
+division by exactly 1.0 at C = 1, and G32's mutation undoes it and fails.
+
+With that correction, nine channels are close to free: **K(9)/K(1) = 0.997**
+(a birth is gated by COVERAGE, which is a max over gaussians and knows
+nothing about channels, so nine cannot buy a birth one would not), the
+blend's own error is **0.987** of what it is learned alone (the eight
+others are extra constraints on where a centre belongs, and they agree),
+and a kernel is **18 floats against 90** for nine separate scalar models.
+The fixture carries TWO materials split across x, and that is load-bearing:
+with one, every channel is the blend times a constant, the nine are exactly
+collinear, and a shared basis is free by construction — a fixture that can
+only agree is not a fixture.
 
 ## The ledger
 

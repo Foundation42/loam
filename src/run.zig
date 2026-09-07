@@ -565,7 +565,7 @@ pub fn main() !void {
         defer vol.deinit(gpa);
         vol.columns = 0;
         try stdout.print("\nMARL-11 on the marble — {d}³ over ±{d:.0} (extent {d:.0}), vein {d:.2}, {s}\n", .{ res, seedbed.MARBLE_BAKE_HALF, vol.extent, seedbed.MARBLE_VEIN, @tagName(builtin.mode) });
-        const arms = try loam.marble.run(gpa, &vol, seedbed.MARBLE_VEIN, .{ .seed = opts.seed, .verbose = true });
+        const arms = try loam.marble.run(1, gpa, &vol, seedbed.MARBLE_VEIN, .{ .seed = opts.seed, .verbose = true });
         try loam.marble.report(stdout, arms);
         try stdout.print("\n  pre-registered (tools/marl11_predict.py): concentration ≥ {d:.1}  B/A ≥ {d:.1}  D/B ≤ {d:.1}  C/A ≤ {d:.1}\n", .{
             loam.thresholds.MARL11_CONCENTRATION, loam.thresholds.MARL11_ORACLE_WORTH,

@@ -102,10 +102,6 @@ pub const CUTOFF: f32 = 32;
 /// ellipsoid |Lᵀ(q − μ)| ≤ this.
 pub const CUTOFF_R: f32 = 5.656854249492381;
 
-/// Parameters per kernel: the centre (3), the LOG of L's diagonal (3, so
-/// a width stays positive), L's off-diagonal (3: l10, l20, l21) and the
-/// one weight. `rbf.KERNEL_FLOATS` minus eight material channels.
-pub const PARAMS: usize = 10;
 const MU: usize = 0;
 const LOGD: usize = 3;
 const OFF: usize = 6;
@@ -512,922 +508,6 @@ pub const Options = struct {
     window: u32 = 4096,
 };
 
-pub const Kernel = struct {
-    p: [PARAMS]f32,
-    /// Adam's moments and this kernel's OWN step count: kernels are
-    /// updated at irregular times, so the bias correction cannot share a
-    /// clock.
-    m1: [PARAMS]f32 = [_]f32{0} ** PARAMS,
-    m2: [PARAMS]f32 = [_]f32{0} ** PARAMS,
-    t: u32 = 0,
-    /// The region that owns it — the one holding its centre, re-homed
-    /// when a step moves it across a face.
-    owner: u32,
-    /// The centre at birth: drift is measured against this, because drift
-    /// is the only thing that can break exact locality.
-    mu0: [3]f32,
-    /// Cached ∞-norm half-extent of the cutoff box.
-    reach: f32,
-    updates: u32 = 0,
-    born_at: u64,
-    /// Held: the region this kernel belongs to has been refined, so its
-    /// contribution is the coarse approximation the child is learning the
-    /// residual of. Frozen for real — an exemplar in a NEIGHBOURING region
-    /// can reach a kernel across the face, and a "frozen" parent that
-    /// drifts by that route is a parent the child is chasing.
-    frozen: bool = false,
-
-    pub fn shape(self: *const Kernel) Shape {
-        return .{
-            .mu = .{ self.p[MU], self.p[MU + 1], self.p[MU + 2] },
-            .l = .{
-                fmath.expf(self.p[LOGD]),
-                self.p[OFF],
-                fmath.expf(self.p[LOGD + 1]),
-                self.p[OFF + 1],
-                self.p[OFF + 2],
-                fmath.expf(self.p[LOGD + 2]),
-            },
-        };
-    }
-
-    pub fn weight(self: *const Kernel) f32 {
-        return self.p[W];
-    }
-
-    pub fn drift(self: *const Kernel) f32 {
-        const d = [3]f32{ self.p[MU] - self.mu0[0], self.p[MU + 1] - self.mu0[1], self.p[MU + 2] - self.mu0[2] };
-        return @sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-    }
-};
-
-/// A region: the bookkeeping unit, the budget's unit, and the unit a
-/// query rejects wholesale. Not a brick, and not pretending to be one.
-pub const Region = struct {
-    own: std.ArrayListUnmanaged(u32) = .{},
-    /// Conservative: at least the largest reach among the kernels owned.
-    /// Only ever grown on a step (a bound that is too large is correct;
-    /// one that is too small silently drops a kernel from a sum), and
-    /// tightened only by `retighten`.
-    max_reach: f32 = 0,
-    /// Unresolved surprise (campaign §2: attention). Both forms kept —
-    /// the sum is what §9 writes, the max is what Loam's R15 would.
-    surprise_sum: f64 = 0,
-    surprise_max: f32 = 0,
-    seen: u32 = 0,
-    events: u32 = 0,
-    births: u32 = 0,
-    saturated: u32 = 0,
-};
-
-/// What one observation did — the campaign's §11 locality, per event.
-pub const Event = struct {
-    residual: f32,
-    surprise: f32,
-    learned: bool,
-    born: bool,
-    saturated: bool,
-    /// Some kernel already read above `coverage` at the exemplar, so no
-    /// birth was called for. This is the half of the population that
-    /// matters for representation pressure: a residual that persists where
-    /// the basis said it had the ground covered is the basis being wrong
-    /// about itself, and a residual where nothing covers the ground is
-    /// just a birth waiting to happen.
-    covered: bool,
-    /// The residual AFTER the update steps. What deformation could not
-    /// remove from this exemplar with the kernels it had.
-    post_residual: f32,
-    /// Kernels whose support contains the exemplar: exactly the set the
-    /// prediction summed.
-    touched: u32,
-    /// Kernels inside the RESPONSIBILITY radius — the subset that actually
-    /// took a gradient. Equal to `touched` when responsibility is support,
-    /// which is the default. Counted separately because reporting the
-    /// support set for both makes a responsibility sweep look like it
-    /// changes nothing: the number that moves is this one.
-    responsible: u32,
-    /// Distinct owning regions among them — the learning cone's width.
-    regions_touched: u32,
-    /// Kernels a gaussian was computed for, touched or not: the COST,
-    /// which is a different number from the locality.
-    evaluated: u32,
-    /// Regions the query opened; and those `max_reach` rejected outright.
-    visited: u32,
-    pruned: u32,
-};
-
-pub const Stats = struct {
-    exemplars: u64 = 0,
-    events: u64 = 0,
-    births: u64 = 0,
-    saturations: u64 = 0,
-    touched: u64 = 0,
-    responsible: u64 = 0,
-    regions_touched: u64 = 0,
-    evaluated: u64 = 0,
-    visited: u64 = 0,
-    pruned: u64 = 0,
-    /// Wall clock, nanoseconds. Never read by the model — reported only.
-    predict_ns: u64 = 0,
-    learn_ns: u64 = 0,
-    predictions: u64 = 0,
-    /// Times a clamp bit: the shape projected back inside the reach, a
-    /// width held off its floor, a centre held inside the cube.
-    reach_clamped: u64 = 0,
-    width_clamped: u64 = 0,
-    centre_clamped: u64 = 0,
-    rehomed: u64 = 0,
-    trust_clamped: u64 = 0,
-    /// THE WORK: gradient applications, summed over kernels and steps. A
-    /// count, never a time — the unit that replays across machines, and
-    /// what `work_C/work_A` is measured in.
-    updates: u64 = 0,
-};
-
-pub const Model = struct {
-    gpa: std.mem.Allocator,
-    opts: Options,
-    /// Region edge, and the widest a kernel's cutoff box may reach.
-    h: f32,
-    sigma_max: f32,
-    sigma_min: f32,
-    kernels: std.ArrayListUnmanaged(Kernel) = .{},
-    regions: []Region,
-    stats: Stats = .{},
-    stream: rng.Stream,
-    /// Scratch for a gather: reused, so an observation allocates nothing.
-    hit: std.ArrayListUnmanaged(u32) = .{},
-    /// The recent window of |residual| (campaign §11), a ring.
-    recent: []f32,
-    recent_n: u64 = 0,
-    /// The residual evidence grid (`.residual` births only): per cell, how
-    /// many learning events landed there and the sum of what was left
-    /// after adaptation. Cells are one coverage-spacing across, which is
-    /// the scale at which a birth would be placed anyway — finer would be
-    /// evidence about nothing, coarser would place kernels by a rule
-    /// blinder than the one being replaced.
-    ev_cells: u32 = 0,
-    ev_count: []u32 = &.{},
-    ev_sum: []f32 = &.{},
-    /// Stamps for counting the distinct regions one event reached, in one
-    /// pass over the touched set rather than a pass per member: sixty
-    /// kernels is the predicted touch and sixty squared per event is not
-    /// a measurement, it is the measurement's cost.
-    visit_gen: []u32,
-    gen: u32 = 0,
-
-    pub fn init(gpa: std.mem.Allocator, opts: Options) !Model {
-        const n = opts.regions * opts.regions * opts.regions;
-        const regions = try gpa.alloc(Region, n);
-        errdefer gpa.free(regions);
-        for (regions) |*r| r.* = .{};
-        const recent = try gpa.alloc(f32, opts.window);
-        errdefer gpa.free(recent);
-        @memset(recent, 0);
-        const gens = try gpa.alloc(u32, n);
-        errdefer gpa.free(gens);
-        @memset(gens, 0);
-        const h = 1 / @as(f32, @floatFromInt(opts.regions));
-        const sig_max = h / CUTOFF_R;
-        var ev_cells: u32 = 0;
-        var ev_count: []u32 = &.{};
-        var ev_sum: []f32 = &.{};
-        if (opts.birth_rule != .coverage) {
-            const r_cov = @sqrt(-2 * @log(@max(1e-6, opts.coverage)));
-            ev_cells = @intFromFloat(@ceil(1 / (opts.birth_scale * r_cov * sig_max)));
-            ev_cells = @max(2, ev_cells);
-            const cells: usize = @as(usize, ev_cells) * ev_cells * ev_cells;
-            ev_count = try gpa.alloc(u32, cells);
-            errdefer gpa.free(ev_count);
-            @memset(ev_count, 0);
-            ev_sum = try gpa.alloc(f32, cells);
-            @memset(ev_sum, 0);
-        }
-        return .{
-            .gpa = gpa,
-            .opts = opts,
-            .h = h,
-            .sigma_max = sig_max,
-            // A width may thin to a sixty-fourth of a region — the shell
-            // is a fortieth of the domain thick and a kernel that cannot
-            // get thinner than the feature cannot represent it.
-            .sigma_min = h / 64,
-            .regions = regions,
-            .stream = rng.Stream.region(opts.seed, 0x4D41_524C, 0), // "MARL"
-            .recent = recent,
-            .visit_gen = gens,
-            .ev_cells = ev_cells,
-            .ev_count = ev_count,
-            .ev_sum = ev_sum,
-        };
-    }
-
-    pub fn deinit(self: *Model) void {
-        for (self.regions) |*r| r.own.deinit(self.gpa);
-        self.gpa.free(self.regions);
-        self.kernels.deinit(self.gpa);
-        self.hit.deinit(self.gpa);
-        self.gpa.free(self.recent);
-        self.gpa.free(self.visit_gen);
-        if (self.ev_count.len > 0) self.gpa.free(self.ev_count);
-        if (self.ev_sum.len > 0) self.gpa.free(self.ev_sum);
-    }
-
-    fn evIndex(self: *const Model, p: [3]f32) usize {
-        const n = self.ev_cells;
-        var c: [3]u32 = undefined;
-        inline for (0..3) |a| {
-            const v = @floor(p[a] * @as(f32, @floatFromInt(n)));
-            c[a] = if (v < 0) 0 else @min(n - 1, @as(u32, @intFromFloat(v)));
-        }
-        return (@as(usize, c[2]) * n + c[1]) * n + c[0];
-    }
-
-    /// Whether this cell has seen enough, and still carries too much.
-    fn evidenced(self: *const Model, idx: usize) bool {
-        const n = self.ev_count[idx];
-        if (n < self.opts.birth_evidence) return false;
-        const bar = if (self.opts.birth_residual > 0) self.opts.birth_residual else self.opts.threshold;
-        return self.ev_sum[idx] / @as(f32, @floatFromInt(n)) > bar;
-    }
-
-    /// Child kernels that have had enough gradient to have been adapted at
-    /// all. MARL-2's refine sweep showed allocated and usable capacity are
-    /// different things; this is the second of the two, measured and not
-    /// yet used for anything.
-    pub fn trainedFraction(self: *const Model, min_updates: u32) f32 {
-        if (self.kernels.items.len == 0) return 0;
-        var n: u32 = 0;
-        for (self.kernels.items) |*k| {
-            if (k.updates >= min_updates) n += 1;
-        }
-        return @as(f32, @floatFromInt(n)) / @as(f32, @floatFromInt(self.kernels.items.len));
-    }
-
-    pub fn meanUpdates(self: *const Model) f32 {
-        if (self.kernels.items.len == 0) return 0;
-        var acc: u64 = 0;
-        for (self.kernels.items) |*k| acc += k.updates;
-        return @as(f32, @floatFromInt(acc)) / @as(f32, @floatFromInt(self.kernels.items.len));
-    }
-
-    // ── geometry ──────────────────────────────────────────────────────
-
-    fn cellOf(self: *const Model, x: f32) u32 {
-        const r = self.opts.regions;
-        const c = @floor(x / self.h);
-        if (c < 0) return 0;
-        const ci: u32 = @intFromFloat(c);
-        return @min(r - 1, ci);
-    }
-
-    pub fn regionOf(self: *const Model, p: [3]f32) u32 {
-        const r = self.opts.regions;
-        return (self.cellOf(p[2]) * r + self.cellOf(p[1])) * r + self.cellOf(p[0]);
-    }
-
-    fn regionCoords(self: *const Model, idx: u32) [3]u32 {
-        const r = self.opts.regions;
-        return .{ idx % r, (idx / r) % r, idx / (r * r) };
-    }
-
-    /// ∞-distance from q to a region's closed cube — what `max_reach` is
-    /// compared against.
-    fn distToRegion(self: *const Model, idx: u32, q: [3]f32) f32 {
-        const c = self.regionCoords(idx);
-        var d: f32 = 0;
-        inline for (0..3) |a| {
-            const lo = @as(f32, @floatFromInt(c[a])) * self.h;
-            const hi = lo + self.h;
-            d = @max(d, @max(lo - q[a], q[a] - hi));
-        }
-        return @max(d, 0);
-    }
-
-    // ── the gather: exact, and the only place a prediction comes from ──
-
-    /// Every kernel whose support CONTAINS q, appended to `self.hit`. The
-    /// clamp guarantees a kernel's box reaches at most one region edge,
-    /// so its own region and the 26 neighbours are the whole of it — this
-    /// is the sum over the model, not a truncation of it (G17 d).
-    fn gather(self: *Model, q: [3]f32, ev: ?*Event) !void {
-        self.hit.clearRetainingCapacity();
-        const r = self.opts.regions;
-        const c = [3]u32{ self.cellOf(q[0]), self.cellOf(q[1]), self.cellOf(q[2]) };
-        var visited: u32 = 0;
-        var pruned: u32 = 0;
-        var evaluated: u32 = 0;
-        var dz: i32 = -1;
-        while (dz <= 1) : (dz += 1) {
-            const z = @as(i32, @intCast(c[2])) + dz;
-            if (z < 0 or z >= r) continue;
-            var dy: i32 = -1;
-            while (dy <= 1) : (dy += 1) {
-                const y = @as(i32, @intCast(c[1])) + dy;
-                if (y < 0 or y >= r) continue;
-                var dx: i32 = -1;
-                while (dx <= 1) : (dx += 1) {
-                    const x = @as(i32, @intCast(c[0])) + dx;
-                    if (x < 0 or x >= r) continue;
-                    const idx: u32 = (@as(u32, @intCast(z)) * r + @as(u32, @intCast(y))) * r + @as(u32, @intCast(x));
-                    const reg = &self.regions[idx];
-                    if (reg.own.items.len == 0) continue;
-                    // The region's own conservative bound, `Summary.covers`
-                    // in one float: nothing it owns can reach q.
-                    if (self.distToRegion(idx, q) > reg.max_reach) {
-                        pruned += 1;
-                        continue;
-                    }
-                    visited += 1;
-                    for (reg.own.items) |ki| {
-                        evaluated += 1;
-                        if (gaussian(self.kernels.items[ki].shape(), q) > 0) {
-                            try self.hit.append(self.gpa, ki);
-                        }
-                    }
-                }
-            }
-        }
-        if (ev) |e| {
-            e.visited = visited;
-            e.pruned = pruned;
-            e.evaluated = evaluated;
-        }
-    }
-
-    /// `gather` for a gate: leaves the touched set in `hit` so a witness
-    /// can compare it against a brute-force pass over the whole model.
-    pub fn gatherForTest(self: *Model, q: [3]f32) !void {
-        try self.gather(q, null);
-    }
-
-    /// The prediction at q. Exact: the cutoff makes every kernel the
-    /// gather did not reach contribute zero, not a small number.
-    pub fn predict(self: *Model, q: [3]f32) !f32 {
-        var t = std.time.Timer.start() catch null;
-        try self.gather(q, null);
-        var y: f32 = 0;
-        for (self.hit.items) |ki| {
-            const k = &self.kernels.items[ki];
-            y += k.p[W] * gaussian(k.shape(), q);
-        }
-        if (t) |*tt| self.stats.predict_ns += tt.read();
-        self.stats.predictions += 1;
-        return y;
-    }
-
-    /// Every kernel in the model summed — the reference the 27-region
-    /// gather is checked against, and nothing else.
-    ///
-    /// It walks EVERY region in linear index order, which is the order the
-    /// gather visits its twenty-seven in, so the two sums add the same
-    /// terms in the same order and the comparison is about the gather
-    /// rather than about float addition. The regions the gather skips
-    /// contribute w·0 here, and adding a zero is exact — which is the
-    /// whole claim: the restriction to twenty-seven regions is LOSSLESS,
-    /// not merely close. Summed in kernel-index order instead, the two
-    /// answers differ in the last two places, which is a true statement
-    /// about associativity and a useless one about locality.
-    pub fn predictAll(self: *const Model, q: [3]f32) f32 {
-        var y: f32 = 0;
-        for (self.regions) |*reg| {
-            for (reg.own.items) |ki| {
-                const k = &self.kernels.items[ki];
-                y += k.p[W] * gaussian(k.shape(), q);
-            }
-        }
-        return y;
-    }
-
-    // ── the clamp ─────────────────────────────────────────────────────
-
-    /// Project a kernel's parameters back inside what keeps the gather
-    /// exact: the centre in the cube, no width below the floor, and the
-    /// cutoff box reaching at most one region edge. The reach projection
-    /// scales L, which shrinks every half-extent by the same factor and
-    /// so keeps the SHAPE — an ellipsoid stays as anisotropic as the
-    /// descent made it, it only stops growing past the gather.
-    fn clamp(self: *Model, k: *Kernel) void {
-        // BOTH sides of the log-diagonal, and the low side is not
-        // decoration: it was paid for by a `--width 0.4` run that panicked
-        // at 10 000 exemplars casting a non-finite centre to a region
-        // index. Nothing bounded a kernel from below, so descent widened
-        // one until `expf` underflowed L's diagonal to zero, `halfExtents`
-        // divided by it, the reach came back infinite, and the reach
-        // projection added log(∞) to the log-width. σ ≤ h is an OUTER
-        // bound — the reach projection below is what actually governs the
-        // width, and it can only ever ask for something narrower — so this
-        // floor changes no converged model and makes the arithmetic
-        // incapable of leaving the reals.
-        const lo_log = -@log(self.h); // σ ≤ h
-        const hi_log = -@log(self.sigma_min); // σ ≥ σ_min
-        var bit_width = false;
-        inline for (0..3) |a| {
-            const v = k.p[LOGD + a];
-            if (!(v >= lo_log and v <= hi_log)) {
-                k.p[LOGD + a] = if (v < lo_log) lo_log else hi_log;
-                bit_width = true;
-            }
-        }
-        inline for (0..3) |a| {
-            const v = k.p[MU + a];
-            // Written to catch a NaN, which no ordered comparison does:
-            // a centre that is not a number is a bug upstream, and it must
-            // fail on the kernel that produced it rather than five
-            // thousand exemplars later inside a region lookup.
-            if (!(v >= 0 and v <= 1)) {
-                std.debug.assert(std.math.isFinite(v));
-                k.p[MU + a] = @min(1, @max(0, v));
-                if (a == 0) self.stats.centre_clamped += 1;
-            }
-        }
-        const off_cap = 1 / self.sigma_min;
-        inline for (0..3) |a| k.p[OFF + a] = @min(off_cap, @max(-off_cap, k.p[OFF + a]));
-        if (bit_width) self.stats.width_clamped += 1;
-
-        var s = k.shape();
-        var reach = reachOf(s);
-        if (reach > self.h) {
-            self.stats.reach_clamped += 1;
-            // L ← fL shrinks every half-extent by f. Once is exact in
-            // exact arithmetic and lands within an ulp in this one, so the
-            // loop almost always runs a single pass — but it LOOPS rather
-            // than storing min(reach, h), because the exactness the whole
-            // gather rests on is a property of the geometry and not of
-            // what a field was set to afterwards. A kernel one ulp over
-            // `h` reaches into the ring the gather never visits, and what
-            // it would contribute there is w·exp(−16): far too small to
-            // be noticed and far too large to be called zero. The first
-            // version stored min(reach, h) instead and the invariant was
-            // false on 0.6% of clamps — invisible, because the field said
-            // otherwise.
-            var guard: u8 = 0;
-            while (reach > self.h and guard < 16) : (guard += 1) {
-                // At least a thousandth, and that floor is the whole
-                // reason this terminates. A kernel one ulp over `h` gives
-                // f = 1 + 2⁻²³, whose log is SMALLER THAN THE ULP OF THE
-                // LOG-WIDTH ITSELF (~3.5, ulp 2.4e-7): the increment
-                // rounds away, the shape does not move, and the loop
-                // spins forever on a kernel that is already correct to
-                // within a float. Costing the boundary case a tenth of a
-                // percent of its width buys an invariant that holds
-                // exactly, which is what the gather's exactness rests on.
-                const f = @max(1.001, reach / self.h);
-                const lf = @log(f);
-                inline for (0..3) |a| k.p[LOGD + a] += lf;
-                inline for (0..3) |a| k.p[OFF + a] *= f;
-                s = k.shape();
-                reach = reachOf(s);
-            }
-            std.debug.assert(reach <= self.h);
-        }
-        k.reach = reach;
-    }
-
-    /// Move a centre by `d`, held to the trust region: no step may
-    /// displace a kernel more than `trust` region edges, in ∞-norm. This
-    /// is the whole of what makes the interference bound provable — 2h
-    /// from the clamp for where a touched kernel can already be, plus
-    /// steps · trust · h for where a step can put it — and it holds
-    /// whichever optimiser is mounted.
-    fn moveCentre(self: *Model, k: *Kernel, d: [3]f32) void {
-        const cap = self.opts.trust * self.h;
-        const mag = @max(@abs(d[0]), @max(@abs(d[1]), @abs(d[2])));
-        if (mag > cap) {
-            const f = cap / mag;
-            inline for (0..3) |c| k.p[MU + c] += d[c] * f;
-            self.stats.trust_clamped += 1;
-        } else {
-            inline for (0..3) |c| k.p[MU + c] += d[c];
-        }
-    }
-
-    /// Put a kernel in the region its centre now lies in, and keep that
-    /// region's bound conservative.
-    fn rehome(self: *Model, ki: u32) !void {
-        const k = &self.kernels.items[ki];
-        const want = self.regionOf(.{ k.p[MU], k.p[MU + 1], k.p[MU + 2] });
-        if (want != k.owner) {
-            const old = &self.regions[k.owner];
-            for (old.own.items, 0..) |v, i| {
-                if (v == ki) {
-                    _ = old.own.orderedRemove(i);
-                    break;
-                }
-            }
-            try self.regions[want].own.append(self.gpa, ki);
-            k.owner = want;
-            self.stats.rehomed += 1;
-        }
-        const reg = &self.regions[k.owner];
-        if (k.reach > reg.max_reach) reg.max_reach = k.reach;
-    }
-
-    /// Hold every kernel a region owns. The parent's contribution in a
-    /// refined region is RETAINED, not relearned — which is the whole of
-    /// the residual hierarchy's semantics: the child holds exactly what
-    /// this level could not.
-    pub fn freezeRegion(self: *Model, region: u32) void {
-        for (self.regions[region].own.items) |ki| self.kernels.items[ki].frozen = true;
-    }
-
-    pub fn unfreezeRegion(self: *Model, region: u32) void {
-        for (self.regions[region].own.items) |ki| self.kernels.items[ki].frozen = false;
-    }
-
-    /// Remove the kernels `dead` marks, and rebuild every index that named
-    /// them. Real removal rather than a zeroed weight, because the child's
-    /// POPULATION is a headline number for erosion and a kernel that still
-    /// occupies a gather is not retired.
-    pub fn compact(self: *Model, dead: []const bool) !void {
-        var kept = std.ArrayListUnmanaged(Kernel){};
-        errdefer kept.deinit(self.gpa);
-        try kept.ensureTotalCapacity(self.gpa, self.kernels.items.len);
-        for (self.kernels.items, dead) |k, d| {
-            if (!d) kept.appendAssumeCapacity(k);
-        }
-        self.kernels.deinit(self.gpa);
-        self.kernels = kept;
-        for (self.regions) |*r| {
-            r.own.clearRetainingCapacity();
-            r.max_reach = 0;
-        }
-        for (self.kernels.items, 0..) |*k, i| {
-            const owner = self.regionOf(.{ k.p[MU], k.p[MU + 1], k.p[MU + 2] });
-            k.owner = owner;
-            try self.regions[owner].own.append(self.gpa, @intCast(i));
-            if (k.reach > self.regions[owner].max_reach) self.regions[owner].max_reach = k.reach;
-        }
-    }
-
-    pub fn frozenCount(self: *const Model) u32 {
-        var n: u32 = 0;
-        for (self.kernels.items) |*k| {
-            if (k.frozen) n += 1;
-        }
-        return n;
-    }
-
-    /// Recompute every region's bound from the kernels it owns. Only ever
-    /// LOWERS one, so it changes no answer — it makes the prune sharper,
-    /// and the gate that the bound is conservative is what says so.
-    pub fn retighten(self: *Model) void {
-        for (self.regions) |*reg| {
-            var m: f32 = 0;
-            for (reg.own.items) |ki| m = @max(m, self.kernels.items[ki].reach);
-            reg.max_reach = m;
-        }
-    }
-
-    // ── one exemplar ──────────────────────────────────────────────────
-
-    /// The campaign's §9, and deliberately nothing more: locate, predict,
-    /// measure surprise, and either do nothing or take a few gradient
-    /// steps on the kernels that were responsible — birthing one first if
-    /// none of them covers the exemplar well enough.
-    pub fn observe(self: *Model, x: [3]f32, y: f32) !Event {
-        var ev = Event{ .residual = 0, .surprise = 0, .learned = false, .born = false, .saturated = false, .covered = false, .post_residual = 0, .touched = 0, .responsible = 0, .regions_touched = 0, .evaluated = 0, .visited = 0, .pruned = 0 };
-        var pt = std.time.Timer.start() catch null;
-
-        try self.gather(x, &ev);
-        const resp2 = self.opts.responsibility * self.opts.responsibility;
-        var yhat: f32 = 0;
-        var cover: f32 = 0;
-        for (self.hit.items) |ki| {
-            const k = &self.kernels.items[ki];
-            const m = mahal(k.shape(), x);
-            const g = if (m.r2 > CUTOFF) 0 else fmath.expf(-0.5 * m.r2);
-            // Prediction is over the SUPPORT set — always, or it stops
-            // being the sum over the model. Coverage is over the
-            // RESPONSIBILITY set, because coverage asks whether some
-            // kernel can be made answerable for this exemplar, and a
-            // kernel that may not learn from it cannot.
-            yhat += k.p[W] * g;
-            if (m.r2 <= resp2) cover = @max(cover, g);
-        }
-        if (pt) |*tt| self.stats.predict_ns += tt.read();
-        self.stats.predictions += 1;
-        ev.touched = @intCast(self.hit.items.len);
-        ev.residual = y - yhat;
-        ev.surprise = @abs(ev.residual);
-
-        const home = self.regionOf(x);
-        const reg = &self.regions[home];
-        reg.seen += 1;
-        reg.surprise_sum += ev.surprise;
-        reg.surprise_max = @max(reg.surprise_max, ev.surprise);
-
-        self.recent[@intCast(self.recent_n % self.opts.window)] = ev.surprise;
-        self.recent_n += 1;
-        self.stats.exemplars += 1;
-        self.stats.evaluated += ev.evaluated;
-        self.stats.visited += ev.visited;
-        self.stats.pruned += ev.pruned;
-
-        ev.covered = cover >= self.opts.coverage;
-        if (ev.surprise <= self.opts.threshold) return ev;
-
-        var lt = std.time.Timer.start() catch null;
-        ev.learned = true;
-        reg.events += 1;
-        self.stats.events += 1;
-
-        // Birth. Under `.coverage` this is the campaign's §10 rule — no
-        // kernel covers the exemplar usefully. Under `.residual` it is
-        // MARL-3's: this neighbourhood has been visited enough times and
-        // still carries too much error AFTER adaptation, so the shortfall
-        // is representational and not merely unlearned.
-        //
-        // Either way the weight is the residual, so the newborn alone
-        // answers this exemplar exactly and the descent has to keep it
-        // honest at every other exemplar it reaches.
-        const ev_idx: usize = if (self.opts.birth_rule != .coverage) self.evIndex(x) else 0;
-        const want_birth = switch (self.opts.birth_rule) {
-            .coverage => cover < self.opts.coverage,
-            .residual => self.evidenced(ev_idx),
-            .either => cover < self.opts.coverage or self.evidenced(ev_idx),
-        };
-        if (want_birth and self.opts.births) {
-            if (reg.own.items.len >= self.opts.budget) {
-                ev.saturated = true;
-                reg.saturated += 1;
-                self.stats.saturations += 1;
-            } else {
-                const sigma = self.opts.birth_width * self.sigma_max;
-                const inv = 1 / sigma;
-                const li = @log(inv);
-                const ki: u32 = @intCast(self.kernels.items.len);
-                try self.kernels.append(self.gpa, .{
-                    .p = .{ x[0], x[1], x[2], li, li, li, 0, 0, 0, ev.residual },
-                    .owner = home,
-                    .mu0 = x,
-                    .reach = CUTOFF_R * sigma,
-                    .born_at = self.stats.exemplars,
-                });
-                // Nothing enters the model unprojected: `CUTOFF_R · σ` is
-                // the reach only to within a float, and a kernel one ulp
-                // over `h` is one the gather can miss.
-                self.clamp(&self.kernels.items[ki]);
-                try reg.own.append(self.gpa, ki);
-                const kr = self.kernels.items[ki].reach;
-                if (kr > reg.max_reach) reg.max_reach = kr;
-                try self.hit.append(self.gpa, ki);
-                ev.born = true;
-                ev.touched += 1;
-                reg.births += 1;
-                self.stats.births += 1;
-                // The evidence has been spent. Without this the same cell
-                // births on every subsequent event until its mean falls,
-                // which is a burst of kernels for one piece of evidence.
-                if (self.opts.birth_rule != .coverage) {
-                    self.ev_count[ev_idx] = 0;
-                    self.ev_sum[ev_idx] = 0;
-                }
-            }
-        }
-
-        // The steps. Only the kernels in `hit` move, and `hit` is exactly
-        // the kernels whose support contains x.
-        var grad: [PARAMS]f32 = undefined;
-        var s: u32 = 0;
-        while (s < self.opts.steps) : (s += 1) {
-            var pred: f32 = 0;
-            var gg: f32 = 0;
-            for (self.hit.items) |ki| {
-                const k = &self.kernels.items[ki];
-                const m = mahal(k.shape(), x);
-                const g = if (m.r2 > CUTOFF) 0 else fmath.expf(-0.5 * m.r2);
-                pred += k.p[W] * g; // support: the whole sum, always
-                if (m.r2 <= resp2) gg += g * g; // responsibility: who pays
-            }
-            const e = pred - y;
-            switch (self.opts.optimizer) {
-                .adam => for (self.hit.items) |ki| {
-                    const k = &self.kernels.items[ki];
-                    if (k.frozen) continue;
-                    if (mahal(k.shape(), x).r2 > resp2) continue;
-                    if (!gradOne(k, x, e, &grad)) continue;
-                    const mu0 = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
-                    adam(k, &grad, self.opts.rate);
-                    // Through the same trust region, so the interference
-                    // bound is a property of the model and not of which
-                    // optimiser happens to be mounted.
-                    const d = [3]f32{ k.p[MU] - mu0[0], k.p[MU + 1] - mu0[1], k.p[MU + 2] - mu0[2] };
-                    inline for (0..3) |c| k.p[MU + c] = mu0[c];
-                    self.moveCentre(k, d);
-                    self.clamp(k);
-                    k.updates += 1;
-                    self.stats.updates += 1;
-                },
-                .nlms => {
-                    const inv = 1 / (gg + 1e-6);
-                    for (self.hit.items) |ki| {
-                        const k = &self.kernels.items[ki];
-                        if (k.frozen) continue;
-                        const sh = k.shape();
-                        const m = mahal(sh, x);
-                        if (m.r2 > resp2) continue;
-                        const g = fmath.expf(-0.5 * m.r2);
-                        // This kernel's share of the residual.
-                        const a = e * g * inv;
-                        const wa = k.p[W] * a * self.opts.rate_geom;
-                        k.p[W] -= self.opts.rate_w * a;
-                        // The centre, in the kernel's OWN metric: the
-                        // natural gradient Σ·∂g/∂μ collapses to g·d,
-                        // because Σ(Lv) = L⁻ᵀL⁻¹Lv = L⁻ᵀv = d. So a
-                        // kernel that under-reads at x simply moves
-                        // toward x, by its share and no more — no matrix,
-                        // and no units to get wrong.
-                        self.moveCentre(k, .{ -wa * m.d[0], -wa * m.d[1], -wa * m.d[2] });
-                        // The shape, each entry scaled into its own units:
-                        // the diagonal through its log, the off-diagonal
-                        // by l_ii·l_jj, so every group's step is a
-                        // RELATIVE change and one rate governs them all.
-                        const l = sh.l;
-                        k.p[LOGD] += wa * m.v[0] * m.d[0] * l[0];
-                        k.p[LOGD + 1] += wa * m.v[1] * m.d[1] * l[2];
-                        k.p[LOGD + 2] += wa * m.v[2] * m.d[2] * l[5];
-                        k.p[OFF] += wa * m.v[0] * m.d[1] * l[0] * l[2];
-                        k.p[OFF + 1] += wa * m.v[0] * m.d[2] * l[0] * l[5];
-                        k.p[OFF + 2] += wa * m.v[1] * m.d[2] * l[2] * l[5];
-                        self.clamp(k);
-                        k.updates += 1;
-                        self.stats.updates += 1;
-                    }
-                },
-            }
-        }
-        for (self.hit.items) |ki| try self.rehome(ki);
-
-        {
-            var after: f32 = 0;
-            for (self.hit.items) |ki| {
-                const k = &self.kernels.items[ki];
-                after += k.p[W] * gaussian(k.shape(), x);
-            }
-            ev.post_residual = y - after;
-            if (self.opts.birth_rule != .coverage) {
-                self.ev_count[ev_idx] += 1;
-                self.ev_sum[ev_idx] += @abs(ev.post_residual);
-                // Forget by halving, so the mean is over RECENT evidence.
-                // A running mean over a whole run keeps a cell that was
-                // bad early and is fine now looking bad forever, and would
-                // birth on history rather than on the present residual.
-                if (self.ev_count[ev_idx] >= 4 * self.opts.birth_evidence) {
-                    self.ev_count[ev_idx] /= 2;
-                    self.ev_sum[ev_idx] *= 0.5;
-                }
-            }
-        }
-        self.gen += 1;
-        var seen_reg: u32 = 0;
-        for (self.hit.items) |ki| {
-            const o = self.kernels.items[ki].owner;
-            if (self.visit_gen[o] != self.gen) {
-                self.visit_gen[o] = self.gen;
-                seen_reg += 1;
-            }
-        }
-        ev.regions_touched = seen_reg;
-        for (self.hit.items) |ki| {
-            if (mahal(self.kernels.items[ki].shape(), x).r2 <= resp2) ev.responsible += 1;
-        }
-        self.stats.responsible += ev.responsible;
-        self.stats.touched += ev.touched;
-        self.stats.regions_touched += ev.regions_touched;
-        if (lt) |*tt| self.stats.learn_ns += tt.read();
-        return ev;
-    }
-
-    /// Draw an exemplar from the domain and observe it. Uniform, from the
-    /// counter-based stream — no sequential draw anywhere, so the model
-    /// is a function of (seed, count) and of nothing about the order work
-    /// happened to be done in.
-    pub fn observeOne(self: *Model) !Event {
-        const x = [3]f32{ self.stream.unit(), self.stream.unit(), self.stream.unit() };
-        return self.observe(x, truthOf(self.opts.truth, x));
-    }
-
-    pub fn stream_n(self: *Model, n: u64) !void {
-        var i: u64 = 0;
-        while (i < n) : (i += 1) _ = try self.observeOne();
-    }
-
-    /// Take another model's DISCOVERED TOPOLOGY — centres, shapes,
-    /// weights — and nothing else: no optimiser state, no update counts,
-    /// no history. Drift is then measured from where this model starts,
-    /// which is the frozen topology, so "how far did deformation move
-    /// what birth found" is a number and not an inference.
-    pub fn reseedFrom(self: *Model, src: *const Model) !void {
-        for (self.regions) |*r| {
-            r.own.clearRetainingCapacity();
-            r.max_reach = 0;
-        }
-        self.kernels.clearRetainingCapacity();
-        for (src.kernels.items) |*k| {
-            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
-            const owner = self.regionOf(mu);
-            const ki: u32 = @intCast(self.kernels.items.len);
-            try self.kernels.append(self.gpa, .{ .p = k.p, .owner = owner, .mu0 = mu, .reach = k.reach, .born_at = 0 });
-            try self.regions[owner].own.append(self.gpa, ki);
-            if (k.reach > self.regions[owner].max_reach) self.regions[owner].max_reach = k.reach;
-        }
-    }
-
-    // ── measurement ───────────────────────────────────────────────────
-
-    /// Root mean square error over a held-out set — points drawn from
-    /// their own stream and never learned from.
-    pub fn rms(self: *Model, pts: []const [3]f32, targets: []const f32, max_abs: ?*f32) !f32 {
-        var acc: f64 = 0;
-        var mx: f32 = 0;
-        for (pts, targets) |p, t| {
-            const e = (try self.predict(p)) - t;
-            acc += @as(f64, e) * @as(f64, e);
-            mx = @max(mx, @abs(e));
-        }
-        if (max_abs) |m| m.* = mx;
-        return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len))));
-    }
-
-    pub fn recentError(self: *const Model) f32 {
-        const n: usize = @intCast(@min(self.recent_n, self.opts.window));
-        if (n == 0) return 0;
-        var acc: f64 = 0;
-        for (self.recent[0..n]) |v| acc += v;
-        return @floatCast(acc / @as(f64, @floatFromInt(n)));
-    }
-
-    pub fn occupiedRegions(self: *const Model) u32 {
-        var n: u32 = 0;
-        for (self.regions) |*r| {
-            if (r.own.items.len > 0) n += 1;
-        }
-        return n;
-    }
-
-    pub fn saturatedRegions(self: *const Model) u32 {
-        var n: u32 = 0;
-        for (self.regions) |*r| {
-            if (r.own.items.len >= self.opts.budget) n += 1;
-        }
-        return n;
-    }
-
-    /// What the kernels are being asked to carry. Christian's reading of
-    /// the coverage-0.10 divergence: under-birth causes OVER-RESPONSIBILITY
-    /// — too few kernels forced to explain too much territory, weights go
-    /// pathological, and the resulting predictions then corrupt the
-    /// coverage decision that would have birthed more. The truth's own
-    /// range is about 1.25, so a mean |w| near that is already a warning
-    /// and a max in the tens is the regime itself.
-    pub const Weights = struct { mean_abs: f32, max_abs: f32 };
-
-    pub fn weightStats(self: *const Model) Weights {
-        if (self.kernels.items.len == 0) return .{ .mean_abs = 0, .max_abs = 0 };
-        var acc: f64 = 0;
-        var mx: f32 = 0;
-        for (self.kernels.items) |*k| {
-            acc += @abs(k.p[W]);
-            mx = @max(mx, @abs(k.p[W]));
-        }
-        return .{ .mean_abs = @floatCast(acc / @as(f64, @floatFromInt(self.kernels.items.len))), .max_abs = mx };
-    }
-
-    pub const Drift = struct { mean: f32, max: f32, out_of_region: u32 };
-
-    pub fn driftOf(self: *const Model) Drift {
-        if (self.kernels.items.len == 0) return .{ .mean = 0, .max = 0, .out_of_region = 0 };
-        var acc: f64 = 0;
-        var mx: f32 = 0;
-        var out: u32 = 0;
-        for (self.kernels.items) |*k| {
-            const d = k.drift();
-            acc += d;
-            mx = @max(mx, d);
-            if (self.regionOf(k.mu0) != k.owner) out += 1;
-        }
-        return .{ .mean = @floatCast(acc / @as(f64, @floatFromInt(self.kernels.items.len))), .max = mx, .out_of_region = out };
-    }
-
-    /// Kernel CENTRES per unit volume in a predicate's region — the
-    /// campaign's capacity-allocation question, counted where the
-    /// question is asked rather than over the whole cube.
-    pub fn densityIn(self: *const Model, comptime pred: fn (TruthParams, [3]f32) bool, volume: f32) f32 {
-        return @as(f32, @floatFromInt(self.countIn(pred))) / volume;
-    }
-
-    pub fn countIn(self: *const Model, comptime pred: fn (TruthParams, [3]f32) bool) u32 {
-        var n: u32 = 0;
-        for (self.kernels.items) |*k| {
-            if (pred(self.opts.truth, .{ k.p[MU], k.p[MU + 1], k.p[MU + 2] })) n += 1;
-        }
-        return n;
-    }
-};
-
-// ── MARL-2: the residual hierarchy ────────────────────────────────────
-
 /// When a region is judged unable to REPRESENT what it is being asked to
 /// hold, as against merely not having learned it yet.
 ///
@@ -1548,782 +628,1904 @@ pub const PressureOptions = struct {
     unrefine_after: u32 = 300,
 };
 
-/// A banked child, and where it came from. The source region matters: a
-/// donor set's geometry is only right for a recipient whose structure sits
-/// at a similar angle, and on a moving shell that means a NEARBY region.
-/// The first version picked the most recent retirement — a temporal
-/// correspondence, which a move does provide — and it transplanted
-/// pancakes at the wrong orientation, adding more kernels than it saved.
-pub const Donor = struct { from: u32, kernels: std.ArrayListUnmanaged(Kernel) };
-
-/// What the scheduler knows about one refined region. Nothing here is new
-/// physics — every field is a quantity an earlier phase already measured
-/// and understood, which is the condition Christian set.
-pub const RegionSched = struct {
-    /// Unresolved representation pressure: an EWMA of the CHILD's
-    /// post-update residual here. Seeded at refinement from the parent's
-    /// own pressure, or a region that has never been served has a need of
-    /// zero, scores zero, is never served, and the scheduler deadlocks on
-    /// its first step.
-    need: f32 = 0,
-    /// Exemplars served, child kernels born here, and child gradient
-    /// applications spent here.
-    routed: u64 = 0,
-    kernels: u32 = 0,
-    updates: u64 = 0,
-    /// Exemplar index when this region was last served.
-    last_served: u64 = 0,
-    /// MARL-7: an EWMA of |y − parent(x)| over the exemplars routed here,
-    /// and what it was when the region was refined. The child was created
-    /// to absorb the parent's error at the size it then had; if that error
-    /// GROWS well past it, the parent has stopped being a valid coarse
-    /// level and no amount of residual will fix that — the residual is
-    /// what is being asked to do the parent's job.
-    parent_error: f32 = 0,
-    parent_error_at_refine: f32 = 0,
-    /// A DECAYING MAX of the same error. The mean is the wrong statistic
-    /// and the reason is the campaign's recurring one: a region is a sixth
-    /// of the domain across and the structure that leaves it is a
-    /// fortieth of the domain thick, so a 0.9-amplitude error over a fifth
-    /// of a region's volume averages down to a factor barely over three.
-    /// The question is not whether the parent is wrong ON AVERAGE here; it
-    /// is whether it is badly wrong ANYWHERE here.
-    parent_peak: f32 = 0,
-    parent_peak_at_refine: f32 = 0,
-    since_refined: u32 = 0,
-    /// The learning-efficiency window: need at the window's start, work
-    /// spent since, and the accumulated efficiency. MEASURED, and nothing
-    /// schedules from it — Christian's instruction, and the right one:
-    /// until it is characterised, scheduling from it would be scheduling
-    /// from a quantity nobody has read.
-    win_need: f32 = 0,
-    win_updates: u64 = 0,
-    win_n: u32 = 0,
-    eff_sum: f64 = 0,
-    eff_n: u32 = 0,
-
-    pub fn sufficiency(self: *const RegionSched) f32 {
-        return @as(f32, @floatFromInt(self.updates)) / @as(f32, @floatFromInt(@max(1, self.kernels)));
-    }
-
-    pub fn efficiency(self: *const RegionSched) f32 {
-        if (self.eff_n == 0) return 0;
-        return @floatCast(self.eff_sum / @as(f64, @floatFromInt(self.eff_n)));
-    }
-};
-
-/// Two levels, and the prediction is their SUM:
+/// **The model, parameterised by how many CHANNELS a kernel weighs.**
 ///
-///     f(x) ≈ parent(x) + Δchild(x)
+/// MARL-0 through MARL-11 are all `Marl(1)`: one weight, one scalar
+/// target, because the campaign's truth (§8) is scalar. `rbf.zig` fits
+/// NINE — the vein's blend and the eight material columns it multiplies —
+/// and they share one centre and one shape, which is the entire reason a
+/// packed set is cheaper than nine sets: the geometry is paid for once.
 ///
-/// The child never sees the target. It sees `y − parent(x)` with the
-/// parent HELD, so what it holds has a precise meaning: the information
-/// the level above could not represent. That is the whole of the design,
-/// and the freezing is what makes the meaning true — a parent that went on
-/// learning in a refined region would be a parent the child is chasing.
+/// C is comptime rather than a field, and that is a performance decision
+/// with the campaign's own numbers behind it. The weights live INSIDE the
+/// kernel, at `p[W..W+C]`, so the NLMS inner loop reads them from the same
+/// cache line it just read the shape from. A runtime channel count would
+/// put them in a second array and cost a miss per kernel per step, on a
+/// path that touches ninety kernels an event — and MARL's standing against
+/// a batch bake is 45x the speed at the same kernel count (MARL-11), which
+/// is not a number to spend on saving an indent.
 ///
-/// Standalone on purpose, and two levels on purpose. No tree, no Loam
-/// storage, no recursion.
-pub const Hierarchy = struct {
-    gpa: std.mem.Allocator,
-    parent: Model,
-    child: Model,
-    popts: PressureOptions,
-    /// Per parent region.
-    refined: []bool,
-    covered_events: []u32,
-    post_sum: []f64,
-    /// The exemplar stream, keyed exactly as a flat `Model`'s is, so a
-    /// hierarchy and a flat learner at the same seed see THE SAME
-    /// exemplars in the same order. Any comparison between them that did
-    /// not is a comparison of two different experiments.
-    stream: rng.Stream,
-    seen: u64 = 0,
-    routed: u64 = 0,
-    /// Of the exemplars routed to the child, how many landed in the shell
-    /// band. THE DIAGNOSIS: a birth can only happen where an exemplar is,
-    /// so capacity concentration is bounded by EVIDENCE concentration, and
-    /// this is the evidence's. If it matches the band's share of the
-    /// refined volume, the child's stream is uniform and no birth rule
-    /// whatsoever can concentrate capacity above it.
-    routed_in_band: u64 = 0,
-    /// Exemplars that landed in a refined region at all — the pool routing
-    /// selects from. `routed / offered` is the router's duty cycle.
-    offered: u64 = 0,
-    offered_in_band: u64 = 0,
-    refined_count: u32 = 0,
-    /// The routing coin, keyed apart from the exemplar stream so that
-    /// biasing the stream does not change WHICH exemplars arrive — only
-    /// which of them the child is shown. Two routing settings therefore
-    /// see the same world.
-    route_stream: rng.Stream,
-    /// Per parent region, and only for the refined ones.
-    sched: []RegionSched,
-    /// MARL-6's epoch marks. Diagnostics only — nothing reads them to
-    /// decide anything, which is the condition on tagging at all.
-    child_at_drift: usize = 0,
-    parent_at_drift: usize = 0,
-    events_at_drift: u64 = 0,
-    seen_at_drift: u64 = 0,
-    updates_at_drift: []u32 = &.{},
-    /// MARL-8: banked donor sets, each one region's child expressed
-    /// RELATIVE to its region's origin, so it can be instantiated
-    /// anywhere. A set rather than loose kernels, because the relative
-    /// arrangement is most of what was learned.
-    pool: std.ArrayListUnmanaged(Donor) = .{},
-    transplanted: usize = 0,
-    transplant_events: u32 = 0,
-    /// Indices of the child kernels that arrived by transplant, for the
-    /// adoption measurement. Diagnostics only.
-    transplant_marks: std.ArrayListUnmanaged(u32) = .{},
-    /// MARL-7 bookkeeping: regions retired, and the child kernels that
-    /// went with them.
-    unrefined_count: u32 = 0,
-    unrefined_on_departed: u32 = 0,
-    child_retired: usize = 0,
-    rerefined_count: u32 = 0,
-    ever_refined: []bool = &.{},
-    /// Running mean of the routing score, so a score of any scale
-    /// normalises to the target duty. An EWMA rather than a true mean
-    /// because the scores move as the model learns, and a normaliser
-    /// averaged over the whole run would hold the duty at what the score
-    /// used to be.
-    score_mean: f32 = 1,
+/// Everything C-free stays outside: `Options`, `PressureOptions`, the
+/// truth, the kernel's own arithmetic (`mahal`, `gaussian`, `halfExtents`,
+/// `reachOf`) — so a `Marl(1)` and a `Marl(9)` are configured by the same
+/// values and read by the same shape math, and only the parameter vector
+/// differs.
+pub fn Marl(comptime C: usize) type {
+    return struct {
+        /// This instantiation's own namespace.
+        ///
+        /// Zig forbids a nested container from shadowing a file-level
+        /// declaration, and the file DOES declare `Model`, `Kernel` and the
+        /// rest below as the C = 1 facade. So every reference in here names
+        /// them through `Ch`, and the facade keeps the plain names that every
+        /// gate and both runners already use — which is why widening the
+        /// kernel changed no call site anywhere.
+        const Ch = @This();
 
-    pub fn init(gpa: std.mem.Allocator, opts: Options, popts: PressureOptions) !Hierarchy {
-        var parent = try Model.init(gpa, opts);
-        errdefer parent.deinit();
-        var copts = opts;
-        copts.regions = opts.regions * popts.refine;
-        copts.birth_rule = popts.child_birth;
-        var child = try Model.init(gpa, copts);
-        errdefer child.deinit();
-        const n = parent.regions.len;
-        const refined = try gpa.alloc(bool, n);
-        errdefer gpa.free(refined);
-        @memset(refined, false);
-        const ce = try gpa.alloc(u32, n);
-        errdefer gpa.free(ce);
-        @memset(ce, 0);
-        const ps = try gpa.alloc(f64, n);
-        errdefer gpa.free(ps);
-        @memset(ps, 0);
-        const sch = try gpa.alloc(RegionSched, n);
-        errdefer gpa.free(sch);
-        for (sch) |*e| e.* = .{};
-        const ever = try gpa.alloc(bool, n);
-        errdefer gpa.free(ever);
-        @memset(ever, false);
-        return .{
-            .gpa = gpa,
-            .parent = parent,
-            .child = child,
-            .popts = popts,
-            .refined = refined,
-            .covered_events = ce,
-            .post_sum = ps,
-            .stream = rng.Stream.region(opts.seed, 0x4D41_524C, 0), // "MARL", the flat model's key
-            .route_stream = rng.Stream.region(opts.seed, 0x524F_5554, 0), // "ROUT"
-            .sched = sch,
-            .ever_refined = ever,
-        };
-    }
+        /// Parameters per kernel: the centre (3), the LOG of L's diagonal (3, so
+        /// a width stays positive), L's off-diagonal (3: l10, l20, l21) and ONE
+        /// WEIGHT PER CHANNEL. `rbf.KERNEL_FLOATS` is this at C = 9.
+        pub const PARAMS: usize = W + C;
+        /// How many channels this instantiation weighs, for code that needs to
+        /// say so rather than take it from a signature.
+        pub const CHANNELS: usize = C;
 
-    pub fn deinit(self: *Hierarchy) void {
-        self.parent.deinit();
-        self.child.deinit();
-        self.gpa.free(self.refined);
-        self.gpa.free(self.covered_events);
-        self.gpa.free(self.post_sum);
-        self.gpa.free(self.sched);
-        if (self.updates_at_drift.len > 0) self.gpa.free(self.updates_at_drift);
-        self.gpa.free(self.ever_refined);
-        for (self.pool.items) |*d| d.kernels.deinit(self.gpa);
-        self.pool.deinit(self.gpa);
-        self.transplant_marks.deinit(self.gpa);
-    }
+        /// One value per channel — a target, a prediction, a residual.
+        /// `[1]f32` for the campaign, `[9]f32` for the marble's materials.
+        pub const Vec = [C]f32;
 
-    /// The origin of a parent region, in domain coordinates.
-    fn regionOrigin(self: *const Hierarchy, r: u32) [3]f32 {
-        const rr = self.parent.opts.regions;
-        const c = [3]u32{ r % rr, (r / rr) % rr, r / (rr * rr) };
-        const h = self.parent.h;
-        return .{ @as(f32, @floatFromInt(c[0])) * h, @as(f32, @floatFromInt(c[1])) * h, @as(f32, @floatFromInt(c[2])) * h };
-    }
+        /// The MAGNITUDE of a channel vector: the largest absolute component.
+        ///
+        /// Max and not a Euclidean norm, for two reasons. Loam's R15 already
+        /// merges attention by MAX on each field separately, and for the same
+        /// reason — the question a threshold asks is whether ANY channel is
+        /// surprising here, not whether the channels are surprising on
+        /// average, and an average lets one badly wrong channel hide behind
+        /// eight right ones. And at C = 1 it is `@abs` EXACTLY, bit for bit,
+        /// which is what lets every gate from G17 to G29 keep its numbers
+        /// unchanged across this widening.
+        /// The campaign's SCALAR truth (§8) as a channel vector: channel 0
+        /// carries it and the rest are zero. There is no multi-channel
+        /// synthetic truth and there should not be one — a target invented
+        /// to exercise nine channels would be nine channels of whatever the
+        /// inventor already believed. Anything wanting a real one brings
+        /// its own field, as `src/marble.zig` does.
+        /// The geometry step's channel-count correction, and it is
+        /// LOAD-BEARING at C > 1.
+        ///
+        /// The centre and shape descend on `ew = Σ_c w_c a_c` — one term
+        /// per channel, because nine weights pull on one Gaussian and each
+        /// gets a say in where it goes. For channel errors that are not
+        /// perfectly aligned that sum grows as √C, so the rate that is
+        /// right at one channel is √C too large at C of them.
+        ///
+        /// Measured, on the two-material sheet at nine channels: at the
+        /// C = 1 rate the model DIVERGES in exactly MARL-1's way — the
+        /// vein-biased arm births 3 666 kernels against the uniform arm's
+        /// 1 896 and scores WORSE with them (0.629 against 0.352), which is
+        /// the over-capacity-under-evidence signature. At `rate/√C` it is
+        /// stable and every one of MARL-12's pre-registered numbers holds.
+        /// `rate/C` was tested too and is slightly worse (blend RMS 0.928
+        /// against 0.931, D/B 1.878 against 1.762) — which is the evidence
+        /// that the growth is √C and not C, rather than merely that
+        /// something smaller was needed.
+        ///
+        /// At C = 1 this is a division by exactly 1.0, so every number the
+        /// campaign recorded before the widening is untouched.
+        pub const GEOM_RATE: f32 = 1.0 / @sqrt(@as(f32, @floatFromInt(C)));
 
-    /// Bank a retiring region's child, relative to its own origin.
-    fn bank(self: *Hierarchy, r: u32) !void {
-        const o = self.regionOrigin(r);
-        var set = std.ArrayListUnmanaged(Kernel){};
-        errdefer set.deinit(self.gpa);
-        for (self.child.kernels.items) |k| {
-            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
-            if (self.parent.regionOf(mu) != r) continue;
-            var rel = k;
-            inline for (0..3) |a| rel.p[MU + a] -= o[a];
-            rel.p[W] = 0; // the geometry is carried; the weight is not
-            rel.m1 = [_]f32{0} ** PARAMS;
-            rel.m2 = [_]f32{0} ** PARAMS;
-            rel.t = 0;
-            rel.updates = 0;
-            rel.frozen = false;
-            try set.append(self.gpa, rel);
+        pub fn vecOf(t: f32) Ch.Vec {
+            var v: Ch.Vec = [_]f32{0} ** C;
+            v[0] = t;
+            return v;
         }
-        if (set.items.len == 0) {
-            set.deinit(self.gpa);
-            return;
-        }
-        try self.pool.append(self.gpa, .{ .from = r, .kernels = set });
-    }
 
-    /// Instantiate a banked set into a refining region, choosing the
-    /// NEAREST donor. Geometry is what is being carried, and on a moving
-    /// shell the piece of structure a region holds is only similar to the
-    /// piece a nearby region held — orientation is local. Picking by
-    /// recency instead transplanted pancakes at the wrong angle, and added
-    /// more kernels than it suppressed.
-    fn transplant(self: *Hierarchy, r: u32) !void {
-        if (self.pool.items.len == 0) return;
-        const want = self.regionOrigin(r);
-        var best: usize = 0;
-        var best_d: f32 = std.math.inf(f32);
-        for (self.pool.items, 0..) |*d, i| {
-            const o = self.regionOrigin(d.from);
-            const dd = (o[0] - want[0]) * (o[0] - want[0]) + (o[1] - want[1]) * (o[1] - want[1]) + (o[2] - want[2]) * (o[2] - want[2]);
-            if (dd < best_d) {
-                best_d = dd;
-                best = i;
+        pub fn magOf(v: Ch.Vec) f32 {
+            var m: f32 = 0;
+            inline for (0..C) |c| m = @max(m, @abs(v[c]));
+            return m;
+        }
+
+        pub const Kernel = struct {
+            p: [Ch.PARAMS]f32,
+            /// Adam's moments and this kernel's OWN step count: kernels are
+            /// updated at irregular times, so the bias correction cannot share a
+            /// clock.
+            m1: [Ch.PARAMS]f32 = [_]f32{0} ** Ch.PARAMS,
+            m2: [Ch.PARAMS]f32 = [_]f32{0} ** Ch.PARAMS,
+            t: u32 = 0,
+            /// The region that owns it — the one holding its centre, re-homed
+            /// when a step moves it across a face.
+            owner: u32,
+            /// The centre at birth: drift is measured against this, because drift
+            /// is the only thing that can break exact locality.
+            mu0: [3]f32,
+            /// Cached ∞-norm half-extent of the cutoff box.
+            reach: f32,
+            updates: u32 = 0,
+            born_at: u64,
+            /// Held: the region this kernel belongs to has been refined, so its
+            /// contribution is the coarse approximation the child is learning the
+            /// residual of. Frozen for real — an exemplar in a NEIGHBOURING region
+            /// can reach a kernel across the face, and a "frozen" parent that
+            /// drifts by that route is a parent the child is chasing.
+            frozen: bool = false,
+
+            pub fn shape(self: *const Ch.Kernel) Shape {
+                return .{
+                    .mu = .{ self.p[MU], self.p[MU + 1], self.p[MU + 2] },
+                    .l = .{
+                        fmath.expf(self.p[LOGD]),
+                        self.p[OFF],
+                        fmath.expf(self.p[LOGD + 1]),
+                        self.p[OFF + 1],
+                        self.p[OFF + 2],
+                        fmath.expf(self.p[LOGD + 2]),
+                    },
+                };
             }
-        }
-        const donor = self.pool.swapRemove(best);
-        var set = donor.kernels;
-        defer set.deinit(self.gpa);
-        const o = self.regionOrigin(r);
-        for (set.items) |k| {
-            var nk = k;
-            inline for (0..3) |a| nk.p[MU + a] += o[a];
-            const mu = [3]f32{ nk.p[MU], nk.p[MU + 1], nk.p[MU + 2] };
-            // A donor set can spill past a region's face; anything that
-            // lands outside the child's domain is dropped rather than
-            // clamped, because a clamped kernel is a kernel in a place
-            // nothing chose for it.
-            if (mu[0] < 0 or mu[0] > 1 or mu[1] < 0 or mu[1] > 1 or mu[2] < 0 or mu[2] > 1) continue;
-            const owner = self.child.regionOf(mu);
-            nk.owner = owner;
-            nk.mu0 = mu;
-            nk.born_at = self.seen;
-            const ki: u32 = @intCast(self.child.kernels.items.len);
-            try self.child.kernels.append(self.child.gpa, nk);
-            self.child.clamp(&self.child.kernels.items[ki]);
-            try self.child.regions[owner].own.append(self.child.gpa, ki);
-            if (nk.reach > self.child.regions[owner].max_reach) self.child.regions[owner].max_reach = nk.reach;
-            try self.transplant_marks.append(self.gpa, ki);
-            self.transplanted += 1;
-        }
-        self.transplant_events += 1;
-    }
 
-    /// Of the kernels that arrived by transplant, the share whose weight
-    /// has risen off zero into real use. A transplant that stays at zero
-    /// is a no-op dressed as a saving.
-    pub fn adoption(self: *const Hierarchy) f32 {
-        if (self.transplant_marks.items.len == 0) return 0;
-        const bar = self.child.weightStats().mean_abs * 0.1;
-        var used: u32 = 0;
-        var alive: u32 = 0;
-        for (self.transplant_marks.items) |ki| {
-            if (ki >= self.child.kernels.items.len) continue; // compacted away
-            alive += 1;
-            if (@abs(self.child.kernels.items[ki].p[W]) > bar) used += 1;
-        }
-        if (alive == 0) return 0;
-        return @as(f32, @floatFromInt(used)) / @as(f32, @floatFromInt(alive));
-    }
-
-    /// Retire a region's child level and hand the region back to the
-    /// parent. The two halves are ONE act: the child's kernels go and the
-    /// parent's are unfrozen in the same breath, because the correction
-    /// and the thing it corrects are only removable together.
-    ///
-    /// Safe on MARL-6R's analysis: under-basis-density is the catastrophe,
-    /// and this removes a LEVEL while leaving the parent's density where
-    /// it was. There is no sparse child left behind — there is no child.
-    fn unrefine(self: *Hierarchy, gpa: std.mem.Allocator, r: u32) !void {
-        const dead = try gpa.alloc(bool, self.child.kernels.items.len);
-        defer gpa.free(dead);
-        var n: usize = 0;
-        for (self.child.kernels.items, dead) |*k, *d| {
-            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
-            d.* = self.parent.regionOf(mu) == r;
-            if (d.*) n += 1;
-        }
-        if (self.popts.recycle) try self.bank(r);
-        try self.child.compact(dead);
-        self.parent.unfreezeRegion(r);
-        self.refined[r] = false;
-        // The pressure statistic starts again, or the region re-refines on
-        // the evidence that had it refined before.
-        self.covered_events[r] = 0;
-        self.post_sum[r] = 0;
-        self.sched[r] = .{};
-        self.unrefined_count += 1;
-        self.child_retired += n;
-        if (!Truth.inShell(self.parent.opts.truth, self.regionCentre(r))) self.unrefined_on_departed += 1;
-    }
-
-    fn regionCentre(self: *const Hierarchy, r: u32) [3]f32 {
-        const rr = self.parent.opts.regions;
-        const c = [3]u32{ r % rr, (r / rr) % rr, r / (rr * rr) };
-        const h = self.parent.h;
-        return .{ (@as(f32, @floatFromInt(c[0])) + 0.5) * h, (@as(f32, @floatFromInt(c[1])) + 0.5) * h, (@as(f32, @floatFromInt(c[2])) + 0.5) * h };
-    }
-
-    /// The routing score for a region, before normalisation.
-    fn scoreOf(self: *const Hierarchy, r: u32, residual: f32) f32 {
-        const e = &self.sched[r];
-        return switch (self.popts.sched) {
-            .off => self.popts.route_floor + self.popts.route_gain * @abs(residual),
-            .need => e.need,
-            .need_lag => e.need * (1 + @as(f32, @floatFromInt(self.seen - e.last_served)) / self.popts.lag_tau),
-            .need_lag_suff => e.need *
-                (1 + @as(f32, @floatFromInt(self.seen - e.last_served)) / self.popts.lag_tau) /
-                (1 + e.sufficiency() / self.popts.suff_ref),
-            .hybrid => (self.popts.route_floor + self.popts.route_gain * @abs(residual)) *
-                (1 + @as(f32, @floatFromInt(self.seen - e.last_served)) / self.popts.lag_tau),
-        };
-    }
-
-    /// The sum. The child contributes exactly zero where it has no
-    /// kernels, so an unrefined domain reads as the parent alone — not
-    /// approximately, the cutoff makes it exact.
-    pub fn predict(self: *Hierarchy, q: [3]f32) !f32 {
-        return (try self.parent.predict(q)) + (try self.child.predict(q));
-    }
-
-    pub fn pressureOf(self: *const Hierarchy, region: u32) f32 {
-        if (self.covered_events[region] == 0) return 0;
-        return @floatCast(self.post_sum[region] / @as(f64, @floatFromInt(self.covered_events[region])));
-    }
-
-    pub fn observeOne(self: *Hierarchy) !void {
-        const x = [3]f32{ self.stream.unit(), self.stream.unit(), self.stream.unit() };
-        const y = truthOf(self.parent.opts.truth, x);
-        const r = self.parent.regionOf(x);
-        self.seen += 1;
-        if (self.refined[r]) {
-            const in_band = Truth.inShell(self.parent.opts.truth, x);
-            self.offered += 1;
-            if (in_band) self.offered_in_band += 1;
-            // The residual has to be known to decide, which means the
-            // parent's prediction is paid for whether or not the exemplar
-            // is routed. That is the router's honest cost and it is what
-            // `work` will show.
-            const held = try self.parent.predict(x);
-            const score = self.scoreOf(r, y - held);
-            // One normaliser for every mode, so the arms differ in WHICH
-            // exemplars they route and not in how many.
-            self.score_mean += 0.001 * (score - self.score_mean);
-            const p = if (self.popts.route_duty > 0)
-                @min(1, self.popts.route_duty * score / @max(1e-6, self.score_mean))
-            else
-                @min(1, score);
-            if (self.route_stream.unit() >= p) return;
-            // Counted HERE, immediately before the child sees it, and not
-            // at the top of the branch: the number that matters is the
-            // stream the child actually learns from, so that any filter on
-            // what reaches it shows up in the measurement. Placed earlier,
-            // a routing change was invisible and G20 (c) went on reporting
-            // a uniform stream that no longer was one.
-            self.routed += 1;
-            if (in_band) self.routed_in_band += 1;
-            const before = self.child.stats.updates;
-            const kn = self.child.kernels.items.len;
-            const cev = try self.child.observe(x, y - held);
-            const spent = self.child.stats.updates - before;
-
-            const e = &self.sched[r];
-            e.need += 0.01 * (@abs(cev.post_residual) - e.need);
-            e.routed += 1;
-            e.updates += spent;
-            e.kernels += @intCast(self.child.kernels.items.len - kn);
-            e.last_served = self.seen;
-            const perr = @abs(y - held);
-            e.parent_error += 0.02 * (perr - e.parent_error);
-            e.parent_peak = @max(e.parent_peak * 0.9995, perr);
-            e.since_refined +|= 1;
-            // The baseline is MEASURED, not inherited. What the child was
-            // created to absorb is the parent's error once the region has
-            // settled under refinement — and because the parent is frozen
-            // there, that number does not move again unless the world
-            // does. Taking it from the pressure statistic instead was
-            // wrong by an order of magnitude: pressure is a POST-update
-            // residual (~0.008) and this is the raw error (~0.08), so the
-            // trigger compared two different quantities and never fired.
-            if (e.since_refined == self.popts.unrefine_after) {
-                e.parent_error_at_refine = @max(1e-4, e.parent_error);
-                e.parent_peak_at_refine = @max(1e-4, e.parent_peak);
-            } else if (self.popts.unrefine > 0 and e.since_refined > self.popts.unrefine_after and
-                e.parent_peak > e.parent_peak_at_refine * self.popts.unrefine)
-            {
-                try self.unrefine(self.gpa, r);
-                return;
+            /// The kernel's weights, one per channel — a VIEW into the
+            /// parameter vector and not a copy, because the NLMS step
+            /// writes through it.
+            pub fn weights(self: *Ch.Kernel) *[C]f32 {
+                return self.p[W..][0..C];
             }
-            // Learning efficiency, measured over a moving window: how much
-            // unresolved residual a unit of learning work removed here.
-            e.win_updates += spent;
-            e.win_n += 1;
-            if (e.win_n >= 200) {
-                if (e.win_updates > 0) {
-                    e.eff_sum += @as(f64, e.win_need - e.need) / @as(f64, @floatFromInt(e.win_updates));
-                    e.eff_n += 1;
+
+            pub fn weightsConst(self: *const Ch.Kernel) *const [C]f32 {
+                return self.p[W..][0..C];
+            }
+
+            pub fn drift(self: *const Ch.Kernel) f32 {
+                const d = [3]f32{ self.p[MU] - self.mu0[0], self.p[MU + 1] - self.mu0[1], self.p[MU + 2] - self.mu0[2] };
+                return @sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            }
+        };
+
+        /// A region: the bookkeeping unit, the budget's unit, and the unit a
+        /// query rejects wholesale. Not a brick, and not pretending to be one.
+        pub const Region = struct {
+            own: std.ArrayListUnmanaged(u32) = .{},
+            /// Conservative: at least the largest reach among the kernels owned.
+            /// Only ever grown on a step (a bound that is too large is correct;
+            /// one that is too small silently drops a kernel from a sum), and
+            /// tightened only by `retighten`.
+            max_reach: f32 = 0,
+            /// Unresolved surprise (campaign §2: attention). Both forms kept —
+            /// the sum is what §9 writes, the max is what Loam's R15 would.
+            surprise_sum: f64 = 0,
+            surprise_max: f32 = 0,
+            seen: u32 = 0,
+            events: u32 = 0,
+            births: u32 = 0,
+            saturated: u32 = 0,
+        };
+
+        /// What one observation did — the campaign's §11 locality, per event.
+        pub const Event = struct {
+            residual: Ch.Vec,
+            /// `magOf(residual)` — the scalar that every threshold, every birth
+            /// decision and every pressure statistic reads.
+            surprise: f32,
+            learned: bool,
+            born: bool,
+            saturated: bool,
+            /// Some kernel already read above `coverage` at the exemplar, so no
+            /// birth was called for. This is the half of the population that
+            /// matters for representation pressure: a residual that persists where
+            /// the basis said it had the ground covered is the basis being wrong
+            /// about itself, and a residual where nothing covers the ground is
+            /// just a birth waiting to happen.
+            covered: bool,
+            /// The residual AFTER the update steps. What deformation could not
+            /// remove from this exemplar with the kernels it had.
+            post_residual: Ch.Vec,
+            /// Kernels whose support contains the exemplar: exactly the set the
+            /// prediction summed.
+            touched: u32,
+            /// Kernels inside the RESPONSIBILITY radius — the subset that actually
+            /// took a gradient. Equal to `touched` when responsibility is support,
+            /// which is the default. Counted separately because reporting the
+            /// support set for both makes a responsibility sweep look like it
+            /// changes nothing: the number that moves is this one.
+            responsible: u32,
+            /// Distinct owning regions among them — the learning cone's width.
+            regions_touched: u32,
+            /// Kernels a gaussian was computed for, touched or not: the COST,
+            /// which is a different number from the locality.
+            evaluated: u32,
+            /// Regions the query opened; and those `max_reach` rejected outright.
+            visited: u32,
+            pruned: u32,
+        };
+
+        pub const Stats = struct {
+            exemplars: u64 = 0,
+            events: u64 = 0,
+            births: u64 = 0,
+            saturations: u64 = 0,
+            touched: u64 = 0,
+            responsible: u64 = 0,
+            regions_touched: u64 = 0,
+            evaluated: u64 = 0,
+            visited: u64 = 0,
+            pruned: u64 = 0,
+            /// Wall clock, nanoseconds. Never read by the model — reported only.
+            predict_ns: u64 = 0,
+            learn_ns: u64 = 0,
+            predictions: u64 = 0,
+            /// Times a clamp bit: the shape projected back inside the reach, a
+            /// width held off its floor, a centre held inside the cube.
+            reach_clamped: u64 = 0,
+            width_clamped: u64 = 0,
+            centre_clamped: u64 = 0,
+            rehomed: u64 = 0,
+            trust_clamped: u64 = 0,
+            /// THE WORK: gradient applications, summed over kernels and steps. A
+            /// count, never a time — the unit that replays across machines, and
+            /// what `work_C/work_A` is measured in.
+            updates: u64 = 0,
+        };
+
+        pub const Model = struct {
+            /// How many channels this model weighs, readable from the TYPE —
+            /// so a caller handed a `*Model` can size its own buffers without
+            /// being told separately which instantiation it got.
+            pub const CHANNELS: usize = C;
+
+            gpa: std.mem.Allocator,
+            opts: Options,
+            /// Region edge, and the widest a kernel's cutoff box may reach.
+            h: f32,
+            sigma_max: f32,
+            sigma_min: f32,
+            kernels: std.ArrayListUnmanaged(Ch.Kernel) = .{},
+            regions: []Ch.Region,
+            stats: Ch.Stats = .{},
+            stream: rng.Stream,
+            /// Scratch for a gather: reused, so an observation allocates nothing.
+            hit: std.ArrayListUnmanaged(u32) = .{},
+            /// The recent window of |residual| (campaign §11), a ring.
+            recent: []f32,
+            recent_n: u64 = 0,
+            /// The residual evidence grid (`.residual` births only): per cell, how
+            /// many learning events landed there and the sum of what was left
+            /// after adaptation. Cells are one coverage-spacing across, which is
+            /// the scale at which a birth would be placed anyway — finer would be
+            /// evidence about nothing, coarser would place kernels by a rule
+            /// blinder than the one being replaced.
+            ev_cells: u32 = 0,
+            ev_count: []u32 = &.{},
+            ev_sum: []f32 = &.{},
+            /// Stamps for counting the distinct regions one event reached, in one
+            /// pass over the touched set rather than a pass per member: sixty
+            /// kernels is the predicted touch and sixty squared per event is not
+            /// a measurement, it is the measurement's cost.
+            visit_gen: []u32,
+            gen: u32 = 0,
+
+            pub fn init(gpa: std.mem.Allocator, opts: Options) !Ch.Model {
+                const n = opts.regions * opts.regions * opts.regions;
+                const regions = try gpa.alloc(Ch.Region, n);
+                errdefer gpa.free(regions);
+                for (regions) |*r| r.* = .{};
+                const recent = try gpa.alloc(f32, opts.window);
+                errdefer gpa.free(recent);
+                @memset(recent, 0);
+                const gens = try gpa.alloc(u32, n);
+                errdefer gpa.free(gens);
+                @memset(gens, 0);
+                const h = 1 / @as(f32, @floatFromInt(opts.regions));
+                const sig_max = h / CUTOFF_R;
+                var ev_cells: u32 = 0;
+                var ev_count: []u32 = &.{};
+                var ev_sum: []f32 = &.{};
+                if (opts.birth_rule != .coverage) {
+                    const r_cov = @sqrt(-2 * @log(@max(1e-6, opts.coverage)));
+                    ev_cells = @intFromFloat(@ceil(1 / (opts.birth_scale * r_cov * sig_max)));
+                    ev_cells = @max(2, ev_cells);
+                    const cells: usize = @as(usize, ev_cells) * ev_cells * ev_cells;
+                    ev_count = try gpa.alloc(u32, cells);
+                    errdefer gpa.free(ev_count);
+                    @memset(ev_count, 0);
+                    ev_sum = try gpa.alloc(f32, cells);
+                    @memset(ev_sum, 0);
                 }
-                e.win_need = e.need;
-                e.win_updates = 0;
-                e.win_n = 0;
+                return .{
+                    .gpa = gpa,
+                    .opts = opts,
+                    .h = h,
+                    .sigma_max = sig_max,
+                    // A width may thin to a sixty-fourth of a region — the shell
+                    // is a fortieth of the domain thick and a kernel that cannot
+                    // get thinner than the feature cannot represent it.
+                    .sigma_min = h / 64,
+                    .regions = regions,
+                    .stream = rng.Stream.region(opts.seed, 0x4D41_524C, 0), // "MARL"
+                    .recent = recent,
+                    .visit_gen = gens,
+                    .ev_cells = ev_cells,
+                    .ev_count = ev_count,
+                    .ev_sum = ev_sum,
+                };
             }
-            return;
-        }
-        const ev = try self.parent.observe(x, y);
-        // Every learning event, NOT only the ones where coverage was
-        // already satisfied.
-        //
-        // Filtering to covered events was the first implementation of
-        // Christian's principle — refine where the basis said it had the
-        // ground covered and was still wrong — and it was the WRONG
-        // implementation, by a wide margin. Measured at four settings of
-        // `min_events`, precision with the filter was 0.507, 0.600, 0.679,
-        // 0.963; without it, 0.919, 0.923, 1.000, 1.000. Dropping the
-        // events where a birth happened removes exactly the events the
-        // model handled well, which biases the mean upward everywhere and
-        // unevenly: a structured region births more, so it reaches
-        // `min_events` later and on a differently-selected sample than a
-        // smooth one.
-        //
-        // The principle survives its implementation. What distinguishes
-        // "not learned yet" from "cannot be represented" is that this is
-        // the POST-UPDATE residual — what deformation could not remove
-        // with the kernels it had — and that is the whole of it. The
-        // coverage filter was a second, redundant attempt at the same
-        // distinction, and it cost precision to make it twice.
-        if (!ev.learned) return;
-        self.covered_events[r] += 1;
-        self.post_sum[r] += @abs(ev.post_residual);
-        if (self.covered_events[r] >= self.popts.min_events and
-            self.pressureOf(r) > self.popts.threshold)
-        {
-            self.refined[r] = true;
-            self.refined_count += 1;
-            self.parent.freezeRegion(r);
-            // Seeded from the parent's own pressure: a region whose need
-            // started at zero would score zero, never be served, and never
-            // learn what its need was.
-            self.sched[r].need = self.pressureOf(r);
-            self.sched[r].win_need = self.sched[r].need;
-            self.sched[r].last_served = self.seen;
-            if (self.ever_refined[r]) self.rerefined_count += 1;
-            self.ever_refined[r] = true;
-            if (self.popts.recycle) try self.transplant(r);
-        }
-    }
 
-    pub fn stream_n(self: *Hierarchy, n: u64) !void {
-        var i: u64 = 0;
-        while (i < n) : (i += 1) try self.observeOne();
-    }
+            pub fn deinit(self: *Ch.Model) void {
+                for (self.regions) |*r| r.own.deinit(self.gpa);
+                self.gpa.free(self.regions);
+                self.kernels.deinit(self.gpa);
+                self.hit.deinit(self.gpa);
+                self.gpa.free(self.recent);
+                self.gpa.free(self.visit_gen);
+                if (self.ev_count.len > 0) self.gpa.free(self.ev_count);
+                if (self.ev_sum.len > 0) self.gpa.free(self.ev_sum);
+            }
 
-    pub fn rms(self: *Hierarchy, pts: []const [3]f32, targets: []const f32, max_abs: ?*f32) !f32 {
-        var acc: f64 = 0;
-        var mx: f32 = 0;
-        for (pts, targets) |p, t| {
-            const e = (try self.predict(p)) - t;
-            acc += @as(f64, e) * @as(f64, e);
-            mx = @max(mx, @abs(e));
-        }
-        if (max_abs) |m| m.* = mx;
-        return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len))));
-    }
+            fn evIndex(self: *const Ch.Model, p: [3]f32) usize {
+                const n = self.ev_cells;
+                var c: [3]u32 = undefined;
+                inline for (0..3) |a| {
+                    const v = @floor(p[a] * @as(f32, @floatFromInt(n)));
+                    c[a] = if (v < 0) 0 else @min(n - 1, @as(u32, @intFromFloat(v)));
+                }
+                return (@as(usize, c[2]) * n + c[1]) * n + c[0];
+            }
 
-    /// The parent alone — what the model would score with the child
-    /// discarded. The difference between this and `rms` is the child's
-    /// contribution, stated rather than inferred.
-    pub fn parentRms(self: *Hierarchy, pts: []const [3]f32, targets: []const f32) !f32 {
-        var acc: f64 = 0;
-        for (pts, targets) |p, t| {
-            const e = (try self.parent.predict(p)) - t;
-            acc += @as(f64, e) * @as(f64, e);
-        }
-        return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len))));
-    }
+            /// Whether this cell has seen enough, and still carries too much.
+            fn evidenced(self: *const Ch.Model, idx: usize) bool {
+                const n = self.ev_count[idx];
+                if (n < self.opts.birth_evidence) return false;
+                const bar = if (self.opts.birth_residual > 0) self.opts.birth_residual else self.opts.threshold;
+                return self.ev_sum[idx] / @as(f32, @floatFromInt(n)) > bar;
+            }
 
-    /// Whether a parent region's cube touches the target's shell band —
-    /// the ground truth a refinement decision is scored against.
-    pub fn regionMeetsShell(self: *const Hierarchy, region: u32) bool {
-        const tp = self.parent.opts.truth;
-        const h = self.parent.h;
-        const rr = self.parent.opts.regions;
-        const c = [3]u32{ region % rr, (region / rr) % rr, region / (rr * rr) };
-        const N: u32 = 9;
-        var k: u32 = 0;
-        while (k <= N) : (k += 1) {
-            var j: u32 = 0;
-            while (j <= N) : (j += 1) {
+            /// Child kernels that have had enough gradient to have been adapted at
+            /// all. MARL-2's refine sweep showed allocated and usable capacity are
+            /// different things; this is the second of the two, measured and not
+            /// yet used for anything.
+            pub fn trainedFraction(self: *const Ch.Model, min_updates: u32) f32 {
+                if (self.kernels.items.len == 0) return 0;
+                var n: u32 = 0;
+                for (self.kernels.items) |*k| {
+                    if (k.updates >= min_updates) n += 1;
+                }
+                return @as(f32, @floatFromInt(n)) / @as(f32, @floatFromInt(self.kernels.items.len));
+            }
+
+            pub fn meanUpdates(self: *const Ch.Model) f32 {
+                if (self.kernels.items.len == 0) return 0;
+                var acc: u64 = 0;
+                for (self.kernels.items) |*k| acc += k.updates;
+                return @as(f32, @floatFromInt(acc)) / @as(f32, @floatFromInt(self.kernels.items.len));
+            }
+
+            // ── geometry ──────────────────────────────────────────────────────
+
+            fn cellOf(self: *const Ch.Model, x: f32) u32 {
+                const r = self.opts.regions;
+                const c = @floor(x / self.h);
+                if (c < 0) return 0;
+                const ci: u32 = @intFromFloat(c);
+                return @min(r - 1, ci);
+            }
+
+            pub fn regionOf(self: *const Ch.Model, p: [3]f32) u32 {
+                const r = self.opts.regions;
+                return (self.cellOf(p[2]) * r + self.cellOf(p[1])) * r + self.cellOf(p[0]);
+            }
+
+            fn regionCoords(self: *const Ch.Model, idx: u32) [3]u32 {
+                const r = self.opts.regions;
+                return .{ idx % r, (idx / r) % r, idx / (r * r) };
+            }
+
+            /// ∞-distance from q to a region's closed cube — what `max_reach` is
+            /// compared against.
+            fn distToRegion(self: *const Ch.Model, idx: u32, q: [3]f32) f32 {
+                const c = self.regionCoords(idx);
+                var d: f32 = 0;
+                inline for (0..3) |a| {
+                    const lo = @as(f32, @floatFromInt(c[a])) * self.h;
+                    const hi = lo + self.h;
+                    d = @max(d, @max(lo - q[a], q[a] - hi));
+                }
+                return @max(d, 0);
+            }
+
+            // ── the gather: exact, and the only place a prediction comes from ──
+
+            /// Every kernel whose support CONTAINS q, appended to `self.hit`. The
+            /// clamp guarantees a kernel's box reaches at most one region edge,
+            /// so its own region and the 26 neighbours are the whole of it — this
+            /// is the sum over the model, not a truncation of it (G17 d).
+            fn gather(self: *Ch.Model, q: [3]f32, ev: ?*Ch.Event) !void {
+                self.hit.clearRetainingCapacity();
+                const r = self.opts.regions;
+                const c = [3]u32{ self.cellOf(q[0]), self.cellOf(q[1]), self.cellOf(q[2]) };
+                var visited: u32 = 0;
+                var pruned: u32 = 0;
+                var evaluated: u32 = 0;
+                var dz: i32 = -1;
+                while (dz <= 1) : (dz += 1) {
+                    const z = @as(i32, @intCast(c[2])) + dz;
+                    if (z < 0 or z >= r) continue;
+                    var dy: i32 = -1;
+                    while (dy <= 1) : (dy += 1) {
+                        const y = @as(i32, @intCast(c[1])) + dy;
+                        if (y < 0 or y >= r) continue;
+                        var dx: i32 = -1;
+                        while (dx <= 1) : (dx += 1) {
+                            const x = @as(i32, @intCast(c[0])) + dx;
+                            if (x < 0 or x >= r) continue;
+                            const idx: u32 = (@as(u32, @intCast(z)) * r + @as(u32, @intCast(y))) * r + @as(u32, @intCast(x));
+                            const reg = &self.regions[idx];
+                            if (reg.own.items.len == 0) continue;
+                            // The region's own conservative bound, `Summary.covers`
+                            // in one float: nothing it owns can reach q.
+                            if (self.distToRegion(idx, q) > reg.max_reach) {
+                                pruned += 1;
+                                continue;
+                            }
+                            visited += 1;
+                            for (reg.own.items) |ki| {
+                                evaluated += 1;
+                                if (gaussian(self.kernels.items[ki].shape(), q) > 0) {
+                                    try self.hit.append(self.gpa, ki);
+                                }
+                            }
+                        }
+                    }
+                }
+                if (ev) |e| {
+                    e.visited = visited;
+                    e.pruned = pruned;
+                    e.evaluated = evaluated;
+                }
+            }
+
+            /// `gather` for a gate: leaves the touched set in `hit` so a witness
+            /// can compare it against a brute-force pass over the whole model.
+            pub fn gatherForTest(self: *Ch.Model, q: [3]f32) !void {
+                try self.gather(q, null);
+            }
+
+            /// The prediction at q. Exact: the cutoff makes every kernel the
+            /// gather did not reach contribute zero, not a small number.
+            pub fn predict(self: *Ch.Model, q: [3]f32) !Ch.Vec {
+                var t = std.time.Timer.start() catch null;
+                try self.gather(q, null);
+                var y: Ch.Vec = [_]f32{0} ** C;
+                for (self.hit.items) |ki| {
+                    const k = &self.kernels.items[ki];
+                    const g = gaussian(k.shape(), q);
+                    const w = k.weightsConst();
+                    inline for (0..C) |c| y[c] += w[c] * g;
+                }
+                if (t) |*tt| self.stats.predict_ns += tt.read();
+                self.stats.predictions += 1;
+                return y;
+            }
+
+            /// Every kernel in the model summed — the reference the 27-region
+            /// gather is checked against, and nothing else.
+            ///
+            /// It walks EVERY region in linear index order, which is the order the
+            /// gather visits its twenty-seven in, so the two sums add the same
+            /// terms in the same order and the comparison is about the gather
+            /// rather than about float addition. The regions the gather skips
+            /// contribute w·0 here, and adding a zero is exact — which is the
+            /// whole claim: the restriction to twenty-seven regions is LOSSLESS,
+            /// not merely close. Summed in kernel-index order instead, the two
+            /// answers differ in the last two places, which is a true statement
+            /// about associativity and a useless one about locality.
+            pub fn predictAll(self: *const Ch.Model, q: [3]f32) Ch.Vec {
+                var y: Ch.Vec = [_]f32{0} ** C;
+                for (self.regions) |*reg| {
+                    for (reg.own.items) |ki| {
+                        const k = &self.kernels.items[ki];
+                        const g = gaussian(k.shape(), q);
+                        const w = k.weightsConst();
+                        inline for (0..C) |c| y[c] += w[c] * g;
+                    }
+                }
+                return y;
+            }
+
+            // ── the clamp ─────────────────────────────────────────────────────
+
+            /// Project a kernel's parameters back inside what keeps the gather
+            /// exact: the centre in the cube, no width below the floor, and the
+            /// cutoff box reaching at most one region edge. The reach projection
+            /// scales L, which shrinks every half-extent by the same factor and
+            /// so keeps the SHAPE — an ellipsoid stays as anisotropic as the
+            /// descent made it, it only stops growing past the gather.
+            fn clamp(self: *Ch.Model, k: *Ch.Kernel) void {
+                // BOTH sides of the log-diagonal, and the low side is not
+                // decoration: it was paid for by a `--width 0.4` run that panicked
+                // at 10 000 exemplars casting a non-finite centre to a region
+                // index. Nothing bounded a kernel from below, so descent widened
+                // one until `expf` underflowed L's diagonal to zero, `halfExtents`
+                // divided by it, the reach came back infinite, and the reach
+                // projection added log(∞) to the log-width. σ ≤ h is an OUTER
+                // bound — the reach projection below is what actually governs the
+                // width, and it can only ever ask for something narrower — so this
+                // floor changes no converged model and makes the arithmetic
+                // incapable of leaving the reals.
+                const lo_log = -@log(self.h); // σ ≤ h
+                const hi_log = -@log(self.sigma_min); // σ ≥ σ_min
+                var bit_width = false;
+                inline for (0..3) |a| {
+                    const v = k.p[LOGD + a];
+                    if (!(v >= lo_log and v <= hi_log)) {
+                        k.p[LOGD + a] = if (v < lo_log) lo_log else hi_log;
+                        bit_width = true;
+                    }
+                }
+                inline for (0..3) |a| {
+                    const v = k.p[MU + a];
+                    // Written to catch a NaN, which no ordered comparison does:
+                    // a centre that is not a number is a bug upstream, and it must
+                    // fail on the kernel that produced it rather than five
+                    // thousand exemplars later inside a region lookup.
+                    if (!(v >= 0 and v <= 1)) {
+                        std.debug.assert(std.math.isFinite(v));
+                        k.p[MU + a] = @min(1, @max(0, v));
+                        if (a == 0) self.stats.centre_clamped += 1;
+                    }
+                }
+                const off_cap = 1 / self.sigma_min;
+                inline for (0..3) |a| k.p[OFF + a] = @min(off_cap, @max(-off_cap, k.p[OFF + a]));
+                if (bit_width) self.stats.width_clamped += 1;
+
+                var s = k.shape();
+                var reach = reachOf(s);
+                if (reach > self.h) {
+                    self.stats.reach_clamped += 1;
+                    // L ← fL shrinks every half-extent by f. Once is exact in
+                    // exact arithmetic and lands within an ulp in this one, so the
+                    // loop almost always runs a single pass — but it LOOPS rather
+                    // than storing min(reach, h), because the exactness the whole
+                    // gather rests on is a property of the geometry and not of
+                    // what a field was set to afterwards. A kernel one ulp over
+                    // `h` reaches into the ring the gather never visits, and what
+                    // it would contribute there is w·exp(−16): far too small to
+                    // be noticed and far too large to be called zero. The first
+                    // version stored min(reach, h) instead and the invariant was
+                    // false on 0.6% of clamps — invisible, because the field said
+                    // otherwise.
+                    var guard: u8 = 0;
+                    while (reach > self.h and guard < 16) : (guard += 1) {
+                        // At least a thousandth, and that floor is the whole
+                        // reason this terminates. A kernel one ulp over `h` gives
+                        // f = 1 + 2⁻²³, whose log is SMALLER THAN THE ULP OF THE
+                        // LOG-WIDTH ITSELF (~3.5, ulp 2.4e-7): the increment
+                        // rounds away, the shape does not move, and the loop
+                        // spins forever on a kernel that is already correct to
+                        // within a float. Costing the boundary case a tenth of a
+                        // percent of its width buys an invariant that holds
+                        // exactly, which is what the gather's exactness rests on.
+                        const f = @max(1.001, reach / self.h);
+                        const lf = @log(f);
+                        inline for (0..3) |a| k.p[LOGD + a] += lf;
+                        inline for (0..3) |a| k.p[OFF + a] *= f;
+                        s = k.shape();
+                        reach = reachOf(s);
+                    }
+                    std.debug.assert(reach <= self.h);
+                }
+                k.reach = reach;
+            }
+
+            /// Move a centre by `d`, held to the trust region: no step may
+            /// displace a kernel more than `trust` region edges, in ∞-norm. This
+            /// is the whole of what makes the interference bound provable — 2h
+            /// from the clamp for where a touched kernel can already be, plus
+            /// steps · trust · h for where a step can put it — and it holds
+            /// whichever optimiser is mounted.
+            fn moveCentre(self: *Ch.Model, k: *Ch.Kernel, d: [3]f32) void {
+                const cap = self.opts.trust * self.h;
+                const mag = @max(@abs(d[0]), @max(@abs(d[1]), @abs(d[2])));
+                if (mag > cap) {
+                    const f = cap / mag;
+                    inline for (0..3) |c| k.p[MU + c] += d[c] * f;
+                    self.stats.trust_clamped += 1;
+                } else {
+                    inline for (0..3) |c| k.p[MU + c] += d[c];
+                }
+            }
+
+            /// Put a kernel in the region its centre now lies in, and keep that
+            /// region's bound conservative.
+            fn rehome(self: *Ch.Model, ki: u32) !void {
+                const k = &self.kernels.items[ki];
+                const want = self.regionOf(.{ k.p[MU], k.p[MU + 1], k.p[MU + 2] });
+                if (want != k.owner) {
+                    const old = &self.regions[k.owner];
+                    for (old.own.items, 0..) |v, i| {
+                        if (v == ki) {
+                            _ = old.own.orderedRemove(i);
+                            break;
+                        }
+                    }
+                    try self.regions[want].own.append(self.gpa, ki);
+                    k.owner = want;
+                    self.stats.rehomed += 1;
+                }
+                const reg = &self.regions[k.owner];
+                if (k.reach > reg.max_reach) reg.max_reach = k.reach;
+            }
+
+            /// Hold every kernel a region owns. The parent's contribution in a
+            /// refined region is RETAINED, not relearned — which is the whole of
+            /// the residual hierarchy's semantics: the child holds exactly what
+            /// this level could not.
+            pub fn freezeRegion(self: *Ch.Model, region: u32) void {
+                for (self.regions[region].own.items) |ki| self.kernels.items[ki].frozen = true;
+            }
+
+            pub fn unfreezeRegion(self: *Ch.Model, region: u32) void {
+                for (self.regions[region].own.items) |ki| self.kernels.items[ki].frozen = false;
+            }
+
+            /// Remove the kernels `dead` marks, and rebuild every index that named
+            /// them. Real removal rather than a zeroed weight, because the child's
+            /// POPULATION is a headline number for erosion and a kernel that still
+            /// occupies a gather is not retired.
+            pub fn compact(self: *Ch.Model, dead: []const bool) !void {
+                var kept = std.ArrayListUnmanaged(Ch.Kernel){};
+                errdefer kept.deinit(self.gpa);
+                try kept.ensureTotalCapacity(self.gpa, self.kernels.items.len);
+                for (self.kernels.items, dead) |k, d| {
+                    if (!d) kept.appendAssumeCapacity(k);
+                }
+                self.kernels.deinit(self.gpa);
+                self.kernels = kept;
+                for (self.regions) |*r| {
+                    r.own.clearRetainingCapacity();
+                    r.max_reach = 0;
+                }
+                for (self.kernels.items, 0..) |*k, i| {
+                    const owner = self.regionOf(.{ k.p[MU], k.p[MU + 1], k.p[MU + 2] });
+                    k.owner = owner;
+                    try self.regions[owner].own.append(self.gpa, @intCast(i));
+                    if (k.reach > self.regions[owner].max_reach) self.regions[owner].max_reach = k.reach;
+                }
+            }
+
+            pub fn frozenCount(self: *const Ch.Model) u32 {
+                var n: u32 = 0;
+                for (self.kernels.items) |*k| {
+                    if (k.frozen) n += 1;
+                }
+                return n;
+            }
+
+            /// Recompute every region's bound from the kernels it owns. Only ever
+            /// LOWERS one, so it changes no answer — it makes the prune sharper,
+            /// and the gate that the bound is conservative is what says so.
+            pub fn retighten(self: *Ch.Model) void {
+                for (self.regions) |*reg| {
+                    var m: f32 = 0;
+                    for (reg.own.items) |ki| m = @max(m, self.kernels.items[ki].reach);
+                    reg.max_reach = m;
+                }
+            }
+
+            // ── one exemplar ──────────────────────────────────────────────────
+
+            /// The campaign's §9, and deliberately nothing more: locate, predict,
+            /// measure surprise, and either do nothing or take a few gradient
+            /// steps on the kernels that were responsible — birthing one first if
+            /// none of them covers the exemplar well enough.
+            pub fn observe(self: *Ch.Model, x: [3]f32, y: Ch.Vec) !Ch.Event {
+                const zero: Ch.Vec = [_]f32{0} ** C;
+                var ev = Ch.Event{ .residual = zero, .surprise = 0, .learned = false, .born = false, .saturated = false, .covered = false, .post_residual = zero, .touched = 0, .responsible = 0, .regions_touched = 0, .evaluated = 0, .visited = 0, .pruned = 0 };
+                var pt = std.time.Timer.start() catch null;
+
+                try self.gather(x, &ev);
+                const resp2 = self.opts.responsibility * self.opts.responsibility;
+                var yhat: Ch.Vec = [_]f32{0} ** C;
+                var cover: f32 = 0;
+                for (self.hit.items) |ki| {
+                    const k = &self.kernels.items[ki];
+                    const m = mahal(k.shape(), x);
+                    const g = if (m.r2 > CUTOFF) 0 else fmath.expf(-0.5 * m.r2);
+                    // Prediction is over the SUPPORT set — always, or it stops
+                    // being the sum over the model. Coverage is over the
+                    // RESPONSIBILITY set, because coverage asks whether some
+                    // kernel can be made answerable for this exemplar, and a
+                    // kernel that may not learn from it cannot.
+                    const w = k.weightsConst();
+                    inline for (0..C) |c| yhat[c] += w[c] * g;
+                    if (m.r2 <= resp2) cover = @max(cover, g);
+                }
+                if (pt) |*tt| self.stats.predict_ns += tt.read();
+                self.stats.predictions += 1;
+                ev.touched = @intCast(self.hit.items.len);
+                inline for (0..C) |c| ev.residual[c] = y[c] - yhat[c];
+                ev.surprise = Ch.magOf(ev.residual);
+
+                const home = self.regionOf(x);
+                const reg = &self.regions[home];
+                reg.seen += 1;
+                reg.surprise_sum += ev.surprise;
+                reg.surprise_max = @max(reg.surprise_max, ev.surprise);
+
+                self.recent[@intCast(self.recent_n % self.opts.window)] = ev.surprise;
+                self.recent_n += 1;
+                self.stats.exemplars += 1;
+                self.stats.evaluated += ev.evaluated;
+                self.stats.visited += ev.visited;
+                self.stats.pruned += ev.pruned;
+
+                ev.covered = cover >= self.opts.coverage;
+                if (ev.surprise <= self.opts.threshold) return ev;
+
+                var lt = std.time.Timer.start() catch null;
+                ev.learned = true;
+                reg.events += 1;
+                self.stats.events += 1;
+
+                // Birth. Under `.coverage` this is the campaign's §10 rule — no
+                // kernel covers the exemplar usefully. Under `.residual` it is
+                // MARL-3's: this neighbourhood has been visited enough times and
+                // still carries too much error AFTER adaptation, so the shortfall
+                // is representational and not merely unlearned.
+                //
+                // Either way the weight is the residual, so the newborn alone
+                // answers this exemplar exactly and the descent has to keep it
+                // honest at every other exemplar it reaches.
+                const ev_idx: usize = if (self.opts.birth_rule != .coverage) self.evIndex(x) else 0;
+                const want_birth = switch (self.opts.birth_rule) {
+                    .coverage => cover < self.opts.coverage,
+                    .residual => self.evidenced(ev_idx),
+                    .either => cover < self.opts.coverage or self.evidenced(ev_idx),
+                };
+                if (want_birth and self.opts.births) {
+                    if (reg.own.items.len >= self.opts.budget) {
+                        ev.saturated = true;
+                        reg.saturated += 1;
+                        self.stats.saturations += 1;
+                    } else {
+                        const sigma = self.opts.birth_width * self.sigma_max;
+                        const inv = 1 / sigma;
+                        const li = @log(inv);
+                        const ki: u32 = @intCast(self.kernels.items.len);
+                        // The weight is the residual ON EVERY CHANNEL, so the
+                        // newborn alone answers this exemplar exactly and the
+                        // descent has to keep it honest everywhere else it
+                        // reaches. Written as a geometry prefix plus the
+                        // residual rather than a literal, because the literal
+                        // was ten floats and PARAMS is now 9 + C.
+                        var born: [Ch.PARAMS]f32 = undefined;
+                        born[MU..][0..3].* = x;
+                        born[LOGD..][0..3].* = .{ li, li, li };
+                        born[OFF..][0..3].* = .{ 0, 0, 0 };
+                        born[W..][0..C].* = ev.residual;
+                        try self.kernels.append(self.gpa, .{
+                            .p = born,
+                            .owner = home,
+                            .mu0 = x,
+                            .reach = CUTOFF_R * sigma,
+                            .born_at = self.stats.exemplars,
+                        });
+                        // Nothing enters the model unprojected: `CUTOFF_R · σ` is
+                        // the reach only to within a float, and a kernel one ulp
+                        // over `h` is one the gather can miss.
+                        self.clamp(&self.kernels.items[ki]);
+                        try reg.own.append(self.gpa, ki);
+                        const kr = self.kernels.items[ki].reach;
+                        if (kr > reg.max_reach) reg.max_reach = kr;
+                        try self.hit.append(self.gpa, ki);
+                        ev.born = true;
+                        ev.touched += 1;
+                        reg.births += 1;
+                        self.stats.births += 1;
+                        // The evidence has been spent. Without this the same cell
+                        // births on every subsequent event until its mean falls,
+                        // which is a burst of kernels for one piece of evidence.
+                        if (self.opts.birth_rule != .coverage) {
+                            self.ev_count[ev_idx] = 0;
+                            self.ev_sum[ev_idx] = 0;
+                        }
+                    }
+                }
+
+                // The steps. Only the kernels in `hit` move, and `hit` is exactly
+                // the kernels whose support contains x.
+                var grad: [Ch.PARAMS]f32 = undefined;
+                var s: u32 = 0;
+                while (s < self.opts.steps) : (s += 1) {
+                    var pred: Ch.Vec = [_]f32{0} ** C;
+                    var gg: f32 = 0;
+                    for (self.hit.items) |ki| {
+                        const k = &self.kernels.items[ki];
+                        const m = mahal(k.shape(), x);
+                        const g = if (m.r2 > CUTOFF) 0 else fmath.expf(-0.5 * m.r2);
+                        // support: the whole sum, always
+                        const w = k.weightsConst();
+                        inline for (0..C) |c| pred[c] += w[c] * g;
+                        if (m.r2 <= resp2) gg += g * g; // responsibility: who pays
+                    }
+                    // The error per channel. `gg` is channel-free: the kernels
+                    // share one geometry, so they share one normaliser, and
+                    // dividing each channel by its own would make a kernel's
+                    // share of the residual depend on which channel is asking.
+                    var e: Ch.Vec = undefined;
+                    inline for (0..C) |c| e[c] = pred[c] - y[c];
+                    switch (self.opts.optimizer) {
+                        .adam => for (self.hit.items) |ki| {
+                            const k = &self.kernels.items[ki];
+                            if (k.frozen) continue;
+                            if (mahal(k.shape(), x).r2 > resp2) continue;
+                            if (!Ch.gradOne(k, x, e, &grad)) continue;
+                            const mu0 = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+                            Ch.adam(k, &grad, self.opts.rate);
+                            // Through the same trust region, so the interference
+                            // bound is a property of the model and not of which
+                            // optimiser happens to be mounted.
+                            const d = [3]f32{ k.p[MU] - mu0[0], k.p[MU + 1] - mu0[1], k.p[MU + 2] - mu0[2] };
+                            inline for (0..3) |c| k.p[MU + c] = mu0[c];
+                            self.moveCentre(k, d);
+                            self.clamp(k);
+                            k.updates += 1;
+                            self.stats.updates += 1;
+                        },
+                        .nlms => {
+                            const inv = 1 / (gg + 1e-6);
+                            for (self.hit.items) |ki| {
+                                const k = &self.kernels.items[ki];
+                                if (k.frozen) continue;
+                                const sh = k.shape();
+                                const m = mahal(sh, x);
+                                if (m.r2 > resp2) continue;
+                                const g = fmath.expf(-0.5 * m.r2);
+                                // This kernel's share of the residual, per
+                                // channel.
+                                var a: Ch.Vec = undefined;
+                                inline for (0..C) |c| a[c] = e[c] * g * inv;
+                                const w = k.weights();
+                                // The GEOMETRY's share is the sum over channels
+                                // of each weight's own attribution — `rbf`'s
+                                // `ew`, and the whole reason a packed set is
+                                // cheaper than C separate ones: nine channels
+                                // pull on one centre and one shape, so the
+                                // geometry is paid for once and every channel
+                                // gets a say in where it goes.
+                                //
+                                // Accumulated from channel 0 rather than from a
+                                // zero, so that at C = 1 this is `w[0] * a[0]`
+                                // bit for bit — `0 + (−0.0)` is `+0.0`, and a
+                                // sign of zero here would reach `moveCentre`.
+                                var ew: f32 = w[0] * a[0];
+                                inline for (1..C) |c| ew += w[c] * a[c];
+                                const wa = ew * Ch.GEOM_RATE * self.opts.rate_geom;
+                                inline for (0..C) |c| w[c] -= self.opts.rate_w * a[c];
+                                // The centre, in the kernel's OWN metric: the
+                                // natural gradient Σ·∂g/∂μ collapses to g·d,
+                                // because Σ(Lv) = L⁻ᵀL⁻¹Lv = L⁻ᵀv = d. So a
+                                // kernel that under-reads at x simply moves
+                                // toward x, by its share and no more — no matrix,
+                                // and no units to get wrong.
+                                self.moveCentre(k, .{ -wa * m.d[0], -wa * m.d[1], -wa * m.d[2] });
+                                // The shape, each entry scaled into its own units:
+                                // the diagonal through its log, the off-diagonal
+                                // by l_ii·l_jj, so every group's step is a
+                                // RELATIVE change and one rate governs them all.
+                                const l = sh.l;
+                                k.p[LOGD] += wa * m.v[0] * m.d[0] * l[0];
+                                k.p[LOGD + 1] += wa * m.v[1] * m.d[1] * l[2];
+                                k.p[LOGD + 2] += wa * m.v[2] * m.d[2] * l[5];
+                                k.p[OFF] += wa * m.v[0] * m.d[1] * l[0] * l[2];
+                                k.p[OFF + 1] += wa * m.v[0] * m.d[2] * l[0] * l[5];
+                                k.p[OFF + 2] += wa * m.v[1] * m.d[2] * l[2] * l[5];
+                                self.clamp(k);
+                                k.updates += 1;
+                                self.stats.updates += 1;
+                            }
+                        },
+                    }
+                }
+                for (self.hit.items) |ki| try self.rehome(ki);
+
+                {
+                    var after: Ch.Vec = [_]f32{0} ** C;
+                    for (self.hit.items) |ki| {
+                        const k = &self.kernels.items[ki];
+                        const g = gaussian(k.shape(), x);
+                        const w = k.weightsConst();
+                        inline for (0..C) |c| after[c] += w[c] * g;
+                    }
+                    inline for (0..C) |c| ev.post_residual[c] = y[c] - after[c];
+                    if (self.opts.birth_rule != .coverage) {
+                        self.ev_count[ev_idx] += 1;
+                        self.ev_sum[ev_idx] += Ch.magOf(ev.post_residual);
+                        // Forget by halving, so the mean is over RECENT evidence.
+                        // A running mean over a whole run keeps a cell that was
+                        // bad early and is fine now looking bad forever, and would
+                        // birth on history rather than on the present residual.
+                        if (self.ev_count[ev_idx] >= 4 * self.opts.birth_evidence) {
+                            self.ev_count[ev_idx] /= 2;
+                            self.ev_sum[ev_idx] *= 0.5;
+                        }
+                    }
+                }
+                self.gen += 1;
+                var seen_reg: u32 = 0;
+                for (self.hit.items) |ki| {
+                    const o = self.kernels.items[ki].owner;
+                    if (self.visit_gen[o] != self.gen) {
+                        self.visit_gen[o] = self.gen;
+                        seen_reg += 1;
+                    }
+                }
+                ev.regions_touched = seen_reg;
+                for (self.hit.items) |ki| {
+                    if (mahal(self.kernels.items[ki].shape(), x).r2 <= resp2) ev.responsible += 1;
+                }
+                self.stats.responsible += ev.responsible;
+                self.stats.touched += ev.touched;
+                self.stats.regions_touched += ev.regions_touched;
+                if (lt) |*tt| self.stats.learn_ns += tt.read();
+                return ev;
+            }
+
+            /// Draw an exemplar from the domain and observe it. Uniform, from the
+            /// counter-based stream — no sequential draw anywhere, so the model
+            /// is a function of (seed, count) and of nothing about the order work
+            /// happened to be done in.
+            pub fn observeOne(self: *Ch.Model) !Ch.Event {
+                const x = [3]f32{ self.stream.unit(), self.stream.unit(), self.stream.unit() };
+                return self.observe(x, Ch.vecOf(truthOf(self.opts.truth, x)));
+            }
+
+            pub fn stream_n(self: *Ch.Model, n: u64) !void {
+                var i: u64 = 0;
+                while (i < n) : (i += 1) _ = try self.observeOne();
+            }
+
+            /// Take another model's DISCOVERED TOPOLOGY — centres, shapes,
+            /// weights — and nothing else: no optimiser state, no update counts,
+            /// no history. Drift is then measured from where this model starts,
+            /// which is the frozen topology, so "how far did deformation move
+            /// what birth found" is a number and not an inference.
+            pub fn reseedFrom(self: *Ch.Model, src: *const Ch.Model) !void {
+                for (self.regions) |*r| {
+                    r.own.clearRetainingCapacity();
+                    r.max_reach = 0;
+                }
+                self.kernels.clearRetainingCapacity();
+                for (src.kernels.items) |*k| {
+                    const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+                    const owner = self.regionOf(mu);
+                    const ki: u32 = @intCast(self.kernels.items.len);
+                    try self.kernels.append(self.gpa, .{ .p = k.p, .owner = owner, .mu0 = mu, .reach = k.reach, .born_at = 0 });
+                    try self.regions[owner].own.append(self.gpa, ki);
+                    if (k.reach > self.regions[owner].max_reach) self.regions[owner].max_reach = k.reach;
+                }
+            }
+
+            // ── measurement ───────────────────────────────────────────────────
+
+            /// Root mean square error over a held-out set — points drawn from
+            /// their own stream and never learned from.
+            /// Over the points AND the channels — the mean square is taken
+            /// across both, so C = 1 is the campaign's number unchanged and
+            /// C = 9 is one figure for the whole set rather than nine to
+            /// compare by eye. `max_abs` stays the worst SINGLE channel at
+            /// the worst point, because a peak that hides in a mean is
+            /// exactly what it is there to catch.
+            pub fn rms(self: *Ch.Model, pts: []const [3]f32, targets: []const Ch.Vec, max_abs: ?*f32) !f32 {
+                var acc: f64 = 0;
+                var mx: f32 = 0;
+                for (pts, targets) |p, t| {
+                    const yh = try self.predict(p);
+                    inline for (0..C) |c| {
+                        const e = yh[c] - t[c];
+                        acc += @as(f64, e) * @as(f64, e);
+                        mx = @max(mx, @abs(e));
+                    }
+                }
+                if (max_abs) |m| m.* = mx;
+                return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len * C))));
+            }
+
+            pub fn recentError(self: *const Ch.Model) f32 {
+                const n: usize = @intCast(@min(self.recent_n, self.opts.window));
+                if (n == 0) return 0;
+                var acc: f64 = 0;
+                for (self.recent[0..n]) |v| acc += v;
+                return @floatCast(acc / @as(f64, @floatFromInt(n)));
+            }
+
+            pub fn occupiedRegions(self: *const Ch.Model) u32 {
+                var n: u32 = 0;
+                for (self.regions) |*r| {
+                    if (r.own.items.len > 0) n += 1;
+                }
+                return n;
+            }
+
+            pub fn saturatedRegions(self: *const Ch.Model) u32 {
+                var n: u32 = 0;
+                for (self.regions) |*r| {
+                    if (r.own.items.len >= self.opts.budget) n += 1;
+                }
+                return n;
+            }
+
+            /// What the kernels are being asked to carry. Christian's reading of
+            /// the coverage-0.10 divergence: under-birth causes OVER-RESPONSIBILITY
+            /// — too few kernels forced to explain too much territory, weights go
+            /// pathological, and the resulting predictions then corrupt the
+            /// coverage decision that would have birthed more. The truth's own
+            /// range is about 1.25, so a mean |w| near that is already a warning
+            /// and a max in the tens is the regime itself.
+            pub const Weights = struct { mean_abs: f32, max_abs: f32 };
+
+            pub fn weightStats(self: *const Ch.Model) Weights {
+                if (self.kernels.items.len == 0) return .{ .mean_abs = 0, .max_abs = 0 };
+                var acc: f64 = 0;
+                var mx: f32 = 0;
+                for (self.kernels.items) |*k| {
+                    acc += @abs(k.p[W]);
+                    mx = @max(mx, @abs(k.p[W]));
+                }
+                return .{ .mean_abs = @floatCast(acc / @as(f64, @floatFromInt(self.kernels.items.len))), .max_abs = mx };
+            }
+
+            pub const Drift = struct { mean: f32, max: f32, out_of_region: u32 };
+
+            pub fn driftOf(self: *const Ch.Model) Drift {
+                if (self.kernels.items.len == 0) return .{ .mean = 0, .max = 0, .out_of_region = 0 };
+                var acc: f64 = 0;
+                var mx: f32 = 0;
+                var out: u32 = 0;
+                for (self.kernels.items) |*k| {
+                    const d = k.drift();
+                    acc += d;
+                    mx = @max(mx, d);
+                    if (self.regionOf(k.mu0) != k.owner) out += 1;
+                }
+                return .{ .mean = @floatCast(acc / @as(f64, @floatFromInt(self.kernels.items.len))), .max = mx, .out_of_region = out };
+            }
+
+            /// Kernel CENTRES per unit volume in a predicate's region — the
+            /// campaign's capacity-allocation question, counted where the
+            /// question is asked rather than over the whole cube.
+            pub fn densityIn(self: *const Ch.Model, comptime pred: fn (TruthParams, [3]f32) bool, volume: f32) f32 {
+                return @as(f32, @floatFromInt(self.countIn(pred))) / volume;
+            }
+
+            pub fn countIn(self: *const Ch.Model, comptime pred: fn (TruthParams, [3]f32) bool) u32 {
+                var n: u32 = 0;
+                for (self.kernels.items) |*k| {
+                    if (pred(self.opts.truth, .{ k.p[MU], k.p[MU + 1], k.p[MU + 2] })) n += 1;
+                }
+                return n;
+            }
+        };
+
+        // ── MARL-2: the residual hierarchy ────────────────────────────────────
+
+        /// A banked child, and where it came from. The source region matters: a
+        /// donor set's geometry is only right for a recipient whose structure sits
+        /// at a similar angle, and on a moving shell that means a NEARBY region.
+        /// The first version picked the most recent retirement — a temporal
+        /// correspondence, which a move does provide — and it transplanted
+        /// pancakes at the wrong orientation, adding more kernels than it saved.
+        pub const Donor = struct { from: u32, kernels: std.ArrayListUnmanaged(Ch.Kernel) };
+
+        /// What the scheduler knows about one refined region. Nothing here is new
+        /// physics — every field is a quantity an earlier phase already measured
+        /// and understood, which is the condition Christian set.
+        pub const RegionSched = struct {
+            /// Unresolved representation pressure: an EWMA of the CHILD's
+            /// post-update residual here. Seeded at refinement from the parent's
+            /// own pressure, or a region that has never been served has a need of
+            /// zero, scores zero, is never served, and the scheduler deadlocks on
+            /// its first step.
+            need: f32 = 0,
+            /// Exemplars served, child kernels born here, and child gradient
+            /// applications spent here.
+            routed: u64 = 0,
+            kernels: u32 = 0,
+            updates: u64 = 0,
+            /// Exemplar index when this region was last served.
+            last_served: u64 = 0,
+            /// MARL-7: an EWMA of |y − parent(x)| over the exemplars routed here,
+            /// and what it was when the region was refined. The child was created
+            /// to absorb the parent's error at the size it then had; if that error
+            /// GROWS well past it, the parent has stopped being a valid coarse
+            /// level and no amount of residual will fix that — the residual is
+            /// what is being asked to do the parent's job.
+            parent_error: f32 = 0,
+            parent_error_at_refine: f32 = 0,
+            /// A DECAYING MAX of the same error. The mean is the wrong statistic
+            /// and the reason is the campaign's recurring one: a region is a sixth
+            /// of the domain across and the structure that leaves it is a
+            /// fortieth of the domain thick, so a 0.9-amplitude error over a fifth
+            /// of a region's volume averages down to a factor barely over three.
+            /// The question is not whether the parent is wrong ON AVERAGE here; it
+            /// is whether it is badly wrong ANYWHERE here.
+            parent_peak: f32 = 0,
+            parent_peak_at_refine: f32 = 0,
+            since_refined: u32 = 0,
+            /// The learning-efficiency window: need at the window's start, work
+            /// spent since, and the accumulated efficiency. MEASURED, and nothing
+            /// schedules from it — Christian's instruction, and the right one:
+            /// until it is characterised, scheduling from it would be scheduling
+            /// from a quantity nobody has read.
+            win_need: f32 = 0,
+            win_updates: u64 = 0,
+            win_n: u32 = 0,
+            eff_sum: f64 = 0,
+            eff_n: u32 = 0,
+
+            pub fn sufficiency(self: *const Ch.RegionSched) f32 {
+                return @as(f32, @floatFromInt(self.updates)) / @as(f32, @floatFromInt(@max(1, self.kernels)));
+            }
+
+            pub fn efficiency(self: *const Ch.RegionSched) f32 {
+                if (self.eff_n == 0) return 0;
+                return @floatCast(self.eff_sum / @as(f64, @floatFromInt(self.eff_n)));
+            }
+        };
+
+        /// Two levels, and the prediction is their SUM:
+        ///
+        ///     f(x) ≈ parent(x) + Δchild(x)
+        ///
+        /// The child never sees the target. It sees `y − parent(x)` with the
+        /// parent HELD, so what it holds has a precise meaning: the information
+        /// the level above could not represent. That is the whole of the design,
+        /// and the freezing is what makes the meaning true — a parent that went on
+        /// learning in a refined region would be a parent the child is chasing.
+        ///
+        /// Standalone on purpose, and two levels on purpose. No tree, no Loam
+        /// storage, no recursion.
+        pub const Hierarchy = struct {
+            gpa: std.mem.Allocator,
+            parent: Ch.Model,
+            child: Ch.Model,
+            popts: PressureOptions,
+            /// Per parent region.
+            refined: []bool,
+            covered_events: []u32,
+            post_sum: []f64,
+            /// The exemplar stream, keyed exactly as a flat `Model`'s is, so a
+            /// hierarchy and a flat learner at the same seed see THE SAME
+            /// exemplars in the same order. Any comparison between them that did
+            /// not is a comparison of two different experiments.
+            stream: rng.Stream,
+            seen: u64 = 0,
+            routed: u64 = 0,
+            /// Of the exemplars routed to the child, how many landed in the shell
+            /// band. THE DIAGNOSIS: a birth can only happen where an exemplar is,
+            /// so capacity concentration is bounded by EVIDENCE concentration, and
+            /// this is the evidence's. If it matches the band's share of the
+            /// refined volume, the child's stream is uniform and no birth rule
+            /// whatsoever can concentrate capacity above it.
+            routed_in_band: u64 = 0,
+            /// Exemplars that landed in a refined region at all — the pool routing
+            /// selects from. `routed / offered` is the router's duty cycle.
+            offered: u64 = 0,
+            offered_in_band: u64 = 0,
+            refined_count: u32 = 0,
+            /// The routing coin, keyed apart from the exemplar stream so that
+            /// biasing the stream does not change WHICH exemplars arrive — only
+            /// which of them the child is shown. Two routing settings therefore
+            /// see the same world.
+            route_stream: rng.Stream,
+            /// Per parent region, and only for the refined ones.
+            sched: []Ch.RegionSched,
+            /// MARL-6's epoch marks. Diagnostics only — nothing reads them to
+            /// decide anything, which is the condition on tagging at all.
+            child_at_drift: usize = 0,
+            parent_at_drift: usize = 0,
+            events_at_drift: u64 = 0,
+            seen_at_drift: u64 = 0,
+            updates_at_drift: []u32 = &.{},
+            /// MARL-8: banked donor sets, each one region's child expressed
+            /// RELATIVE to its region's origin, so it can be instantiated
+            /// anywhere. A set rather than loose kernels, because the relative
+            /// arrangement is most of what was learned.
+            pool: std.ArrayListUnmanaged(Ch.Donor) = .{},
+            transplanted: usize = 0,
+            transplant_events: u32 = 0,
+            /// Indices of the child kernels that arrived by transplant, for the
+            /// adoption measurement. Diagnostics only.
+            transplant_marks: std.ArrayListUnmanaged(u32) = .{},
+            /// MARL-7 bookkeeping: regions retired, and the child kernels that
+            /// went with them.
+            unrefined_count: u32 = 0,
+            unrefined_on_departed: u32 = 0,
+            child_retired: usize = 0,
+            rerefined_count: u32 = 0,
+            ever_refined: []bool = &.{},
+            /// Running mean of the routing score, so a score of any scale
+            /// normalises to the target duty. An EWMA rather than a true mean
+            /// because the scores move as the model learns, and a normaliser
+            /// averaged over the whole run would hold the duty at what the score
+            /// used to be.
+            score_mean: f32 = 1,
+
+            pub fn init(gpa: std.mem.Allocator, opts: Options, popts: PressureOptions) !Ch.Hierarchy {
+                var parent = try Ch.Model.init(gpa, opts);
+                errdefer parent.deinit();
+                var copts = opts;
+                copts.regions = opts.regions * popts.refine;
+                copts.birth_rule = popts.child_birth;
+                var child = try Ch.Model.init(gpa, copts);
+                errdefer child.deinit();
+                const n = parent.regions.len;
+                const refined = try gpa.alloc(bool, n);
+                errdefer gpa.free(refined);
+                @memset(refined, false);
+                const ce = try gpa.alloc(u32, n);
+                errdefer gpa.free(ce);
+                @memset(ce, 0);
+                const ps = try gpa.alloc(f64, n);
+                errdefer gpa.free(ps);
+                @memset(ps, 0);
+                const sch = try gpa.alloc(Ch.RegionSched, n);
+                errdefer gpa.free(sch);
+                for (sch) |*e| e.* = .{};
+                const ever = try gpa.alloc(bool, n);
+                errdefer gpa.free(ever);
+                @memset(ever, false);
+                return .{
+                    .gpa = gpa,
+                    .parent = parent,
+                    .child = child,
+                    .popts = popts,
+                    .refined = refined,
+                    .covered_events = ce,
+                    .post_sum = ps,
+                    .stream = rng.Stream.region(opts.seed, 0x4D41_524C, 0), // "MARL", the flat model's key
+                    .route_stream = rng.Stream.region(opts.seed, 0x524F_5554, 0), // "ROUT"
+                    .sched = sch,
+                    .ever_refined = ever,
+                };
+            }
+
+            pub fn deinit(self: *Ch.Hierarchy) void {
+                self.parent.deinit();
+                self.child.deinit();
+                self.gpa.free(self.refined);
+                self.gpa.free(self.covered_events);
+                self.gpa.free(self.post_sum);
+                self.gpa.free(self.sched);
+                if (self.updates_at_drift.len > 0) self.gpa.free(self.updates_at_drift);
+                self.gpa.free(self.ever_refined);
+                for (self.pool.items) |*d| d.kernels.deinit(self.gpa);
+                self.pool.deinit(self.gpa);
+                self.transplant_marks.deinit(self.gpa);
+            }
+
+            /// The origin of a parent region, in domain coordinates.
+            fn regionOrigin(self: *const Ch.Hierarchy, r: u32) [3]f32 {
+                const rr = self.parent.opts.regions;
+                const c = [3]u32{ r % rr, (r / rr) % rr, r / (rr * rr) };
+                const h = self.parent.h;
+                return .{ @as(f32, @floatFromInt(c[0])) * h, @as(f32, @floatFromInt(c[1])) * h, @as(f32, @floatFromInt(c[2])) * h };
+            }
+
+            /// Bank a retiring region's child, relative to its own origin.
+            fn bank(self: *Ch.Hierarchy, r: u32) !void {
+                const o = self.regionOrigin(r);
+                var set = std.ArrayListUnmanaged(Ch.Kernel){};
+                errdefer set.deinit(self.gpa);
+                for (self.child.kernels.items) |k| {
+                    const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+                    if (self.parent.regionOf(mu) != r) continue;
+                    var rel = k;
+                    inline for (0..3) |a| rel.p[MU + a] -= o[a];
+                    rel.p[W] = 0; // the geometry is carried; the weight is not
+                    rel.m1 = [_]f32{0} ** Ch.PARAMS;
+                    rel.m2 = [_]f32{0} ** Ch.PARAMS;
+                    rel.t = 0;
+                    rel.updates = 0;
+                    rel.frozen = false;
+                    try set.append(self.gpa, rel);
+                }
+                if (set.items.len == 0) {
+                    set.deinit(self.gpa);
+                    return;
+                }
+                try self.pool.append(self.gpa, .{ .from = r, .kernels = set });
+            }
+
+            /// Instantiate a banked set into a refining region, choosing the
+            /// NEAREST donor. Geometry is what is being carried, and on a moving
+            /// shell the piece of structure a region holds is only similar to the
+            /// piece a nearby region held — orientation is local. Picking by
+            /// recency instead transplanted pancakes at the wrong angle, and added
+            /// more kernels than it suppressed.
+            fn transplant(self: *Ch.Hierarchy, r: u32) !void {
+                if (self.pool.items.len == 0) return;
+                const want = self.regionOrigin(r);
+                var best: usize = 0;
+                var best_d: f32 = std.math.inf(f32);
+                for (self.pool.items, 0..) |*d, i| {
+                    const o = self.regionOrigin(d.from);
+                    const dd = (o[0] - want[0]) * (o[0] - want[0]) + (o[1] - want[1]) * (o[1] - want[1]) + (o[2] - want[2]) * (o[2] - want[2]);
+                    if (dd < best_d) {
+                        best_d = dd;
+                        best = i;
+                    }
+                }
+                const donor = self.pool.swapRemove(best);
+                var set = donor.kernels;
+                defer set.deinit(self.gpa);
+                const o = self.regionOrigin(r);
+                for (set.items) |k| {
+                    var nk = k;
+                    inline for (0..3) |a| nk.p[MU + a] += o[a];
+                    const mu = [3]f32{ nk.p[MU], nk.p[MU + 1], nk.p[MU + 2] };
+                    // A donor set can spill past a region's face; anything that
+                    // lands outside the child's domain is dropped rather than
+                    // clamped, because a clamped kernel is a kernel in a place
+                    // nothing chose for it.
+                    if (mu[0] < 0 or mu[0] > 1 or mu[1] < 0 or mu[1] > 1 or mu[2] < 0 or mu[2] > 1) continue;
+                    const owner = self.child.regionOf(mu);
+                    nk.owner = owner;
+                    nk.mu0 = mu;
+                    nk.born_at = self.seen;
+                    const ki: u32 = @intCast(self.child.kernels.items.len);
+                    try self.child.kernels.append(self.child.gpa, nk);
+                    self.child.clamp(&self.child.kernels.items[ki]);
+                    try self.child.regions[owner].own.append(self.child.gpa, ki);
+                    if (nk.reach > self.child.regions[owner].max_reach) self.child.regions[owner].max_reach = nk.reach;
+                    try self.transplant_marks.append(self.gpa, ki);
+                    self.transplanted += 1;
+                }
+                self.transplant_events += 1;
+            }
+
+            /// Of the kernels that arrived by transplant, the share whose weight
+            /// has risen off zero into real use. A transplant that stays at zero
+            /// is a no-op dressed as a saving.
+            pub fn adoption(self: *const Ch.Hierarchy) f32 {
+                if (self.transplant_marks.items.len == 0) return 0;
+                const bar = self.child.weightStats().mean_abs * 0.1;
+                var used: u32 = 0;
+                var alive: u32 = 0;
+                for (self.transplant_marks.items) |ki| {
+                    if (ki >= self.child.kernels.items.len) continue; // compacted away
+                    alive += 1;
+                    if (@abs(self.child.kernels.items[ki].p[W]) > bar) used += 1;
+                }
+                if (alive == 0) return 0;
+                return @as(f32, @floatFromInt(used)) / @as(f32, @floatFromInt(alive));
+            }
+
+            /// Retire a region's child level and hand the region back to the
+            /// parent. The two halves are ONE act: the child's kernels go and the
+            /// parent's are unfrozen in the same breath, because the correction
+            /// and the thing it corrects are only removable together.
+            ///
+            /// Safe on MARL-6R's analysis: under-basis-density is the catastrophe,
+            /// and this removes a LEVEL while leaving the parent's density where
+            /// it was. There is no sparse child left behind — there is no child.
+            fn unrefine(self: *Ch.Hierarchy, gpa: std.mem.Allocator, r: u32) !void {
+                const dead = try gpa.alloc(bool, self.child.kernels.items.len);
+                defer gpa.free(dead);
+                var n: usize = 0;
+                for (self.child.kernels.items, dead) |*k, *d| {
+                    const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+                    d.* = self.parent.regionOf(mu) == r;
+                    if (d.*) n += 1;
+                }
+                if (self.popts.recycle) try self.bank(r);
+                try self.child.compact(dead);
+                self.parent.unfreezeRegion(r);
+                self.refined[r] = false;
+                // The pressure statistic starts again, or the region re-refines on
+                // the evidence that had it refined before.
+                self.covered_events[r] = 0;
+                self.post_sum[r] = 0;
+                self.sched[r] = .{};
+                self.unrefined_count += 1;
+                self.child_retired += n;
+                if (!Truth.inShell(self.parent.opts.truth, self.regionCentre(r))) self.unrefined_on_departed += 1;
+            }
+
+            fn regionCentre(self: *const Ch.Hierarchy, r: u32) [3]f32 {
+                const rr = self.parent.opts.regions;
+                const c = [3]u32{ r % rr, (r / rr) % rr, r / (rr * rr) };
+                const h = self.parent.h;
+                return .{ (@as(f32, @floatFromInt(c[0])) + 0.5) * h, (@as(f32, @floatFromInt(c[1])) + 0.5) * h, (@as(f32, @floatFromInt(c[2])) + 0.5) * h };
+            }
+
+            /// The routing score for a region, before normalisation.
+            fn scoreOf(self: *const Ch.Hierarchy, r: u32, residual: f32) f32 {
+                const e = &self.sched[r];
+                return switch (self.popts.sched) {
+                    .off => self.popts.route_floor + self.popts.route_gain * @abs(residual),
+                    .need => e.need,
+                    .need_lag => e.need * (1 + @as(f32, @floatFromInt(self.seen - e.last_served)) / self.popts.lag_tau),
+                    .need_lag_suff => e.need *
+                        (1 + @as(f32, @floatFromInt(self.seen - e.last_served)) / self.popts.lag_tau) /
+                        (1 + e.sufficiency() / self.popts.suff_ref),
+                    .hybrid => (self.popts.route_floor + self.popts.route_gain * @abs(residual)) *
+                        (1 + @as(f32, @floatFromInt(self.seen - e.last_served)) / self.popts.lag_tau),
+                };
+            }
+
+            /// The sum. The child contributes exactly zero where it has no
+            /// kernels, so an unrefined domain reads as the parent alone — not
+            /// approximately, the cutoff makes it exact.
+            pub fn predict(self: *Ch.Hierarchy, q: [3]f32) !Ch.Vec {
+                const a = try self.parent.predict(q);
+                const b = try self.child.predict(q);
+                var out: Ch.Vec = undefined;
+                inline for (0..C) |c| out[c] = a[c] + b[c];
+                return out;
+            }
+
+            pub fn pressureOf(self: *const Ch.Hierarchy, region: u32) f32 {
+                if (self.covered_events[region] == 0) return 0;
+                return @floatCast(self.post_sum[region] / @as(f64, @floatFromInt(self.covered_events[region])));
+            }
+
+            pub fn observeOne(self: *Ch.Hierarchy) !void {
+                const x = [3]f32{ self.stream.unit(), self.stream.unit(), self.stream.unit() };
+                const y = Ch.vecOf(truthOf(self.parent.opts.truth, x));
+                const r = self.parent.regionOf(x);
+                self.seen += 1;
+                if (self.refined[r]) {
+                    const in_band = Truth.inShell(self.parent.opts.truth, x);
+                    self.offered += 1;
+                    if (in_band) self.offered_in_band += 1;
+                    // The residual has to be known to decide, which means the
+                    // parent's prediction is paid for whether or not the exemplar
+                    // is routed. That is the router's honest cost and it is what
+                    // `work` will show.
+                    const held = try self.parent.predict(x);
+                    var delta: Ch.Vec = undefined;
+                    inline for (0..C) |c| delta[c] = y[c] - held[c];
+                    const score = self.scoreOf(r, Ch.magOf(delta));
+                    // One normaliser for every mode, so the arms differ in WHICH
+                    // exemplars they route and not in how many.
+                    self.score_mean += 0.001 * (score - self.score_mean);
+                    const p = if (self.popts.route_duty > 0)
+                        @min(1, self.popts.route_duty * score / @max(1e-6, self.score_mean))
+                    else
+                        @min(1, score);
+                    if (self.route_stream.unit() >= p) return;
+                    // Counted HERE, immediately before the child sees it, and not
+                    // at the top of the branch: the number that matters is the
+                    // stream the child actually learns from, so that any filter on
+                    // what reaches it shows up in the measurement. Placed earlier,
+                    // a routing change was invisible and G20 (c) went on reporting
+                    // a uniform stream that no longer was one.
+                    self.routed += 1;
+                    if (in_band) self.routed_in_band += 1;
+                    const before = self.child.stats.updates;
+                    const kn = self.child.kernels.items.len;
+                    const cev = try self.child.observe(x, delta);
+                    const spent = self.child.stats.updates - before;
+
+                    const e = &self.sched[r];
+                    e.need += 0.01 * (Ch.magOf(cev.post_residual) - e.need);
+                    e.routed += 1;
+                    e.updates += spent;
+                    e.kernels += @intCast(self.child.kernels.items.len - kn);
+                    e.last_served = self.seen;
+                    const perr = Ch.magOf(delta);
+                    e.parent_error += 0.02 * (perr - e.parent_error);
+                    e.parent_peak = @max(e.parent_peak * 0.9995, perr);
+                    e.since_refined +|= 1;
+                    // The baseline is MEASURED, not inherited. What the child was
+                    // created to absorb is the parent's error once the region has
+                    // settled under refinement — and because the parent is frozen
+                    // there, that number does not move again unless the world
+                    // does. Taking it from the pressure statistic instead was
+                    // wrong by an order of magnitude: pressure is a POST-update
+                    // residual (~0.008) and this is the raw error (~0.08), so the
+                    // trigger compared two different quantities and never fired.
+                    if (e.since_refined == self.popts.unrefine_after) {
+                        e.parent_error_at_refine = @max(1e-4, e.parent_error);
+                        e.parent_peak_at_refine = @max(1e-4, e.parent_peak);
+                    } else if (self.popts.unrefine > 0 and e.since_refined > self.popts.unrefine_after and
+                        e.parent_peak > e.parent_peak_at_refine * self.popts.unrefine)
+                    {
+                        try self.unrefine(self.gpa, r);
+                        return;
+                    }
+                    // Learning efficiency, measured over a moving window: how much
+                    // unresolved residual a unit of learning work removed here.
+                    e.win_updates += spent;
+                    e.win_n += 1;
+                    if (e.win_n >= 200) {
+                        if (e.win_updates > 0) {
+                            e.eff_sum += @as(f64, e.win_need - e.need) / @as(f64, @floatFromInt(e.win_updates));
+                            e.eff_n += 1;
+                        }
+                        e.win_need = e.need;
+                        e.win_updates = 0;
+                        e.win_n = 0;
+                    }
+                    return;
+                }
+                const ev = try self.parent.observe(x, y);
+                // Every learning event, NOT only the ones where coverage was
+                // already satisfied.
+                //
+                // Filtering to covered events was the first implementation of
+                // Christian's principle — refine where the basis said it had the
+                // ground covered and was still wrong — and it was the WRONG
+                // implementation, by a wide margin. Measured at four settings of
+                // `min_events`, precision with the filter was 0.507, 0.600, 0.679,
+                // 0.963; without it, 0.919, 0.923, 1.000, 1.000. Dropping the
+                // events where a birth happened removes exactly the events the
+                // model handled well, which biases the mean upward everywhere and
+                // unevenly: a structured region births more, so it reaches
+                // `min_events` later and on a differently-selected sample than a
+                // smooth one.
+                //
+                // The principle survives its implementation. What distinguishes
+                // "not learned yet" from "cannot be represented" is that this is
+                // the POST-UPDATE residual — what deformation could not remove
+                // with the kernels it had — and that is the whole of it. The
+                // coverage filter was a second, redundant attempt at the same
+                // distinction, and it cost precision to make it twice.
+                if (!ev.learned) return;
+                self.covered_events[r] += 1;
+                self.post_sum[r] += Ch.magOf(ev.post_residual);
+                if (self.covered_events[r] >= self.popts.min_events and
+                    self.pressureOf(r) > self.popts.threshold)
+                {
+                    self.refined[r] = true;
+                    self.refined_count += 1;
+                    self.parent.freezeRegion(r);
+                    // Seeded from the parent's own pressure: a region whose need
+                    // started at zero would score zero, never be served, and never
+                    // learn what its need was.
+                    self.sched[r].need = self.pressureOf(r);
+                    self.sched[r].win_need = self.sched[r].need;
+                    self.sched[r].last_served = self.seen;
+                    if (self.ever_refined[r]) self.rerefined_count += 1;
+                    self.ever_refined[r] = true;
+                    if (self.popts.recycle) try self.transplant(r);
+                }
+            }
+
+            pub fn stream_n(self: *Ch.Hierarchy, n: u64) !void {
+                var i: u64 = 0;
+                while (i < n) : (i += 1) try self.observeOne();
+            }
+
+            pub fn rms(self: *Ch.Hierarchy, pts: []const [3]f32, targets: []const Ch.Vec, max_abs: ?*f32) !f32 {
+                var acc: f64 = 0;
+                var mx: f32 = 0;
+                for (pts, targets) |p, t| {
+                    const yh = try self.predict(p);
+                    inline for (0..C) |c| {
+                        const e = yh[c] - t[c];
+                        acc += @as(f64, e) * @as(f64, e);
+                        mx = @max(mx, @abs(e));
+                    }
+                }
+                if (max_abs) |m| m.* = mx;
+                return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len * C))));
+            }
+
+            /// The parent alone — what the model would score with the child
+            /// discarded. The difference between this and `rms` is the child's
+            /// contribution, stated rather than inferred.
+            pub fn parentRms(self: *Ch.Hierarchy, pts: []const [3]f32, targets: []const Ch.Vec) !f32 {
+                var acc: f64 = 0;
+                for (pts, targets) |p, t| {
+                    const yh = try self.parent.predict(p);
+                    inline for (0..C) |c| {
+                        const e = yh[c] - t[c];
+                        acc += @as(f64, e) * @as(f64, e);
+                    }
+                }
+                return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len * C))));
+            }
+
+            /// Whether a parent region's cube touches the target's shell band —
+            /// the ground truth a refinement decision is scored against.
+            pub fn regionMeetsShell(self: *const Ch.Hierarchy, region: u32) bool {
+                const tp = self.parent.opts.truth;
+                const h = self.parent.h;
+                const rr = self.parent.opts.regions;
+                const c = [3]u32{ region % rr, (region / rr) % rr, region / (rr * rr) };
+                const N: u32 = 9;
+                var k: u32 = 0;
+                while (k <= N) : (k += 1) {
+                    var j: u32 = 0;
+                    while (j <= N) : (j += 1) {
+                        var i: u32 = 0;
+                        while (i <= N) : (i += 1) {
+                            const p = [3]f32{
+                                (@as(f32, @floatFromInt(c[0])) + @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(N))) * h,
+                                (@as(f32, @floatFromInt(c[1])) + @as(f32, @floatFromInt(j)) / @as(f32, @floatFromInt(N))) * h,
+                                (@as(f32, @floatFromInt(c[2])) + @as(f32, @floatFromInt(k)) / @as(f32, @floatFromInt(N))) * h,
+                            };
+                            if (Truth.inShell(tp, p)) return true;
+                        }
+                    }
+                }
+                return false;
+            }
+
+            /// Of the regions refinement opened, the share that actually touch
+            /// structure the parent could not resolve. A pressure signal that
+            /// fires on the smooth swell is buying capacity for something ordinary
+            /// deformation had in hand, which is the campaign's §5 failure —
+            /// noise mistaken for complexity — wearing a different hat.
+            /// MARL-6: move the world. Only the target changes — no thawing, no
+            /// reparenting, no forgetting. The refined set, the frozen parents and
+            /// every kernel stay exactly as the old world left them, which is the
+            /// whole point: the premise under test is that a frozen coarse level
+            /// plus a residual child survives its function moving.
+            ///
+            /// Kernels are tagged by epoch for DIAGNOSTICS ONLY, and the tag costs
+            /// nothing to keep: the kernel arrays are append-only, so everything
+            /// below `child_at_drift` was born before the world moved. Nothing
+            /// reads the tag to decide anything.
+            pub fn drift(self: *Ch.Hierarchy, gpa: std.mem.Allocator, tp: TruthParams) !void {
+                self.parent.opts.truth = tp;
+                self.child.opts.truth = tp;
+                self.child_at_drift = self.child.kernels.items.len;
+                self.parent_at_drift = self.parent.kernels.items.len;
+                self.events_at_drift = self.parent.stats.events + self.child.stats.events;
+                self.seen_at_drift = self.seen;
+                if (self.updates_at_drift.len > 0) gpa.free(self.updates_at_drift);
+                self.updates_at_drift = try gpa.alloc(u32, self.child_at_drift);
+                for (self.child.kernels.items[0..self.child_at_drift], self.updates_at_drift) |*k, *u| u.* = k.updates;
+            }
+
+            /// The magnitude of what the CHILD is holding, on its own. The
+            /// sharpest detector of the semantic failure this phase is looking
+            /// for: a child holding unresolved detail of the current parent is
+            /// small, and a child holding `current target − historical parent`
+            /// has to carry the coarse structure the frozen parent no longer
+            /// explains.
+            pub fn childRms(self: *Ch.Hierarchy, pts: []const [3]f32) !f32 {
+                var acc: f64 = 0;
+                for (pts) |p| {
+                    const yh = try self.child.predict(p);
+                    inline for (0..C) |c| acc += @as(f64, yh[c]) * @as(f64, yh[c]);
+                }
+                return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len * C))));
+            }
+
+            /// Of the child kernels that existed when the world moved, how many
+            /// are still outside the band the target now has — and how many have
+            /// taken any real gradient since.
+            pub const Stranded = struct {
+                at_drift: usize,
+                outside_current: usize,
+                still_active: usize,
+                /// Mean |w| of the pre-move kernels that are now outside the
+                /// current band, and of those inside it. THE QUESTION EROSION
+                /// TURNS ON: if obsolete capacity shrinks its own weight, death is
+                /// a matter of noticing; if it does not, death needs a signal the
+                /// model does not currently produce.
+                w_obsolete: f32,
+                w_relevant: f32,
+                /// And the same for kernels born since the move, as the control.
+                w_new: f32,
+            };
+
+            pub fn strandedOf(self: *const Ch.Hierarchy) Stranded {
+                var outside: usize = 0;
+                var active: usize = 0;
+                var w_out: f64 = 0;
+                var w_in: f64 = 0;
+                var n_in: usize = 0;
+                for (self.child.kernels.items[0..self.child_at_drift], self.updates_at_drift) |*k, was| {
+                    const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+                    if (Truth.inShell(self.parent.opts.truth, mu)) {
+                        w_in += @abs(k.p[W]);
+                        n_in += 1;
+                    } else {
+                        w_out += @abs(k.p[W]);
+                        outside += 1;
+                    }
+                    if (k.updates > was + 10) active += 1;
+                }
+                var w_new: f64 = 0;
+                const n_new = self.child.kernels.items.len - self.child_at_drift;
+                for (self.child.kernels.items[self.child_at_drift..]) |*k| w_new += @abs(k.p[W]);
+                return .{
+                    .at_drift = self.child_at_drift,
+                    .outside_current = outside,
+                    .still_active = active,
+                    .w_obsolete = if (outside > 0) @floatCast(w_out / @as(f64, @floatFromInt(outside))) else 0,
+                    .w_relevant = if (n_in > 0) @floatCast(w_in / @as(f64, @floatFromInt(n_in))) else 0,
+                    .w_new = if (n_new > 0) @floatCast(w_new / @as(f64, @floatFromInt(n_new))) else 0,
+                };
+            }
+
+            /// THE ABLATION THAT DECIDES WHETHER DEATH IS EVEN POSSIBLE: silence
+            /// every pre-move child kernel now outside the current band, and see
+            /// what the prediction does. If those kernels are obsolete, removing
+            /// them costs nothing and erosion is a matter of noticing. If the
+            /// prediction gets WORSE, they are load-bearing — they are cancelling
+            /// the frozen parent's stale contribution, and deleting a correction
+            /// while the thing it corrects remains is not a repair.
+            ///
+            /// Reversible, and reversed by the caller: this is a measurement, not
+            /// a mechanism.
+            pub fn silenceObsolete(self: *Ch.Hierarchy, saved: []f32) usize {
+                var n: usize = 0;
+                for (self.child.kernels.items[0..self.child_at_drift]) |*k| {
+                    const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+                    if (Truth.inShell(self.parent.opts.truth, mu)) continue;
+                    saved[n] = k.p[W];
+                    k.p[W] = 0;
+                    n += 1;
+                }
+                return n;
+            }
+
+            pub fn restoreObsolete(self: *Ch.Hierarchy, saved: []const f32) void {
+                var n: usize = 0;
+                for (self.child.kernels.items[0..self.child_at_drift]) |*k| {
+                    const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+                    if (Truth.inShell(self.parent.opts.truth, mu)) continue;
+                    k.p[W] = saved[n];
+                    n += 1;
+                }
+            }
+
+            /// The child's shell-band density over its density across the cells it
+            /// occupies at all. One definition, used by the gate and the seedbed
+            /// alike, because two spellings of a headline number is how a campaign
+            /// ends up arguing with itself.
+            pub fn childConcentration(self: *const Ch.Hierarchy) f64 {
+                const n: f64 = @floatFromInt(self.child.opts.regions);
+                const cell = 1 / (n * n * n);
+                const occ = @as(f64, @floatFromInt(self.child.occupiedRegions())) * cell;
+                if (occ <= 0 or self.child.kernels.items.len == 0) return 0;
+                const density = @as(f64, @floatFromInt(self.child.kernels.items.len)) / occ;
+                const band_v = volumeOf(self.parent.opts.truth, Truth.inShell);
+                const band_d = @as(f64, @floatFromInt(self.child.countIn(Truth.inShell))) / @as(f64, band_v);
+                return band_d / density;
+            }
+
+            /// The band's share of the refined volume — what a uniform stream
+            /// would deliver, and therefore the concentration ceiling any birth
+            /// rule is working under.
+            pub fn bandShareOfRefined(self: *const Ch.Hierarchy) f32 {
+                const N: u32 = 120_000;
+                var st = rng.Stream.region(0x5348_4152, 0, 0); // "SHAR"
+                var refined: u32 = 0;
+                var in_band: u32 = 0;
                 var i: u32 = 0;
-                while (i <= N) : (i += 1) {
-                    const p = [3]f32{
-                        (@as(f32, @floatFromInt(c[0])) + @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(N))) * h,
-                        (@as(f32, @floatFromInt(c[1])) + @as(f32, @floatFromInt(j)) / @as(f32, @floatFromInt(N))) * h,
-                        (@as(f32, @floatFromInt(c[2])) + @as(f32, @floatFromInt(k)) / @as(f32, @floatFromInt(N))) * h,
-                    };
-                    if (Truth.inShell(tp, p)) return true;
+                while (i < N) : (i += 1) {
+                    const p = [3]f32{ st.unit(), st.unit(), st.unit() };
+                    if (!self.refined[self.parent.regionOf(p)]) continue;
+                    refined += 1;
+                    if (Truth.inShell(self.parent.opts.truth, p)) in_band += 1;
                 }
+                if (refined == 0) return 0;
+                return @as(f32, @floatFromInt(in_band)) / @as(f32, @floatFromInt(refined));
             }
-        }
-        return false;
-    }
 
-    /// Of the regions refinement opened, the share that actually touch
-    /// structure the parent could not resolve. A pressure signal that
-    /// fires on the smooth swell is buying capacity for something ordinary
-    /// deformation had in hand, which is the campaign's §5 failure —
-    /// noise mistaken for complexity — wearing a different hat.
-    /// MARL-6: move the world. Only the target changes — no thawing, no
-    /// reparenting, no forgetting. The refined set, the frozen parents and
-    /// every kernel stay exactly as the old world left them, which is the
-    /// whole point: the premise under test is that a frozen coarse level
-    /// plus a residual child survives its function moving.
-    ///
-    /// Kernels are tagged by epoch for DIAGNOSTICS ONLY, and the tag costs
-    /// nothing to keep: the kernel arrays are append-only, so everything
-    /// below `child_at_drift` was born before the world moved. Nothing
-    /// reads the tag to decide anything.
-    pub fn drift(self: *Hierarchy, gpa: std.mem.Allocator, tp: TruthParams) !void {
-        self.parent.opts.truth = tp;
-        self.child.opts.truth = tp;
-        self.child_at_drift = self.child.kernels.items.len;
-        self.parent_at_drift = self.parent.kernels.items.len;
-        self.events_at_drift = self.parent.stats.events + self.child.stats.events;
-        self.seen_at_drift = self.seen;
-        if (self.updates_at_drift.len > 0) gpa.free(self.updates_at_drift);
-        self.updates_at_drift = try gpa.alloc(u32, self.child_at_drift);
-        for (self.child.kernels.items[0..self.child_at_drift], self.updates_at_drift) |*k, *u| u.* = k.updates;
-    }
+            pub const Precision = struct { refined: u32, on_shell: u32, false_positive: u32 };
 
-    /// The magnitude of what the CHILD is holding, on its own. The
-    /// sharpest detector of the semantic failure this phase is looking
-    /// for: a child holding unresolved detail of the current parent is
-    /// small, and a child holding `current target − historical parent`
-    /// has to carry the coarse structure the frozen parent no longer
-    /// explains.
-    pub fn childRms(self: *Hierarchy, pts: []const [3]f32) !f32 {
-        var acc: f64 = 0;
-        for (pts) |p| {
-            const c = try self.child.predict(p);
-            acc += @as(f64, c) * @as(f64, c);
-        }
-        return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len))));
-    }
-
-    /// Of the child kernels that existed when the world moved, how many
-    /// are still outside the band the target now has — and how many have
-    /// taken any real gradient since.
-    pub const Stranded = struct {
-        at_drift: usize,
-        outside_current: usize,
-        still_active: usize,
-        /// Mean |w| of the pre-move kernels that are now outside the
-        /// current band, and of those inside it. THE QUESTION EROSION
-        /// TURNS ON: if obsolete capacity shrinks its own weight, death is
-        /// a matter of noticing; if it does not, death needs a signal the
-        /// model does not currently produce.
-        w_obsolete: f32,
-        w_relevant: f32,
-        /// And the same for kernels born since the move, as the control.
-        w_new: f32,
-    };
-
-    pub fn strandedOf(self: *const Hierarchy) Stranded {
-        var outside: usize = 0;
-        var active: usize = 0;
-        var w_out: f64 = 0;
-        var w_in: f64 = 0;
-        var n_in: usize = 0;
-        for (self.child.kernels.items[0..self.child_at_drift], self.updates_at_drift) |*k, was| {
-            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
-            if (Truth.inShell(self.parent.opts.truth, mu)) {
-                w_in += @abs(k.p[W]);
-                n_in += 1;
-            } else {
-                w_out += @abs(k.p[W]);
-                outside += 1;
+            pub fn precision(self: *const Ch.Hierarchy) Precision {
+                var on: u32 = 0;
+                var off: u32 = 0;
+                for (self.refined, 0..) |r, i| {
+                    if (!r) continue;
+                    if (self.regionMeetsShell(@intCast(i))) on += 1 else off += 1;
+                }
+                return .{ .refined = on + off, .on_shell = on, .false_positive = off };
             }
-            if (k.updates > was + 10) active += 1;
-        }
-        var w_new: f64 = 0;
-        const n_new = self.child.kernels.items.len - self.child_at_drift;
-        for (self.child.kernels.items[self.child_at_drift..]) |*k| w_new += @abs(k.p[W]);
-        return .{
-            .at_drift = self.child_at_drift,
-            .outside_current = outside,
-            .still_active = active,
-            .w_obsolete = if (outside > 0) @floatCast(w_out / @as(f64, @floatFromInt(outside))) else 0,
-            .w_relevant = if (n_in > 0) @floatCast(w_in / @as(f64, @floatFromInt(n_in))) else 0,
-            .w_new = if (n_new > 0) @floatCast(w_new / @as(f64, @floatFromInt(n_new))) else 0,
         };
-    }
 
-    /// THE ABLATION THAT DECIDES WHETHER DEATH IS EVEN POSSIBLE: silence
-    /// every pre-move child kernel now outside the current band, and see
-    /// what the prediction does. If those kernels are obsolete, removing
-    /// them costs nothing and erosion is a matter of noticing. If the
-    /// prediction gets WORSE, they are load-bearing — they are cancelling
-    /// the frozen parent's stale contribution, and deleting a correction
-    /// while the thing it corrects remains is not a repair.
-    ///
-    /// Reversible, and reversed by the caller: this is a measurement, not
-    /// a mechanism.
-    pub fn silenceObsolete(self: *Hierarchy, saved: []f32) usize {
-        var n: usize = 0;
-        for (self.child.kernels.items[0..self.child_at_drift]) |*k| {
-            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
-            if (Truth.inShell(self.parent.opts.truth, mu)) continue;
-            saved[n] = k.p[W];
-            k.p[W] = 0;
-            n += 1;
+        /// The gradient of (ŷ − y)² for ONE kernel at one exemplar, into `grad`.
+        /// `rbf.lossAndGrad`'s inner loop with one channel: the same derivatives
+        /// through the same parameterisation, so a bug here is a bug there and
+        /// the finite-difference gate catches both shapes of it. False when the
+        /// kernel is outside the cutoff and has no gradient at all.
+        ///
+        ///     ∂g/∂μ   = g·(L v)
+        ///     ∂g/∂L_ij = −g·v_j·d_i     (the diagonal through its log, ×L_ii)
+        pub fn gradOne(k: *const Ch.Kernel, q: [3]f32, e: Ch.Vec, grad: *[Ch.PARAMS]f32) bool {
+            const s = k.shape();
+            const m = mahal(s, q);
+            if (m.r2 > CUTOFF) return false;
+            const g = fmath.expf(-0.5 * m.r2);
+            if (g < 1e-7) return false;
+            @memset(grad, 0);
+            const w = k.weightsConst();
+            // One weight gradient per channel; the geometry's is the sum of
+            // each channel's error against its own weight, which is `rbf`'s
+            // `ew` term.
+            inline for (0..C) |c| grad[W + c] = 2 * e[c] * g;
+            var ew: f32 = e[0] * w[0];
+            inline for (1..C) |c| ew += e[c] * w[c];
+            const l = s.l;
+            const lv = [3]f32{
+                l[0] * m.v[0],
+                l[1] * m.v[0] + l[2] * m.v[1],
+                l[3] * m.v[0] + l[4] * m.v[1] + l[5] * m.v[2],
+            };
+            inline for (0..3) |a| grad[MU + a] = 2 * ew * g * lv[a];
+            grad[LOGD] = -2 * ew * g * m.v[0] * m.d[0] * l[0];
+            grad[LOGD + 1] = -2 * ew * g * m.v[1] * m.d[1] * l[2];
+            grad[LOGD + 2] = -2 * ew * g * m.v[2] * m.d[2] * l[5];
+            grad[OFF] = -2 * ew * g * m.v[0] * m.d[1]; // l10
+            grad[OFF + 1] = -2 * ew * g * m.v[0] * m.d[2]; // l20
+            grad[OFF + 2] = -2 * ew * g * m.v[1] * m.d[2]; // l21
+            return true;
         }
-        return n;
-    }
 
-    pub fn restoreObsolete(self: *Hierarchy, saved: []const f32) void {
-        var n: usize = 0;
-        for (self.child.kernels.items[0..self.child_at_drift]) |*k| {
-            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
-            if (Truth.inShell(self.parent.opts.truth, mu)) continue;
-            k.p[W] = saved[n];
-            n += 1;
+        const B1: f32 = 0.9;
+        const B2: f32 = 0.999;
+
+        /// A held-out probe set: points from their own stream, never
+        /// observed. The truth (§8) is SCALAR, so channel 0 carries it and
+        /// the rest are zero — which at C = 1 is the campaign's probe set
+        /// exactly, and at C > 1 is a set the synthetic truth has nothing
+        /// to say about. Anything wanting a real multi-channel target
+        /// brings its own, as `src/marble.zig` does.
+        pub const Probes = struct { p: [][3]f32, y: []Ch.Vec };
+
+        pub fn probesOf(gpa: std.mem.Allocator, tp: TruthParams, seed: u64, n: usize) !Ch.Probes {
+            var st = rng.Stream.region(seed, 0x5052_4F42, 0); // "PROB"
+            const p = try gpa.alloc([3]f32, n);
+            errdefer gpa.free(p);
+            const y = try gpa.alloc(Ch.Vec, n);
+            errdefer gpa.free(y);
+            for (p, y) |*pt, *ty| {
+                pt.* = .{ st.unit(), st.unit(), st.unit() };
+                ty.* = [_]f32{0} ** C;
+                ty.*[0] = truthOf(tp, pt.*);
+            }
+            return .{ .p = p, .y = y };
         }
-    }
 
-    /// The child's shell-band density over its density across the cells it
-    /// occupies at all. One definition, used by the gate and the seedbed
-    /// alike, because two spellings of a headline number is how a campaign
-    /// ends up arguing with itself.
-    pub fn childConcentration(self: *const Hierarchy) f64 {
-        const n: f64 = @floatFromInt(self.child.opts.regions);
-        const cell = 1 / (n * n * n);
-        const occ = @as(f64, @floatFromInt(self.child.occupiedRegions())) * cell;
-        if (occ <= 0 or self.child.kernels.items.len == 0) return 0;
-        const density = @as(f64, @floatFromInt(self.child.kernels.items.len)) / occ;
-        const band_v = volumeOf(self.parent.opts.truth, Truth.inShell);
-        const band_d = @as(f64, @floatFromInt(self.child.countIn(Truth.inShell))) / @as(f64, band_v);
-        return band_d / density;
-    }
-
-    /// The band's share of the refined volume — what a uniform stream
-    /// would deliver, and therefore the concentration ceiling any birth
-    /// rule is working under.
-    pub fn bandShareOfRefined(self: *const Hierarchy) f32 {
-        const N: u32 = 120_000;
-        var st = rng.Stream.region(0x5348_4152, 0, 0); // "SHAR"
-        var refined: u32 = 0;
-        var in_band: u32 = 0;
-        var i: u32 = 0;
-        while (i < N) : (i += 1) {
-            const p = [3]f32{ st.unit(), st.unit(), st.unit() };
-            if (!self.refined[self.parent.regionOf(p)]) continue;
-            refined += 1;
-            if (Truth.inShell(self.parent.opts.truth, p)) in_band += 1;
+        pub fn probes(gpa: std.mem.Allocator, seed: u64, n: usize) !Ch.Probes {
+            return Ch.probesOf(gpa, .{}, seed, n);
         }
-        if (refined == 0) return 0;
-        return @as(f32, @floatFromInt(in_band)) / @as(f32, @floatFromInt(refined));
-    }
 
-    pub const Precision = struct { refined: u32, on_shell: u32, false_positive: u32 };
-
-    pub fn precision(self: *const Hierarchy) Precision {
-        var on: u32 = 0;
-        var off: u32 = 0;
-        for (self.refined, 0..) |r, i| {
-            if (!r) continue;
-            if (self.regionMeetsShell(@intCast(i))) on += 1 else off += 1;
+        /// One Adam step on one kernel, against its own step count.
+        pub fn adam(k: *Ch.Kernel, grad: *const [Ch.PARAMS]f32, rate: f32) void {
+            k.t += 1;
+            const t: f32 = @floatFromInt(k.t);
+            const c1 = 1 - std.math.pow(f32, B1, t);
+            const c2 = 1 - std.math.pow(f32, B2, t);
+            inline for (0..Ch.PARAMS) |i| {
+                k.m1[i] = B1 * k.m1[i] + (1 - B1) * grad[i];
+                k.m2[i] = B2 * k.m2[i] + (1 - B2) * grad[i] * grad[i];
+                k.p[i] -= rate * (k.m1[i] / c1) / (@sqrt(k.m2[i] / c2) + 1e-8);
+            }
         }
-        return .{ .refined = on + off, .on_shell = on, .false_positive = off };
-    }
-};
-
-/// The gradient of (ŷ − y)² for ONE kernel at one exemplar, into `grad`.
-/// `rbf.lossAndGrad`'s inner loop with one channel: the same derivatives
-/// through the same parameterisation, so a bug here is a bug there and
-/// the finite-difference gate catches both shapes of it. False when the
-/// kernel is outside the cutoff and has no gradient at all.
-///
-///     ∂g/∂μ   = g·(L v)
-///     ∂g/∂L_ij = −g·v_j·d_i     (the diagonal through its log, ×L_ii)
-pub fn gradOne(k: *const Kernel, q: [3]f32, e: f32, grad: *[PARAMS]f32) bool {
-    const s = k.shape();
-    const m = mahal(s, q);
-    if (m.r2 > CUTOFF) return false;
-    const g = fmath.expf(-0.5 * m.r2);
-    if (g < 1e-7) return false;
-    @memset(grad, 0);
-    grad[W] = 2 * e * g;
-    const ew = e * k.p[W];
-    const l = s.l;
-    const lv = [3]f32{
-        l[0] * m.v[0],
-        l[1] * m.v[0] + l[2] * m.v[1],
-        l[3] * m.v[0] + l[4] * m.v[1] + l[5] * m.v[2],
     };
-    inline for (0..3) |a| grad[MU + a] = 2 * ew * g * lv[a];
-    grad[LOGD] = -2 * ew * g * m.v[0] * m.d[0] * l[0];
-    grad[LOGD + 1] = -2 * ew * g * m.v[1] * m.d[1] * l[2];
-    grad[LOGD + 2] = -2 * ew * g * m.v[2] * m.d[2] * l[5];
-    grad[OFF] = -2 * ew * g * m.v[0] * m.d[1]; // l10
-    grad[OFF + 1] = -2 * ew * g * m.v[0] * m.d[2]; // l20
-    grad[OFF + 2] = -2 * ew * g * m.v[1] * m.d[2]; // l21
-    return true;
 }
 
-const B1: f32 = 0.9;
-const B2: f32 = 0.999;
-
-/// One Adam step on one kernel, against its own step count.
-pub fn adam(k: *Kernel, grad: *const [PARAMS]f32, rate: f32) void {
-    k.t += 1;
-    const t: f32 = @floatFromInt(k.t);
-    const c1 = 1 - std.math.pow(f32, B1, t);
-    const c2 = 1 - std.math.pow(f32, B2, t);
-    inline for (0..PARAMS) |i| {
-        k.m1[i] = B1 * k.m1[i] + (1 - B1) * grad[i];
-        k.m2[i] = B2 * k.m2[i] + (1 - B2) * grad[i] * grad[i];
-        k.p[i] -= rate * (k.m1[i] / c1) / (@sqrt(k.m2[i] / c2) + 1e-8);
-    }
-}
-
-/// A held-out probe set: points from their own stream, never observed.
-pub const Probes = struct { p: [][3]f32, y: []f32 };
-
-pub fn probesOf(gpa: std.mem.Allocator, tp: TruthParams, seed: u64, n: usize) !Probes {
-    var s = rng.Stream.region(seed, 0x5052_4F42, 0); // "PROB"
-    const p = try gpa.alloc([3]f32, n);
-    errdefer gpa.free(p);
-    const y = try gpa.alloc(f32, n);
-    errdefer gpa.free(y);
-    for (p, y) |*pt, *ty| {
-        pt.* = .{ s.unit(), s.unit(), s.unit() };
-        ty.* = truthOf(tp, pt.*);
-    }
-    return .{ .p = p, .y = y };
-}
-
-pub fn probes(gpa: std.mem.Allocator, seed: u64, n: usize) !Probes {
-    return probesOf(gpa, .{}, seed, n);
-}
-
-// ── Gates ─────────────────────────────────────────────────────────────
+// ── The campaign's instantiation ──────────────────────────────────────
 //
-// Every threshold these read is in `thresholds.zig`, was written before
-// the first exemplar streamed, and comes out of `tools/marl_predict.py`.
-// Every gate names the mutation it was paid for.
+// One channel, which is what every gate from G17 to G29 measures and what
+// `marl-run` drives. These aliases are why widening the kernel did not
+// touch a single call site: `marl.Model` still names a type, it just names
+// `Marl(1).Model` now.
+
+pub const Scalar = Marl(1);
+pub const PARAMS = Scalar.PARAMS;
+pub const Kernel = Scalar.Kernel;
+pub const Region = Scalar.Region;
+pub const Event = Scalar.Event;
+pub const Stats = Scalar.Stats;
+pub const Model = Scalar.Model;
+pub const Donor = Scalar.Donor;
+pub const RegionSched = Scalar.RegionSched;
+pub const Hierarchy = Scalar.Hierarchy;
+pub const gradOne = Scalar.gradOne;
+pub const adam = Scalar.adam;
+pub const Probes = Scalar.Probes;
+pub const probesOf = Scalar.probesOf;
+pub const probes = Scalar.probes;
 
 const builtin = @import("builtin");
 const testing = std.testing;
@@ -2418,7 +2620,7 @@ test "G17 (b) the learning gradient is the finite difference's, for a centre, a 
             var g: [PARAMS]f32 = undefined;
             for (ps, ts) |p, t| {
                 const e = kk.p[W] * gaussian(kk.shape(), p) - t;
-                if (!gradOne(kk, p, e, &g)) continue;
+                if (!gradOne(kk, p, .{e}, &g)) continue;
                 inline for (0..PARAMS) |i| sum[i] += g[i];
             }
             return sum;
@@ -2513,10 +2715,10 @@ test "G17 (d) a learning event changes NOTHING beyond the proved reach bound —
     defer gpa.free(pr.y);
     const before = try gpa.alloc(f32, n);
     defer gpa.free(before);
-    for (pr.p, before) |p, *b| b.* = try m.predict(p);
+    for (pr.p, before) |p, *b| b.* = (try m.predict(p))[0];
 
     const x = [3]f32{ 0.30, 0.42, 0.46 };
-    const ev = try m.observe(x, truth(x));
+    const ev = try m.observe(x, .{truth(x)});
     try testing.expect(ev.learned); // the gate must actually have learned something
 
     const bound = thresholds.marl0ReachBound(m.h, opts.steps, opts.trust);
@@ -2531,7 +2733,7 @@ test "G17 (d) a learning event changes NOTHING beyond the proved reach bound —
     var observed: f32 = 0;
     var moved: usize = 0;
     for (pr.p, before) |p, b| {
-        const a = try m.predict(p);
+        const a = (try m.predict(p))[0];
         const d = @max(@abs(p[0] - x[0]), @max(@abs(p[1] - x[1]), @abs(p[2] - x[2])));
         if (d > bound) beyond_exists += 1;
         if (a != b) {
@@ -2952,11 +3154,11 @@ test "G19 (a) the residual hierarchy's semantics: the child holds exactly what t
     var i: usize = 0;
     while (i < 500) : (i += 1) {
         const q = [3]f32{ st.unit(), st.unit(), st.unit() };
-        const p = try h.parent.predict(q);
-        const c = try h.child.predict(q);
-        try testing.expectEqual(@as(u32, @bitCast(p + c)), @as(u32, @bitCast(try h.predict(q))));
-        try testing.expectEqual(@as(u32, @bitCast(h.parent.predictAll(q))), @as(u32, @bitCast(p)));
-        try testing.expectEqual(@as(u32, @bitCast(h.child.predictAll(q))), @as(u32, @bitCast(c)));
+        const p = (try h.parent.predict(q))[0];
+        const c = (try h.child.predict(q))[0];
+        try testing.expectEqual(@as(u32, @bitCast(p + c)), @as(u32, @bitCast((try h.predict(q))[0])));
+        try testing.expectEqual(@as(u32, @bitCast(h.parent.predictAll(q)[0])), @as(u32, @bitCast(p)));
+        try testing.expectEqual(@as(u32, @bitCast(h.child.predictAll(q)[0])), @as(u32, @bitCast(c)));
     }
 
     // And the child spends nothing where there is nothing — the chain of
@@ -3617,7 +3819,6 @@ test "G26 (a) the capacity a moved world leaves behind is LOAD-BEARING, so kerne
     std.debug.print("\n  G26 (a): silencing {d} pre-move kernels now outside the band costs {d:.5} → {d:.5} ({d:.2}×); their mean |w| {d:.4} against {d:.4} for kernels born since ({s})\n", .{ n, before, after, after / before, st.w_obsolete, st.w_new, @tagName(builtin.mode) });
 }
 
-
 // G26 (b) WAS a precision gate on unrefinement — "of the regions it
 // retires, the share the structure has left" — and it was withdrawn
 // before it shipped, because it could not fail.
@@ -3684,7 +3885,7 @@ test "G28 a transplant is inert at the moment it lands: the geometry arrives, th
     var pts: [300][3]f32 = undefined;
     for (&pts, &before) |*p, *b| {
         p.* = .{ st.unit(), st.unit(), st.unit() };
-        b.* = try h.predict(p.*);
+        b.* = (try h.predict(p.*))[0];
     }
     var donor: u32 = 0;
     while (donor < h.parent.regions.len and !h.refined[donor]) donor += 1;

@@ -96,6 +96,9 @@ const usage =
     \\                      static biased, and three schedules
     \\  --marble            MARL-11: the 2×2 against rbf.fit's batch Adam bake
     \\                      on a sheet-vein field — the first external baseline
+    \\  --marble9           MARL-12: the same arms at NINE channels on a sheet
+    \\                      carrying two materials — what sharing one geometry
+    \\                      across nine weights costs, and what it saves
     \\  --marble-pool N     distinct exemplars, MARL's stream AND rbf's pool (32768)
     \\  --marble-iters N    rbf's batch iterations (600)
     \\  --birth-scale F     the evidence cell's edge, in coverage spacings (2)
@@ -124,6 +127,7 @@ const Opts = struct {
     repeat: u32 = 0,
     cycle: bool = false,
     marble: bool = false,
+    marble9: bool = false,
     mo: marble_mod.ArmOptions = .{},
     /// Whether `--responsibility` was actually passed. The marble's arms
     /// are a PRE-REGISTERED configuration at G24's radius of 3, and
@@ -238,6 +242,8 @@ fn parse(args: []const []const u8) !?Opts {
             o.drift_at = try std.fmt.parseInt(u64, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--marble")) {
             o.marble = true;
+        } else if (std.mem.eql(u8, a, "--marble9")) {
+            o.marble9 = true;
         } else if (std.mem.eql(u8, a, "--marble-pool")) {
             o.mo.pool = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--marble-iters")) {
@@ -297,6 +303,7 @@ pub fn main() !void {
         return;
     };
 
+    if (o.marble9) return marbleNine(gpa, o);
     if (o.marble) return marbleArms(gpa, o);
     if (o.arms) return arms(gpa, o);
     if (o.repeat > 0) return driftRepeat(gpa, o);
@@ -905,11 +912,11 @@ fn interference(model: *marl.Model, gpa: std.mem.Allocator, out: anytype) !void 
     defer gpa.free(pr.y);
     const before = try gpa.alloc(f32, n);
     defer gpa.free(before);
-    for (pr.p, before) |p, *b| b.* = try model.predict(p);
+    for (pr.p, before) |p, *b| b.* = (try model.predict(p))[0];
 
     // One event, at a point the model has certainly seen structure near.
     const x = [3]f32{ 0.30, 0.42, 0.46 };
-    const ev = try model.observe(x, marl.truth(x));
+    const ev = try model.observe(x, .{marl.truth(x)});
 
     const bound = th.marl0ReachBound(model.h, model.opts.steps, model.opts.trust);
     var max_beyond: f32 = 0;
@@ -918,7 +925,7 @@ fn interference(model: *marl.Model, gpa: std.mem.Allocator, out: anytype) !void 
     var buckets: [12]f32 = [_]f32{0} ** 12;
     var counts: [12]u32 = [_]u32{0} ** 12;
     for (pr.p, before) |p, b| {
-        const a = try model.predict(p);
+        const a = (try model.predict(p))[0];
         const d = @max(@abs(p[0] - x[0]), @max(@abs(p[1] - x[1]), @abs(p[2] - x[2])));
         const diff = @abs(a - b);
         const bi: usize = @min(11, @as(usize, @intFromFloat(d * 12)));
@@ -957,7 +964,7 @@ fn writeSlice(model: *marl.Model, path: []const u8, z: f32, res: u32, out: anyty
                 z,
             };
             const t = marl.truth(p);
-            const y = try model.predict(p);
+            const y = (try model.predict(p))[0];
             try w.print("{d:.6},{d:.6},{d:.6},{d:.6},{d:.6}\n", .{ p[0], p[1], t, y, @abs(t - y) });
         }
     }
@@ -988,7 +995,7 @@ fn writePgms(model: *marl.Model, gpa: std.mem.Allocator, prefix: []const u8, z: 
             };
             const idx = @as(usize, j) * res + i;
             const t = marl.truth(p);
-            const y = try model.predict(p);
+            const y = (try model.predict(p))[0];
             // Signed fields drawn about mid grey; the error drawn from black.
             t_v[idx] = 0.5 + t;
             p_v[idx] = 0.5 + y;
@@ -1031,7 +1038,7 @@ test "the checkpoint ladder is 1, 2, 5 per decade and never stalls" {
 /// `loam-run --rbf-arms`.
 fn marbleArms(gpa: std.mem.Allocator, o: Opts) !void {
     const out = std.io.getStdOut().writer();
-    var vol = try marble_mod.sheetVolume(gpa, marble_mod.FIXTURE_RES, marble_mod.FIXTURE_EXTENT);
+    var vol = try marble_mod.sheetVolume(gpa, marble_mod.FIXTURE_RES, marble_mod.FIXTURE_EXTENT, 0);
     defer vol.deinit(gpa);
 
     var mo = o.mo;
@@ -1046,7 +1053,7 @@ fn marbleArms(gpa: std.mem.Allocator, o: Opts) !void {
     try out.print("  {d} distinct exemplars each side; rbf re-reads them for {d} batches of {d}\n", .{ mo.pool, mo.iterations, mo.batch });
     try out.print("  MARL: regions {d}³, budget {d}, θ {d:.3}, coverage {d:.2}, responsibility {d:.2}\n\n", .{ mo.m.regions, mo.m.budget, mo.m.threshold, mo.m.coverage, mo.m.responsibility });
 
-    const arms_out = try marble_mod.run(gpa, &vol, marble_mod.FIXTURE_VEIN, mo);
+    const arms_out = try marble_mod.run(1, gpa, &vol, marble_mod.FIXTURE_VEIN, mo);
     try marble_mod.report(out, arms_out);
 
     try out.print("\n  pre-registered (tools/marl11_predict.py, before the run):\n", .{});
@@ -1066,7 +1073,57 @@ fn marbleArms(gpa: std.mem.Allocator, o: Opts) !void {
     for ([_]u32{ 1, 4, 16, 64 }) |mult| {
         var m2 = mo;
         m2.pool = mo.pool * mult;
-        const arm = try marble_mod.blindArm(gpa, &vol, marble_mod.FIXTURE_VEIN, m2);
+        const arm = try marble_mod.blindArm(1, gpa, &vol, marble_mod.FIXTURE_VEIN, m2);
         try out.print("    {d:>10} {d:>8} {d:>10.5} {d:>7.2} {d:>8.2}\n", .{ arm.exemplars, arm.kernels, arm.rms_band, arm.concentration, arm.seconds });
     }
+}
+
+// ── MARL-12: nine channels on one geometry ────────────────────────────
+
+/// The widened kernel put to the question it was widened for
+/// (`tools/marl12_predict.py`): what does sharing ONE centre and ONE shape
+/// across nine weights cost, and what does it save?
+///
+/// The fixture is MARL-11's sheet with materials on it — two of them,
+/// split across x, because with a single material every channel is the
+/// blend times a constant, the nine are exactly collinear, and a shared
+/// basis is free by construction. A fixture that can only agree is not a
+/// fixture.
+fn marbleNine(gpa: std.mem.Allocator, o: Opts) !void {
+    const out = std.io.getStdOut().writer();
+    var vol = try marble_mod.sheetVolume(gpa, marble_mod.FIXTURE_RES, marble_mod.FIXTURE_EXTENT, loam.bark.ALL_COLUMNS);
+    defer vol.deinit(gpa);
+
+    var mo = o.mo;
+    const resp = mo.m.responsibility;
+    mo.m = o.m;
+    if (!o.resp_set) mo.m.responsibility = resp;
+    mo.seed = o.m.seed;
+    mo.verbose = true;
+    mo.normalise = true; // emissive reaches 6 where the blend reaches 1
+
+    try out.print("marl-run — MARL-12, nine channels, {s}\n", .{@tagName(builtin.mode)});
+    try out.print("  fixture {d}³ over extent {d:.0}, vein {d:.2}, TWO materials split across x\n", .{ marble_mod.FIXTURE_RES, marble_mod.FIXTURE_EXTENT, marble_mod.FIXTURE_VEIN });
+    try out.print("  {d} distinct exemplars each side; rbf re-reads them for {d} batches of {d}\n\n", .{ mo.pool, mo.iterations, mo.batch });
+
+    const nine = try marble_mod.run(9, gpa, &vol, marble_mod.FIXTURE_VEIN, mo);
+    try marble_mod.report(out, nine);
+
+    // The sharing ratio: the SAME learner, the same stream, the same
+    // fixture, at one channel and at nine. MARL against MARL, which is
+    // the only way to isolate what the sharing did — an rbf arm here
+    // would be fitting nine on both sides and could not tell us.
+    var one_o = mo;
+    one_o.normalise = false; // at one channel the scale is the blend's own
+    const c1 = try marble_mod.blindArm(1, gpa, &vol, marble_mod.FIXTURE_VEIN, one_o);
+    const c9 = try marble_mod.blindArm(9, gpa, &vol, marble_mod.FIXTURE_VEIN, mo);
+    try out.print("\n  sharing — the blend's own error, learned alone against learned with eight others\n", .{});
+    try out.print("    {s:>10} {s:>9} {s:>11} {s:>9} {s:>9}\n", .{ "channels", "kernels", "RMS blend", "floats/k", "bytes" });
+    for ([_]struct { c: usize, a: marble_mod.Arm }{ .{ .c = 1, .a = c1 }, .{ .c = 9, .a = c9 } }) |r| {
+        try out.print("    {d:>10} {d:>9} {d:>11.5} {d:>9} {d:>9}\n", .{ r.c, r.a.kernels, r.a.rms_c0, 9 + r.c, r.a.kernels * (9 + r.c) * 4 });
+    }
+    try out.print("    K(9)/K(1)  {d:.3}   predicted ≤ {d:.2}\n", .{ @as(f32, @floatFromInt(c9.kernels)) / @as(f32, @floatFromInt(c1.kernels)), th.MARL12_COUNT });
+    try out.print("    blend RMS  {d:.3}   predicted ≤ {d:.2}\n", .{ c9.rms_c0 / c1.rms_c0, th.MARL12_SHARING });
+    try out.print("    nine channels packed cost {d} floats a kernel against {d} for nine separate scalar models ({d:.2}x)\n", .{ 9 + @as(usize, 9), 9 * 10, @as(f32, 18) / 90 });
+    try out.print("    D/B at nine {d:.3}   predicted ≤ {d:.2}\n", .{ nine.d.rms_band / nine.b.rms_band, th.MARL12_ONLINE_COST });
 }
