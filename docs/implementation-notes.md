@@ -5236,6 +5236,110 @@ zero-background. And a **noise-aware birth test**, because the third door
 is open at every rate and 30% of the population at one ray a sample is
 capacity bought on noise.
 
+## MARL-14 — distillation, and the first time the campaign has had a free oracle (Tuesday 2026-09-08)
+
+Christian's idea, in his words: "after the MARL is built, you create
+another MARL and sample from the first one and inject into the second one.
+If you do it smartly it might be possible to significantly reduce the
+number of kernels ... for many applications it doesn't have to be perfect,
+an approximation is fine. And if we have the master copy, we can distill to
+our hearts content."
+
+It lands on two things MARL-13 had measured hours earlier, which is why it
+was worth running rather than reasoning about. **A teacher is NOISELESS**,
+so sampling it closes all three of MARL-13's doors at once with no new
+mechanism — including the topology door, which no learning rate can close.
+And **a teacher is UNLIMITED**, so the student is the first learner in this
+campaign that is not evidence-starved, which was MARL-11's binding
+constraint.
+
+It must not be confused with MARL-8. That phase transplanted a retiring
+region's KERNELS and failed, concluding geometry is "cheap to acquire
+locally and worthless imported". A student imports no geometry: it starts
+empty and discovers its own topology from a cheap oracle. The two findings
+do not touch.
+
+**The student is scored against the TRUE field throughout, never against
+its teacher** — scored against the teacher it would be measuring how well
+it copies a copy, a number that improves as both get worse.
+
+### All four pre-registered numbers held
+
+Teacher: MARL-13's shell arm — 3 513 kernels, RMS 0.13248, 137.2 KiB,
+6 573 ns a lookup. Students get 200 000 samples of it.
+
+| θ | kernels | RMS | K/K_t | RMS/RMS_t |
+|---|---|---|---|---|
+| 0.020 (the teacher's) | 3 292 | 0.14016 | 0.937 | 1.058 |
+| 0.050 | 3 063 | 0.13999 | 0.872 | 1.057 |
+| 0.100 | 2 512 | 0.14456 | 0.715 | 1.091 |
+| 0.200 | 1 612 | 0.15109 | **0.459** | **1.141** |
+
+**(1) FREE, at 0.937** against a ceiling of 0.95. Copying at matched
+options sheds 6% of the population for 5.8% of the accuracy — and that is
+the capacity MARL-13 measured as bought on noise, which a clean teacher
+cannot sell.
+
+**(2) THE TRADE, at 1.141** against a ceiling of 1.5. **Halving the
+population costs fourteen per cent of the accuracy.** With a noisy field
+raising θ is dangerous, because a residual above it might be a sampling
+wobble — MARL-13's third door. With an exact teacher every residual above θ
+is real structure, so θ stops being a risk and becomes a clean accuracy
+dial. That is "it doesn't have to be perfect" turned into a mechanism.
+
+**(3) THE COARSE BASIS, at 4.32×** against a floor of 3.0. `regions` 6 → 3
+doubles every kernel, and a shell is nearly two-dimensional so the saving
+goes as the square: **814 kernels at 31.8 KiB against the teacher's 3 513
+at 137.2**, for RMS 0.16309 against 0.13248. A quarter of the memory for a
+quarter more error.
+
+**(4) GENERATION LOSS DOES NOT COMPOUND, at 0.98** against a ceiling of
+1.0. A→B costs 1.058 and B→C costs 1.036 — the second copy is CHEAPER than
+the first. The argument was structural and it held: B is a sum of
+anisotropic gaussians, which is exactly the student's hypothesis class,
+and the truth is not. The first copy pays a representation cost; the second
+is fitting something it can represent perfectly given enough kernels. So
+"distill to our hearts content" is sound — the sequence converges rather
+than decaying.
+
+### The part that was not pre-registered, and is the best of it
+
+MARL-13 left the packed set beating a dense grid on the shell by 0.912 at
+roughly equal bytes. The question distillation actually raises is what
+happens when the bytes stop being equal because one side got four times
+smaller:
+
+| | RMS | KiB |
+|---|---|---|
+| distilled student, regions 3 | **0.16309** | 31.8 |
+| dense grid at the same size (20³) | 0.18580 | 31.3 |
+
+**0.878** — better than the teacher's own 0.912. **The learned field's
+advantage over the volume texture WIDENS as the memory budget shrinks**,
+because a grid's error is set by its cell size and halving memory costs it
+a cube root of resolution, while a packed set simply places its kernels
+where the field actually varies.
+
+Which is the sentence this idea bought:
+
+    Build once at full fidelity from the expensive, noisy source; distil
+    to whatever the budget allows. The copy is cheaper to make than the
+    original, it can be made as approximate as the application permits,
+    and copying it again costs less than copying it once.
+
+### What it costs, honestly
+
+Sampling a teacher is one 27-region gather — 6 573 ns here — against an AO
+estimate's 320 marched fetches. Cheaper, but only about fivefold, and not
+the orders of magnitude "free oracle" suggests: the gather is expensive
+precisely when the teacher is large, which is when you most want to distil
+it. For a proxy-mesh or smoothing use that hardly matters, because the
+teacher is built once offline and the student is the shipped asset.
+
+G34 costs about 25 s of suite. With G31's 14 and G33's 25 the suite is
+approaching four minutes, and the next phase that wants a gate this size
+should be asked to justify it rather than assumed to be entitled to it.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

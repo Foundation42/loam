@@ -61,6 +61,7 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -- --marble9                    # MARL-12: NINE channels on one geometry — two materials, so the sharing can cost something
     zig build test -Dtest-filter="G32"             # MARL-12's gate; tools/marl12_predict.py. The widening's own gate is the suite being UNCHANGED
     zig build test -Dtest-filter="G33"             # MARL-13: the occlusion cache — the first NOISY field; tools/marl13_predict.py, two of whose three were REFUTED
+    zig build test -Dtest-filter="G34"             # MARL-14: DISTILLATION — sample a built model to train a smaller one; all four numbers HELD
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -308,6 +309,34 @@ Honest costs: a cache lookup is 6 651 ns against a texture fetch's 13 — the
 27-region gather is exact, not free, and at 9 334 kernels over 216 regions
 "local" means ~1 166 kernels. G33 costs ~25 s of suite, most of it the
 4 096-ray reference, which stays because the headline turns on 0.912.
+
+MARL-14 is Christian's DISTILLATION idea: sample a built model to train
+another. A teacher is two things no field here has ever been — NOISELESS,
+which closes all three of MARL-13's doors at once including the topology
+one no rate can close, and UNLIMITED, which lifts MARL-11's binding
+constraint. (Not MARL-8: a student imports no geometry, it discovers its
+own topology from a cheap oracle.) The student is scored against the TRUE
+field throughout, never against its teacher.
+
+All four numbers held. Copying at matched options is a FREE 6% of the
+population for 5.8% of the accuracy — the capacity MARL-13 measured as
+bought on noise, which a clean teacher cannot sell. **Halving the
+population costs 14% of the accuracy**, because with an exact teacher the
+surprise threshold stops being a risk and becomes a clean accuracy dial.
+A coarser basis (`regions` 6 → 3) gives **4.32× fewer kernels — 814 at
+31.8 KiB against 3 513 at 137.2** — for a quarter more error. And
+GENERATION LOSS DOES NOT COMPOUND: A→B costs 1.058, B→C costs 1.036, the
+second copy CHEAPER than the first, because B is a sum of anisotropic
+gaussians and that is exactly the student's hypothesis class where the
+truth is not.
+
+The unregistered part is the best of it. Against a dense grid AT THE
+STUDENT'S SIZE the distilled model scores **0.878**, better than the
+teacher's own 0.912: **the learned field's advantage over a volume texture
+WIDENS as memory shrinks**, because a grid's error is set by its cell size
+and halving memory costs it a cube root of resolution. So: build once at
+full fidelity from the expensive noisy source, then distil to whatever the
+budget allows.
 
 ## The ledger
 

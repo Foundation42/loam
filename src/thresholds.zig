@@ -1594,4 +1594,42 @@ pub const MARL13_RATE: f32 = 2.0;
 pub const MARL13_SHELL: f32 = 0.912;
 pub const MARL13_TEXTURE: f32 = 1.0;
 
+// ── MARL-14 (distillation: resampling the solution) ──────────────────
+//
+// From `tools/marl14_predict.py`. Christian's idea: once a model is built,
+// sample IT to train another. A teacher is two things no field in this
+// campaign has ever been — NOISELESS, which closes all three of MARL-13's
+// doors at once, and UNLIMITED, which lifts MARL-11's binding constraint.
+// The student is scored against the TRUE field throughout, never against
+// its teacher.
+
+/// G34 (1): student kernels over teacher kernels, at matched options.
+/// PROPOSED at 0.95 — a modest FREE saving, being the capacity MARL-13
+/// measured as bought on noise, which a clean teacher cannot sell.
+pub const MARL14_FREE: f32 = 0.95;
+
+/// G34 (2): the RMS cost of HALVING the population, by raising the
+/// surprise threshold. PROPOSED at 1.5. With a noisy field a high θ is
+/// dangerous — a residual above it might be a sampling wobble, which is
+/// MARL-13's third door — but with an exact teacher every residual above θ
+/// is real structure, so θ becomes a clean accuracy dial. This is "it
+/// doesn't have to be perfect" as a mechanism rather than a hope.
+pub const MARL14_TRADE: f32 = 1.5;
+
+/// G34 (3): teacher kernels over student kernels at `regions` 3.
+/// PROPOSED as a FLOOR at 3.0. σ_max = h/√CUTOFF, so halving the region
+/// count doubles every kernel, and tiling a nearly two-dimensional shell
+/// with balls of twice the radius needs about four times fewer. Three
+/// rather than four because the shell has thickness and the clamp will not
+/// let a kernel's cutoff box exceed h on any axis.
+pub const MARL14_COARSE: f32 = 3.0;
+
+/// G34 (4): the second copy's cost over the first's, A→B→C.
+/// PROPOSED as a CEILING at 1.0 — generation loss must not compound. The
+/// argument is structural: B is a sum of anisotropic gaussians, which is
+/// EXACTLY the student's hypothesis class, and the truth is not. A→B pays
+/// a representation cost; B→C is fitting something it can represent
+/// perfectly given enough kernels.
+pub const MARL14_GENERATION: f32 = 1.0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

@@ -738,3 +738,191 @@ test "G33 (d) a learned sparse field against a giant volume texture, at equal by
     try testing.expect(sm.query_ns < 20_000);
 }
 
+
+// ── MARL-14: distillation ────────────────────────────────────────────
+//
+// Christian's idea: once a model is built, sample IT to train another.
+// `tools/marl14_predict.py` has the reasoning and the numbers; the short
+// version is that a teacher is two things no field in this campaign has
+// ever been — NOISELESS, which closes all three of MARL-13's doors at
+// once, and UNLIMITED, which lifts MARL-11's binding constraint.
+//
+// Not to be confused with MARL-8. That phase transplanted a retiring
+// region's KERNELS into a new region and failed, concluding geometry is
+// "cheap to acquire locally and worthless imported". A student imports no
+// geometry: it starts empty and discovers its own topology from a cheap
+// oracle. The two findings do not touch.
+
+/// A trained model and what it cost to make.
+pub const Trained = struct {
+    model: marl.Model,
+    samples: u64,
+    seconds: f64,
+    rms: f32 = 0,
+    query_ns: f64 = 0,
+
+    pub fn deinit(self: *Trained) void {
+        self.model.deinit();
+    }
+
+    pub fn kernels(self: *const Trained) u32 {
+        return @intCast(self.model.kernels.items.len);
+    }
+
+    pub fn bytes(self: *const Trained) usize {
+        return self.model.kernels.items.len * marl.PARAMS * @sizeOf(f32);
+    }
+};
+
+/// Score a model against the TRUE probes — never against its teacher.
+/// Scored against a teacher, a student would be measuring how well it
+/// copies a copy, a number that improves as both get worse.
+fn score(t: *Trained, extent: f32, invert: bool, pr: Probes) void {
+    const Reader = struct {
+        m: *marl.Model,
+        e: f32,
+        fn at(self: @This(), x: [3]f32) f32 {
+            return (self.m.predict(.{ x[0] / self.e, x[1] / self.e, x[2] / self.e }) catch unreachable)[0];
+        }
+    };
+    const rd = Reader{ .m = &t.model, .e = extent };
+    var qt = std.time.Timer.start() catch unreachable;
+    t.rms = if (invert) rmsInverted(pr, rd) else rmsOf(pr, rd);
+    t.query_ns = @as(f64, @floatFromInt(qt.read())) / @as(f64, @floatFromInt(pr.x.len));
+}
+
+/// Train from the EXPENSIVE field — the teacher's own apprenticeship.
+pub fn teach(gpa: std.mem.Allocator, vol: *const bark.Volume, o: Options, pr: Probes) !Trained {
+    var t = Trained{ .model = try marl.Model.init(gpa, o.m), .samples = 0, .seconds = 0 };
+    errdefer t.deinit();
+    var st = rng.Stream.region(o.seed, 0x5445_4143, 0); // "TEAC"
+    var ao = o.ao;
+    ao.rays = o.rays;
+    const inv = 1 / vol.extent;
+    t.samples = o.samples orelse (o.ray_budget / @max(1, o.rays));
+    var timer = try std.time.Timer.start();
+    var i: u64 = 0;
+    while (i < t.samples) : (i += 1) {
+        const q = drawQuery(vol, o.surface_band, &st);
+        const raw = aoAt(vol, ao, q, &st);
+        const y = if (o.invert) 1 - raw else raw;
+        _ = try t.model.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, .{y});
+    }
+    t.seconds = @as(f64, @floatFromInt(timer.read())) / 1e9;
+    score(&t, vol.extent, o.invert, pr);
+    return t;
+}
+
+/// Train from ANOTHER MODEL. The teacher answers exactly, anywhere, as
+/// often as asked — so the student is the first learner in this campaign
+/// that is neither noise-limited nor evidence-starved.
+///
+/// `sopts` is the student's own configuration and is deliberately free to
+/// differ: a coarser region grid gives it bigger kernels and fewer of
+/// them, and a higher surprise threshold tells it how good an
+/// approximation has to be. With a noisy field that second dial is
+/// dangerous, because a residual above θ might be a sampling wobble; with
+/// an exact teacher every residual above θ is real structure.
+pub fn distil(gpa: std.mem.Allocator, teacher: *marl.Model, vol: *const bark.Volume, o: Options, sopts: marl.Options, n: u64, pr: Probes) !Trained {
+    var t = Trained{ .model = try marl.Model.init(gpa, sopts), .samples = n, .seconds = 0 };
+    errdefer t.deinit();
+    var st = rng.Stream.region(o.seed ^ 0x51, 0x4449_5354, 0); // "DIST"
+    const inv = 1 / vol.extent;
+    var timer = try std.time.Timer.start();
+    var i: u64 = 0;
+    while (i < n) : (i += 1) {
+        // Drawn from the SAME query distribution the teacher was trained
+        // on. A student sampled somewhere else would be being asked about
+        // a region its teacher never learned, and would faithfully
+        // reproduce the teacher's ignorance.
+        const q = drawQuery(vol, o.surface_band, &st);
+        const x = [3]f32{ q[0] * inv, q[1] * inv, q[2] * inv };
+        const y = (try teacher.predict(x))[0];
+        _ = try t.model.observe(x, .{y});
+    }
+    t.seconds = @as(f64, @floatFromInt(timer.read())) / 1e9;
+    score(&t, vol.extent, o.invert, pr);
+    return t;
+}
+
+test "G34 distillation: a noiseless unlimited teacher, and what an approximation is allowed to cost" {
+    // Christian's idea, run. The student is scored against the TRUE field
+    // throughout — never against its teacher, which would measure how well
+    // it copies a copy.
+    const gpa = testing.allocator;
+    var vol = try groveVolume(gpa, GROVE_RES, GROVE_EXTENT);
+    defer vol.deinit(gpa);
+    var o = Options{ .ray_budget = 2_000_000, .probes = 512, .surface_band = 1.0, .invert = true };
+    o.m.rate_w = 0.05;
+    var pr = try probesOf(gpa, &vol, o.ao, o.probes, o.seed, o.surface_band);
+    defer pr.deinit(gpa);
+
+    var t = try teach(gpa, &vol, o, pr);
+    defer t.deinit();
+    const N: u64 = 200_000;
+
+    // (1) The same options, a clean teacher. What falls away is the
+    // capacity MARL-13 measured as bought on noise.
+    var s0 = try distil(gpa, &t.model, &vol, o, o.m, N, pr);
+    defer s0.deinit();
+    const free = @as(f32, @floatFromInt(s0.kernels())) / @as(f32, @floatFromInt(t.kernels()));
+
+    // (2) The accuracy dial. θ gates learning events and a birth needs
+    // one, so with an exact teacher θ is how good the copy has to be.
+    std.debug.print("\n  G34: teacher {d} kernels, RMS {d:.5} ({d:.1} KiB, {d:.0} ns a lookup)\n", .{ t.kernels(), t.rms, @as(f64, @floatFromInt(t.bytes())) / 1024.0, t.query_ns });
+    std.debug.print("  G34: {s:>10} {s:>9} {s:>10} {s:>8} {s:>9}\n", .{ "θ", "kernels", "RMS", "K/K_t", "RMS/RMS_t" });
+    std.debug.print("  G34: {d:>10.3} {d:>9} {d:>10.5} {d:>8.3} {d:>9.3}   (the teacher's own θ)\n", .{ o.m.threshold, s0.kernels(), s0.rms, free, s0.rms / t.rms });
+    var halved: ?Trained = null;
+    defer if (halved) |*h| h.deinit();
+    for ([_]f32{ 0.05, 0.10, 0.20 }) |th| {
+        var so = o.m;
+        so.threshold = th;
+        var s = try distil(gpa, &t.model, &vol, o, so, N, pr);
+        std.debug.print("  G34: {d:>10.3} {d:>9} {d:>10.5} {d:>8.3} {d:>9.3}\n", .{ th, s.kernels(), s.rms, @as(f32, @floatFromInt(s.kernels())) / @as(f32, @floatFromInt(t.kernels())), s.rms / t.rms });
+        if (halved == null and s.kernels() * 2 <= t.kernels()) {
+            halved = s;
+        } else s.deinit();
+    }
+
+    // (3) A coarser basis: fewer regions is bigger kernels and fewer of
+    // them, and a shell is nearly two-dimensional so the saving should go
+    // as the square rather than the cube.
+    var co = o.m;
+    co.regions = 3;
+    var coarse = try distil(gpa, &t.model, &vol, o, co, N, pr);
+    defer coarse.deinit();
+    const shrink = @as(f32, @floatFromInt(t.kernels())) / @as(f32, @floatFromInt(coarse.kernels()));
+    std.debug.print("  G34: regions 6 → 3 gives {d} kernels, RMS {d:.5} — {d:.2}× fewer (≥ {d:.1} predicted), {d:.1} KiB against {d:.1}\n", .{
+        coarse.kernels(), coarse.rms, shrink, thresholds.MARL14_COARSE,
+        @as(f64, @floatFromInt(coarse.bytes())) / 1024.0, @as(f64, @floatFromInt(t.bytes())) / 1024.0,
+    });
+
+    // (4) Generation loss. B is a sum of anisotropic gaussians, which is
+    // EXACTLY the student's hypothesis class; the truth is not. So the
+    // second copy should cost less than the first.
+    var s2 = try distil(gpa, &s0.model, &vol, o, o.m, N, pr);
+    defer s2.deinit();
+    const first = s0.rms / t.rms;
+    const second = s2.rms / s0.rms;
+    std.debug.print("  G34: A→B costs {d:.3}, B→C costs {d:.3} — the second copy is {d:.2}× the first (≤ {d:.1} predicted); C has {d} kernels\n", .{ first, second, second / first, thresholds.MARL14_GENERATION, s2.kernels() });
+
+    // (5) And the thing MARL-13 lost to. The teacher beat a dense grid on
+    // the shell by 0.912 at roughly equal bytes; the question distillation
+    // actually raises is what happens when the bytes are no longer equal
+    // because one side got four times smaller.
+    const cg = try gridArm(gpa, &vol, o, coarse.bytes(), pr, "grid at the student's size");
+    std.debug.print("  G34: against a dense grid AT THE STUDENT'S SIZE — student {d:.5} at {d:.1} KiB, grid {d:.5} at {d:.1} KiB ({d}³ cells): {d:.3}\n", .{
+        coarse.rms, @as(f64, @floatFromInt(coarse.bytes())) / 1024.0,
+        cg.rms,     @as(f64, @floatFromInt(cg.bytes)) / 1024.0, cg.grid_res,
+        coarse.rms / cg.rms,
+    });
+    try testing.expect(coarse.rms < cg.rms);
+
+    try testing.expect(free <= thresholds.MARL14_FREE);
+    if (halved) |h| {
+        std.debug.print("  G34: halving the population costs {d:.3}× the RMS (≤ {d:.1} predicted): {d} kernels at RMS {d:.5}\n", .{ h.rms / t.rms, thresholds.MARL14_TRADE, h.kernels(), h.rms });
+        try testing.expect(h.rms / t.rms <= thresholds.MARL14_TRADE);
+    } else return error.NoThresholdHalvedThePopulation;
+    try testing.expect(shrink >= thresholds.MARL14_COARSE);
+    try testing.expect(second / first <= thresholds.MARL14_GENERATION);
+}
