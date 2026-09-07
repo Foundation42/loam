@@ -55,6 +55,9 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -- --sharpness 2 --responsibility 3 --drift-mode cycle --drift-repeat 12   # MARL-9: revisiting a known world gets cheap
     zig build marl -- --sharpness 2 --responsibility 3 --drift-mode walk  --drift-repeat 6    # …and a new one never does
     zig build test -Dtest-filter="G29"             # MARL-9's gate; it overturned three earlier phases' readings
+    zig build marl -- --marble                     # MARL-11: the 2×2 against rbf.fit's batch Adam — the first EXTERNAL baseline
+    zig build run -Doptimize=ReleaseSafe -- --scene marble --steps 110 --rbf-arms   # ... the same arms on the REAL marble (a tool run)
+    zig build test -Dtest-filter="G31"             # MARL-11's gates; tools/marl11_predict.py, two of whose four were REFUTED
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -188,6 +191,48 @@ the n-th visit to a world it knows: full price once, a decaying remainder
 after, and it ends more accurate than it began. Not gated — eighty moves
 is ten minutes; reproduce with
 `zig build marl -- --sharpness 2 --responsibility 3 --drift-mode cycle --drift-repeat 80`.
+
+MARL-11 then measured the campaign against something it did not write, for
+the first time in eleven phases: `rbf.fit`'s batch Adam bake, same kernel,
+same cutoff, same evaluator, on a real material field. The bridge is
+`src/marble.zig`, a third file importing both and imported by neither —
+`marl.zig` must not learn what a `bark.Volume` is (that is the field-storage
+half of Christian's split) and `rbf.zig` must not learn what a `marl.Model`
+is (it is cross-repo pinned). MARL itself needed NO changes: `observe(x, y)`
+has always taken an external exemplar.
+
+The design is a 2×2 at matched capacity and equal distinct data, because
+`rbf.fit` carries two oracles MARL has no equivalent of — it seeds centres
+ON veins and draws half its pool FROM them. **Capacity concentration held
+almost exactly** (4.17 measured against 4.11 predicted from the fixture's
+geometry): a real field's matrix is EXACTLY zero, an empty model predicts
+EXACTLY zero, so §8's quiet slab arrives on a field nobody designed to
+have one, and MARL out-places blind batch Adam 4.17 to 1.33. **And it loses
+anyway, by 1.99 — the headline was pre-registered at parity so that it
+could be refuted, and it was.** Both halves of the prediction's reasoning
+were right; what was wrong was assuming PLACEMENT was the binding
+constraint, which ten phases of placement work makes very easy to hold
+without noticing it is an assumption. What binds is EVIDENCE: over a
+64-fold stream the RMS falls 0.143 → 0.051 and crosses both rbf arms while
+concentration does not move. **The online learner is not a worse fitter
+than batch Adam, it is a hungrier one — and it buys KERNELS rather than
+passes to get there** (3 285 against 1 583). One more sighting of MARL-7's
+"capacity is always bought", now in a stationary world.
+
+Two cautions the phase paid for. Raw concentration DOES NOT TRAVEL between
+fields: its ceiling is 1/f, so the real marble's 27.6% band caps it at 3.62
+where the fixture's 9.4% allows 10.67, and MARL's raw 1.88 on the marble is
+a BETTER 0.52 of ceiling than its raw 4.24 on the fixture (`report` grew a
+`/ceiling` column for exactly this). And a `mo.m = o.m` in the harness
+silently ran the first external baseline at the responsibility radius
+MARL-6R had already retired — it cost nothing, which was luck.
+
+The conversion is gated bitwise: a model on the unit cube becomes an
+`rbf.Set` in a volume's units by μ′ = Eμ, L′ = L/E, EXACT in f32 for a
+power-of-two extent because rounding a difference commutes with scaling by
+one. So a MARL model IS the asset a renderer loads, not something close to
+it (G31 a). Still owed before the marble's materials rather than its
+geometry: `w: f32` → `w: [9]f32`.
 
 ## The ledger
 

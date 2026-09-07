@@ -1269,4 +1269,147 @@ pub const MARL10_LOGARITHMIC: f32 = 1.15;
 /// working would look identical on the count alone.
 pub const MARL10_STABLE: f32 = 1.25;
 
+// ── MARL-11 (the marble: the first external baseline) ────────────────
+//
+// From `tools/marl11_predict.py`, which designs the fixture, measures its
+// geometry on the same grid the Zig builds, and derives these four from
+// that geometry and the campaign's own measured constants.
+//
+// Ten phases and every comparison in them was MARL against MARL. `rbf.fit`
+// is the first thing to measure against that this campaign did not write:
+// the same anisotropic Gaussian held bit for bit by G17 (a), the same
+// CUTOFF, the same evaluator, fitted by BATCH ADAM, gated since before
+// `marl.zig` existed. But it does not start level — it seeds centres ON
+// vein voxels and draws half its pool FROM vein voxels, which are
+// hand-built versions of exactly what MARL-3 and MARL-4 spent two phases
+// discovering the model could not do for itself. So the phase is a 2×2
+// with one variable a cell, capacity matched exactly (each rbf arm runs at
+// the count the MARL arm beside it discovered) and DATA held equal (MARL
+// sees each exemplar once; rbf gets the same pool and may re-read it).
+
+/// G31 (a): capacity concentration in the vein band, arm D — kernels on
+/// structure over kernels in all, divided by the band's own volume
+/// fraction. One is a uniform allocator; 1/f is every kernel on structure.
+///
+/// PROPOSED at 3.1, which is 75% of the 4.11 the geometry predicts, and
+/// never below MARL-4's best of 2.50 on the synthetic truth. The mechanism
+/// is that a real field's matrix is EXACTLY zero and an empty model
+/// predicts EXACTLY zero, so surprise there is 0 ≤ θ and nothing is born —
+/// the quiet slab of §8, arriving on a field nobody designed to have one.
+/// The dilution is the model's own tail: a newborn carries the residual as
+/// its weight, so it reads above θ out to 2.54σ and cancelling that costs
+/// kernels on the matrix side of the edge.
+///
+/// Below MARL-4's number the phase would be claiming a real field is
+/// HARDER to place capacity on than the one the mechanism was built
+/// against, which is the finding this floor exists to make visible.
+///
+/// **HELD, at 4.17 (arm D), against a prediction of 4.11.** The closest
+/// any number in this campaign has come to its own pre-registration, and
+/// it is the geometric argument being right rather than luck: the ceiling
+/// is 1/f = 10.67, the dilution is the newborn tail's 2.54σ leak into the
+/// matrix, and 10.67 × 1.498/3.890 is 4.11.
+///
+/// The comparison that gives it meaning is arm B's 1.33 — batch Adam,
+/// seeded uniformly, at the SAME kernel count, barely above the 1.0 of an
+/// allocator that does not allocate. MARL places capacity three times
+/// better than a blind batch optimiser can, and G31 (b) then measures what
+/// that is worth.
+pub const MARL11_CONCENTRATION: f32 = 3.1;
+
+/// G31 (b): arm B over arm A — batch Adam blind, over batch Adam with both
+/// oracles, at the same kernel count.
+///
+/// PROPOSED as a FLOOR at 1.5, which is 60% of the 1.69 predicted from
+/// rbf's seed reach (CUTOFF_R·vein = 4.07 of an extent of 32, so a
+/// uniformly seeded kernel is live with probability 0.35) and the N^(−1/2)
+/// error of a 2-D structure fitted by N kernels.
+///
+/// A floor rather than an estimate because of what the number is FOR: if
+/// the oracle turns out not to matter, arms C and D are the same test and
+/// the headline comparison is not a comparison. This fails loudly in that
+/// case, which is the only outcome that would invalidate the phase.
+///
+/// **REFUTED, and left standing.** Measured 1.32–1.35 across two seeds,
+/// under the floor of 1.5 and well under the 1.69 predicted.
+///
+/// The over-estimate is in the N^(−1/2) step, not in the mechanism. The
+/// dead-kernel argument is sound — a uniformly seeded kernel more than
+/// CUTOFF_R·vein from any vein has a gradient of exactly zero and Adam
+/// never moves it — but a batch optimiser with 2.7× fewer live kernels
+/// does not lose the full N^(−1/2) of accuracy, because the live ones
+/// widen to cover more and the field is a SHEET, whose error is dominated
+/// by the thin direction that extra kernels along it do not help.
+///
+/// It does not invalidate the phase: 1.32 is still a real gap, and the
+/// oracle moves MARL by 1.74 (0.143 → 0.084), so arms C and D are firmly
+/// different tests. That was the only thing this floor was protecting.
+pub const MARL11_ORACLE_WORTH: f32 = 1.5;
+
+/// G31 (c), THE HEADLINE: arm D over arm B — MARL blind over rbf blind, at
+/// matched capacity and equal data.
+///
+/// PROPOSED as a CEILING at parity. Not at a comfortable margin: this is
+/// the one number in the phase that can embarrass the campaign, and a
+/// ceiling of 1.0 is what makes it able to.
+///
+/// The campaign's own findings say MARL should win it. MARL-3: capacity
+/// concentration is bounded by EVIDENCE concentration, and surprise IS
+/// evidence, so a birth cannot land where the field is already right.
+/// MARL-1: deformation buys 2.15× AFTER the topology is found, and a
+/// kernel seeded in the matrix beyond CUTOFF_R·σ of any vein has a gradient
+/// of EXACTLY zero — the hard cutoff makes it dead on arrival, and Adam
+/// cannot move a centre it has never touched.
+///
+/// Against MARL: it sees each exemplar once where rbf re-reads its pool
+/// with a global optimiser and full second-moment information. MARL-6R
+/// priced that at G24 — a sixth of the evidence cost 2% of the accuracy —
+/// so evidence is cheap on the margin and placement is not.
+///
+/// **REFUTED, and left standing — the campaign's headline loss.** Measured
+/// 1.95–1.99 across two seeds. MARL, blind, loses to batch Adam, blind, by
+/// very nearly two at matched capacity and equal data.
+///
+/// Both halves of the prediction's reasoning were CORRECT and the
+/// conclusion did not follow. MARL's concentration is 4.17 against arm B's
+/// 1.33, so surprise-driven birth really does place capacity where a blind
+/// seeding cannot, exactly as MARL-3 said it would. And arm B really is
+/// carrying dead kernels. The error was assuming placement was the binding
+/// constraint, because placement is what ten phases had been about — the
+/// campaign had never once been in a position to see anything else bind.
+///
+/// What binds is EVIDENCE, and G31 (c) measures it: over a 64-fold stream
+/// the RMS falls 0.143 → 0.051 and crosses both rbf arms, while the
+/// concentration does not move (4.17 → 3.75). So the online learner is not
+/// a worse fitter than batch Adam. It is a hungrier one, and it buys
+/// kernels rather than passes to get there — 3 285 against 1 583 for the
+/// same field. Which is MARL-7's "capacity is always bought, never
+/// borrowed" arriving from a direction the campaign had not tried.
+pub const MARL11_DISCOVERY: f32 = 1.0;
+
+/// G31 (d): arm C over arm A — online local NLMS against batch global
+/// Adam, with the oracle stream given to both.
+///
+/// PROPOSED as a CEILING at 2.0. MARL should LOSE this one: MARL-0
+/// measured Adam as the wrong optimiser per exemplar (RMS ROSE 0.131 →
+/// 0.151 over 200 000), but this is Adam in the regime it was designed
+/// for, and that finding does not transfer.
+///
+/// The ceiling is where it is because losing by more than 2× to a batch
+/// optimiser given the same evidence would say the online learner is not a
+/// competitive fitter, only a cheap one — and that is worth knowing before
+/// an irradiance cache is built on it.
+///
+/// **HELD, at 1.51.** With the oracle stream given to both, one pass of
+/// local NLMS costs half again what 600 batches of global Adam cost, on a
+/// field neither was written against. That is the number to hold onto
+/// before an irradiance cache: not free, not disqualifying.
+///
+/// Note what it is NOT evidence for. C and A are matched on kernels and on
+/// distinct exemplars, and arm A re-reads its pool 4.7 times where arm C
+/// sees each point once — so 1.51 is the price of a SINGLE PASS, and G31
+/// (c) says most of it is bought back by lengthening the stream rather
+/// than by changing anything.
+pub const MARL11_ONLINE_COST: f32 = 2.0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

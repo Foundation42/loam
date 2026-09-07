@@ -40,6 +40,8 @@ const usage =
     \\  --scene marble        the material seedbed's marble: sheet veins through a cube (flecks: the round-vein original)
     \\  --rbf N:FILE          fit N Gaussians to the marble's material field (baked at 64³) and write the set to FILE, its slice to FILE.ppm
     \\  --rbf-isotropic       hold the kernels spherical (the comparison; anisotropic is the default)
+    \\  --rbf-arms            MARL-11: the marble's own field, fitted four ways — rbf's batch Adam
+    \\                        and MARL's online learner, each with and without the vein oracles
     \\  --project CH:AXIS:RES:FILE        write a PGM max-projection along AXIS at the end
     \\  --dump FILE          write the snapshot as a struple map at the end
     \\  --ray ox,oy,oz,dx,dy,dz           count leaves a ray samples vs crosses at the end
@@ -85,6 +87,7 @@ const Opts = struct {
     volume: ?struct { res: u32, path: []const u8 } = null,
     rbf: ?struct { kernels: u32, path: []const u8 } = null,
     rbf_isotropic: bool = false,
+    rbf_arms: bool = false,
     projections: std.ArrayListUnmanaged(Slice) = .{},
     dump: ?[]const u8 = null,
     ray: ?[6]f64 = null,
@@ -198,6 +201,8 @@ pub fn parseArgs(gpa: std.mem.Allocator, args: []const []const u8, registry: *co
             o.relief = .{ .res = try std.fmt.parseInt(u32, v[0..colon], 10), .path = v[colon + 1 ..] };
         } else if (std.mem.eql(u8, a, "--rbf-isotropic")) {
             o.rbf_isotropic = true;
+        } else if (std.mem.eql(u8, a, "--rbf-arms")) {
+            o.rbf_arms = true;
         } else if (std.mem.eql(u8, a, "--rbf")) {
             const v = try next(args, &i);
             const colon = std.mem.indexOfScalar(u8, v, ':') orelse return error.BadRbf;
@@ -541,6 +546,35 @@ pub fn main() !void {
         for (0..world.fronts.items.len) |id| tally[@intFromEnum(seedbed.marbleSpecies(opts.scene, world.seed, @intCast(id)))] += 1;
         try stdout.print("volume {d}³ over ±{d:.0}, φ {d:.2}..{d:.2}, {d} floats a voxel (columns {b:0>4}), {d} voxels named by a capsule within {d:.2}, the rest in {d} passes; veins {d} graphite, {d} gold, {d} ember; archetype {s} → {s}\n", .{ vo.res, seedbed.MARBLE_BAKE_HALF, vol.min, vol.max, vol.stride, vol.columns, vol.named, seedbed.marbleMargin(vo.res), vol.passes, tally[0], tally[1], tally[2], std.fmt.fmtSliceHexLower(vol.hash[0..8]), vo.path });
     }
+    if (opts.rbf_arms) {
+        // MARL-11 on the REAL marble (src/marble.zig's head for the
+        // design). This is a BAKE TOOL choosing an optimiser, which is
+        // the standing `--rbf` already has — not MARL becoming a mode of
+        // the sim. The seedbed is here because it owns the World the
+        // volume is baked from, and nothing about the arms reaches back:
+        // no step, no fed clock, nothing in a hash.
+        //
+        // The volume's material columns are masked off (`columns = 0`,
+        // stride untouched) so this is the same single-channel comparison
+        // the gate runs — the blend alone, which is where all of a vein's
+        // geometry lives. Nine channels is MARL-12's, and needs the
+        // kernel's weight widened from one float to nine.
+        const c = seedbed.sceneToLattice(.{ 0, 0, 0 });
+        const res: u32 = 64;
+        var vol = try loam.bark.Volume.bake(gpa, &world, c, seedbed.MARBLE_BAKE_HALF, res, seedbed.marbleExpression(opts.scene), seedbed.marbleMargin(res));
+        defer vol.deinit(gpa);
+        vol.columns = 0;
+        try stdout.print("\nMARL-11 on the marble — {d}³ over ±{d:.0} (extent {d:.0}), vein {d:.2}, {s}\n", .{ res, seedbed.MARBLE_BAKE_HALF, vol.extent, seedbed.MARBLE_VEIN, @tagName(builtin.mode) });
+        const arms = try loam.marble.run(gpa, &vol, seedbed.MARBLE_VEIN, .{ .seed = opts.seed, .verbose = true });
+        try loam.marble.report(stdout, arms);
+        try stdout.print("\n  pre-registered (tools/marl11_predict.py): concentration ≥ {d:.1}  B/A ≥ {d:.1}  D/B ≤ {d:.1}  C/A ≤ {d:.1}\n", .{
+            loam.thresholds.MARL11_CONCENTRATION, loam.thresholds.MARL11_ORACLE_WORTH,
+            loam.thresholds.MARL11_DISCOVERY,     loam.thresholds.MARL11_ONLINE_COST,
+        });
+        try stdout.print("  the extent is {d:.0} and NOT a power of two, so the conversion here is exact\n", .{vol.extent});
+        try stdout.print("  in the algebra and not in the bits — G31 (a) is where that distinction is gated.\n", .{});
+    }
+
     if (opts.rbf) |rb| {
         // The packed RBF set (Christian's experiment): the material
         // field fitted by gradient descent, written as an asset; the

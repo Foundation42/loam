@@ -4756,6 +4756,213 @@ ends up more accurate than it began. Whether that survives contact with
 worlds less kind than a translated shell is the campaign's standing
 question and always has been.
 
+## MARL-11 — the marble, and the first thing the campaign did not write (Monday 2026-09-07)
+
+Ten phases and every comparison in them was MARL against MARL. `rbf.fit`
+is the first external baseline: the same anisotropic Gaussian held bit for
+bit by G17 (a), the same `CUTOFF`, the same evaluator, fitted by BATCH
+ADAM to a real material field, and gated since before `marl.zig` existed.
+
+MARL needed **no changes at all** to be measured against it. `observe(x,
+y)` has always taken an external exemplar; what was missing was a target
+worth handing it and something to lose to.
+
+### The bridge is its own file, and that is the design decision
+
+`src/marble.zig` imports `marl` and `rbf` and is imported by neither.
+`marl.zig` must not learn what a `bark.Volume` is — Christian's split puts
+Loam's FIELD STORAGE outside MARL, and a learner that imports the sim's
+sample planes to get a training set has crossed it by the back door. And
+`rbf.zig` must not learn what a `marl.Model` is: it is cross-repo pinned,
+read by rill and by matryoshka's shader, and a learning experiment must
+not be able to move the kernel out from under three renderers by
+refactoring. The two additions to `rbf.zig` are `vein_pool` and
+`vein_seed`, both defaulting to what the marble has always been fitted
+with, both implemented by handing the draw an EMPTY vein list rather than
+by a branch — so the hot path is untouched and the existing gates cannot
+notice.
+
+### The two oracles, and the 2×2
+
+`rbf.fit` does not start level. It seeds centres ON vein voxels and draws
+half its pool FROM vein voxels. Both are hand-built versions of exactly
+what MARL-3 and MARL-4 spent two phases discovering the model could not do
+for itself. So the phase is a 2×2, one variable a cell, capacity matched
+exactly (each rbf arm runs at the count the MARL arm beside it discovered)
+and DATA held equal — MARL sees each exemplar once, rbf gets the same pool
+and may re-read it, which is generous to rbf by its 4.7 passes and is the
+only matching that is unambiguous.
+
+The gate's fixture, seed 11, 32 768 distinct exemplars:
+
+| arm | learner | kernels | RMS band | conc. | /ceiling | seconds |
+|---|---|---|---|---|---|---|
+| A | rbf, batch Adam, oracle | 1594 | 0.05564 | 8.93 | 0.84 | 6.43 |
+| B | rbf, batch Adam, blind | 1551 | 0.07347 | 1.33 | 0.12 | 6.08 |
+| C | MARL, online NLMS, oracle | 1594 | 0.08403 | 5.85 | 0.55 | 0.35 |
+| D | MARL, online NLMS, blind | 1551 | 0.14598 | 4.24 | 0.40 | 0.13 |
+
+Two of the four pre-registered numbers held and two were refuted.
+
+**HELD — capacity concentration, 4.17 against a prediction of 4.11.** The
+closest any number in this campaign has come to its own pre-registration,
+and it is the geometric argument being right rather than luck. A real
+field's matrix is EXACTLY zero, an empty model predicts EXACTLY zero, and
+surprise below θ produces no learning event — so §8's quiet slab arrives
+on a field nobody designed to have one. The dilution is the model's own
+tail: a newborn carries the residual as its weight and reads above θ out
+to 2.54σ, so cancelling its own leak costs kernels on the matrix side.
+
+**HELD — C/A at 1.51.** With the oracle given to both, one pass of local
+NLMS costs half again what 600 batches of global Adam cost.
+
+**REFUTED — B/A at 1.32 against a floor of 1.5.** The dead-kernel argument
+is sound (a uniformly seeded kernel beyond `CUTOFF_R·vein` of any vein has
+a gradient of exactly zero and Adam never moves it), but the N^(−1/2) step
+over-priced it: the live kernels widen to cover more, and a sheet's error
+is dominated by the thin direction that more kernels along it do not help.
+It does not invalidate the phase — the oracle still moves MARL by 1.74, so
+arms C and D are firmly different tests, which is all the floor protected.
+
+### REFUTED — D/B at 1.99, and it is the campaign's headline loss
+
+Pre-registered as a CEILING at parity, deliberately, so that it could
+embarrass the campaign. It did.
+
+Both halves of the reasoning were **correct** and the conclusion did not
+follow. MARL's concentration is 4.17 against arm B's 1.33, so
+surprise-driven birth really does place capacity three times better than
+blind seeding, exactly as MARL-3 said. Arm B really is carrying dead
+kernels. And MARL loses anyway, by nearly two.
+
+The error was assuming **placement was the binding constraint** — which is
+what ten phases of placement work makes very easy to hold without noticing
+it is an assumption. The campaign had never once been in a position to see
+anything else bind, because it had never had an opponent.
+
+### What actually binds, and G31 (c)
+
+Arm D alone, past the equal-data protocol:
+
+| exemplars | kernels | RMS band | conc. |
+|---|---|---|---|
+| 32 768 | 1583 | 0.14255 | 4.17 |
+| 131 072 | 2403 | 0.09237 | 3.63 |
+| 524 288 | 2928 | 0.06492 | 3.61 |
+| 2 097 152 | 3285 | 0.05145 | 3.75 |
+
+The RMS falls 2.8× and crosses BOTH rbf arms — blind (0.0732) between the
+second and third rows, and the ORACLE arm (0.0546) by the fourth. The
+concentration does not move.
+
+So the online learner is not a worse fitter than batch Adam. It is a
+**hungrier** one, and it buys kernels rather than passes to get there:
+3 285 against 1 583 for the same field. Which is MARL-7's "capacity is
+always bought, never borrowed" arriving from a direction the campaign had
+not tried — MARL-7 found it in a moving world, and it is just as true in a
+stationary one given more of the same stream.
+
+G31 (c) was written AFTER the refutation and asserts DIRECTION with no
+magnitude, precisely because it is post hoc. It rests on MARL-6R's prior
+finding that under-evidence is a smooth gradient rather than a cliff: if
+the loss were representational, more of the same stream would not help.
+
+`MARL11_DISCOVERY` stays at 1.0, refuted, for Christian to strike. The
+equal-data protocol is what makes the 2×2 a comparison, and a threshold
+relaxed until the result clears it measures nothing.
+
+### The real marble, and why raw concentration does not travel
+
+`loam-run --scene marble --steps 110 --rbf-arms`, 64³ over an extent of
+40, seven veins, seed 7 (a tool run, ReleaseSafe, 36 s including the sim
+and the bake):
+
+| arm | kernels | RMS band | conc. | /ceiling |
+|---|---|---|---|---|
+| A | 3758 | 0.14036 | 3.45 | 0.95 |
+| B | 3653 | 0.15780 | 1.09 | 0.30 |
+| C | 3758 | 0.18588 | 2.33 | 0.64 |
+| D | 3653 | 0.21954 | 1.88 | 0.52 |
+
+B/A 1.12, D/B 1.39, C/A 1.32 — every gap NARROWER than on the fixture, and
+the reason is that the marble is **27.6% birth-eligible** where the fixture
+is 9.4%. Concentration's ceiling is 1/f, so it is 3.62 here and 10.67
+there, and the raw numbers say the opposite of the truth: 4.24 on the
+fixture is 0.40 of what was available and 1.88 on the marble is 0.52 of it.
+**The same allocator does BETTER on the harder field.** The report grew a
+`/ceiling` column because of this; comparing raw concentration across two
+fields is a mistake waiting to be made, and I nearly made it.
+
+Two seeds and two fields, the same story: MARL places well and fits short.
+
+### The conversion, and why it is gated bitwise
+
+A model on the unit cube becomes an `rbf.Set` in a volume's units by
+μ′ = Eμ and L′ = L/E. With E a power of two that is exact in f32, and so
+is the READ — (q/E − μ) and (q − Eμ)/E round identically, because rounding
+a difference commutes with scaling by a power of two. So a MARL model **is**
+an `rbf.Set`, bit for bit, and G31 (a) checks 1024 probes as bit equality
+with no tolerance. The set is the asset a renderer loads; an ε would let
+the learner and the shader drift in the last places until one of them
+showed something else and nobody was told.
+
+MUTATION: convert at an extent of 40 instead. Still exact in the algebra,
+still agreeing to an ulp or so — and the bits differ, which is what says
+the gate is testing the rounding argument rather than the transcription.
+The real marble's extent IS 40, so this is not a hypothetical.
+
+### The gates, and what each was paid for
+
+- **G31 (a)** the conversion, bitwise, and the fixture's own geometry.
+  Paid for by an assertion that the sheet's blend peaks above 0.9: it does
+  not, it peaks at 0.874, because a cell is 1.0 against a half-thickness of
+  0.9 and the trilinear read never sees the middle. That is the fixture
+  being honest — the real marble is baked at the same fidelity, so a
+  fixture that resolved its own structure would be the easier problem.
+- **G31 (b)** the 2×2. Asserts capacity is matched, the two thresholds that
+  held, that the oracle is a real variable on both sides (direction only —
+  the magnitude was refuted), that MARL out-places blind rbf by more than
+  2×, and that it loses anyway. That last one FIRES IF MARL EVER WINS,
+  which is the notification wanted: the ledger would then be wrong.
+- **G31 (c)** the evidence gradient, at 1× and 4×. Direction only.
+
+The suite grows by about 14 s, almost all of it the two rbf arms at ~1 550
+kernels. That is a real cost and it is where the phase's content is.
+
+### A harness bug worth recording
+
+The first run printed `responsibility 5.66`. `marbleArms` did `mo.m = o.m`,
+which overwrote `ArmOptions`'s pre-registered radius of 3 with `Opts`'s
+default of `CUTOFF_R` — so the campaign's first external baseline ran at
+the radius MARL-6R had already retired. Fixed with an explicit `resp_set`
+flag rather than a sentinel value.
+
+It cost nothing in the end (RMS 0.14331 at 5.66 against 0.14255 at 3, with
+a fifth of the updates), which is G24 confirming itself on a field it was
+never measured against. But it was luck, not design.
+
+### Where this leaves the campaign
+
+    MARL places capacity better than a blind batch optimiser and fits it
+    worse. The gap is EVIDENCE, not placement, and it closes with the
+    stream — at a price paid in kernels rather than in passes.
+
+Two things follow for the applications. An irradiance or occlusion cache
+sees each sample once and accumulates them forever, which is the regime
+where MARL's hunger is free and Adam's re-reading is impossible — so the
+loss measured here is against a baseline that could not be run there at
+all. And 48× the wall clock to produce a model of the same size (0.13 s
+against 6.08) is not a curiosity when the alternative is a bake — though
+it must be read honestly: 4.7 of that factor is rbf's extra passes over
+its pool, and most of the remaining ~10× per sample is that `rbf.fit`
+sums over ALL kernels where MARL does a 27-region gather. So it is partly
+a measurement of rbf having no spatial index, which nothing until now had
+any reason to give it.
+
+What is still owed: the nine-channel widening (`w: f32` → `w: [9]f32`),
+which is the only thing standing between this and fitting the marble's
+actual materials rather than its geometry alone.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

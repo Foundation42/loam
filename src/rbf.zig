@@ -281,6 +281,25 @@ pub const FitOptions = struct {
     /// projected back to one width (the mean log-width, no off-
     /// diagonal) — the tube gate's mutation, and the comparison.
     isotropic: bool = false,
+    /// THE POOL ORACLE: half the fit's points are drawn from vein
+    /// voxels, so a cube that is a few per cent vein is sampled as
+    /// though it were half. False draws uniformly.
+    ///
+    /// THE SEED ORACLE: centres are placed ON vein voxels, so every
+    /// kernel starts where the structure is. False places them
+    /// uniformly, and a kernel that lands further than `CUTOFF_R · vein`
+    /// from any vein is DEAD — beyond the cutoff the gaussian is a hard
+    /// zero, so its gradient is exactly zero and Adam can never move it.
+    ///
+    /// Both default to what the marble has always been fitted with;
+    /// they exist because MARL-11 measures this fit against a learner
+    /// that has no equivalent of either, and a comparison against a
+    /// baseline that has been told the answer measures the telling.
+    /// Off, they are implemented by handing the draw an EMPTY vein list
+    /// rather than by a branch, so the hot path is untouched and the
+    /// stream is the one a volume with no veins would have produced.
+    vein_pool: bool = true,
+    vein_seed: bool = true,
 };
 
 pub const Report = struct {
@@ -436,6 +455,11 @@ pub fn fit(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, opts: Fit
         }
     };
 
+    // The two oracles, as views: empty where the oracle is off, so the
+    // draw and the seeding take their existing "no veins" path.
+    const pool_veins: []const u32 = if (opts.vein_pool) vein_voxels.items else &.{};
+    const seed_veins: []const u32 = if (opts.vein_seed) vein_voxels.items else &.{};
+
     const pool = try gpa.alloc([3]f32, opts.pool);
     defer gpa.free(pool);
     const pool_y = try gpa.alloc(Channels, opts.pool);
@@ -446,12 +470,12 @@ pub fn fit(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, opts: Fit
     defer gpa.free(held_y);
     var scale: Channels = [_]f32{1e-3} ** CHANNELS;
     for (pool, pool_y) |*p, *y| {
-        p.* = draw.point(&stream, vol, vein_voxels.items, e, cell);
+        p.* = draw.point(&stream, vol, pool_veins, e, cell);
         y.* = target(vol, vein, p.*);
         inline for (0..CHANNELS) |c| scale[c] = @max(scale[c], @abs(y[c]));
     }
     for (held, held_y) |*p, *y| {
-        p.* = draw.point(&stream, vol, vein_voxels.items, e, cell);
+        p.* = draw.point(&stream, vol, pool_veins, e, cell);
         y.* = target(vol, vein, p.*);
     }
     for (pool_y) |*y| inline for (0..CHANNELS) |c| {
@@ -469,8 +493,8 @@ pub fn fit(gpa: std.mem.Allocator, vol: *const bark.Volume, vein: f32, opts: Fit
         var placed: usize = 0;
         var tries: usize = 0;
         while (placed < n and tries < 64 * n) : (tries += 1) {
-            const c = if (vein_voxels.items.len > 0 and tries < 32 * n) blk: {
-                const vi = vein_voxels.items[stream.below(@intCast(vein_voxels.items.len))];
+            const c = if (seed_veins.len > 0 and tries < 32 * n) blk: {
+                const vi = seed_veins[stream.below(@intCast(seed_veins.len))];
                 const i = vi % vol.res;
                 const j = (vi / vol.res) % vol.res;
                 const k = vi / (vol.res * vol.res);

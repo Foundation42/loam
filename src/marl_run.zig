@@ -17,6 +17,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const loam = @import("loam");
 const marl = loam.marl;
+const marble_mod = loam.marble;
 const seedbed = loam.seedbed;
 const th = loam.thresholds;
 
@@ -93,6 +94,10 @@ const usage =
     \\                      representation become useful again, or interfere?
     \\  --arms5             MARL-5's controlled arms at one duty: uniform,
     \\                      static biased, and three schedules
+    \\  --marble            MARL-11: the 2×2 against rbf.fit's batch Adam bake
+    \\                      on a sheet-vein field — the first external baseline
+    \\  --marble-pool N     distinct exemplars, MARL's stream AND rbf's pool (32768)
+    \\  --marble-iters N    rbf's batch iterations (600)
     \\  --birth-scale F     the evidence cell's edge, in coverage spacings (2)
     \\  --birth-residual F  mean post-update residual it must still carry
     \\                      (default 0 = the surprise threshold)
@@ -118,6 +123,15 @@ const Opts = struct {
     drift_at: u64 = 200_000,
     repeat: u32 = 0,
     cycle: bool = false,
+    marble: bool = false,
+    mo: marble_mod.ArmOptions = .{},
+    /// Whether `--responsibility` was actually passed. The marble's arms
+    /// are a PRE-REGISTERED configuration at G24's radius of 3, and
+    /// `Opts.m`'s default is CUTOFF_R for every other mode's
+    /// comparability — so copying `o.m` wholesale silently discarded
+    /// MARL-6R's correction and ran the first external baseline at the
+    /// radius the campaign had already retired. It did, once.
+    resp_set: bool = false,
     p: marl.PressureOptions = .{},
 };
 
@@ -222,6 +236,12 @@ fn parse(args: []const []const u8) !?Opts {
             o.repeat = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--drift-at")) {
             o.drift_at = try std.fmt.parseInt(u64, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--marble")) {
+            o.marble = true;
+        } else if (std.mem.eql(u8, a, "--marble-pool")) {
+            o.mo.pool = try std.fmt.parseInt(u32, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--marble-iters")) {
+            o.mo.iterations = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--arms5")) {
             o.arms5 = true;
         } else if (std.mem.eql(u8, a, "--sched")) {
@@ -241,6 +261,7 @@ fn parse(args: []const []const u8) !?Opts {
             o.m.truth.frequency = try parseF32(try next(args, &i));
         } else if (std.mem.eql(u8, a, "--responsibility")) {
             o.m.responsibility = try parseF32(try next(args, &i));
+            o.resp_set = true;
         } else {
             std.debug.print("unknown option: {s}\n", .{a});
             return error.UnknownOption;
@@ -276,6 +297,7 @@ pub fn main() !void {
         return;
     };
 
+    if (o.marble) return marbleArms(gpa, o);
     if (o.arms) return arms(gpa, o);
     if (o.repeat > 0) return driftRepeat(gpa, o);
     if (o.drift6) return drift6(gpa, o);
@@ -996,5 +1018,55 @@ test "the checkpoint ladder is 1, 2, 5 per decade and never stalls" {
     for (want) |w| {
         c = nextCheckpoint(c);
         try std.testing.expectEqual(w, c);
+    }
+}
+
+// ── MARL-11: the marble ───────────────────────────────────────────────
+
+/// The 2×2 against `rbf.fit` (docs/MARL_CAMPAIGN.md, and `src/marble.zig`'s
+/// head for why the arms are shaped this way). The fixture is built here,
+/// procedurally — no World, no sim, no baked asset — so the campaign's
+/// first external baseline is still a `marl-run` measurement and not a
+/// seedbed one. The REAL marble's volume needs the sim to bake it and is
+/// `loam-run --rbf-arms`.
+fn marbleArms(gpa: std.mem.Allocator, o: Opts) !void {
+    const out = std.io.getStdOut().writer();
+    var vol = try marble_mod.sheetVolume(gpa, marble_mod.FIXTURE_RES, marble_mod.FIXTURE_EXTENT);
+    defer vol.deinit(gpa);
+
+    var mo = o.mo;
+    const resp = mo.m.responsibility; // G24's, unless the user asked
+    mo.m = o.m;
+    if (!o.resp_set) mo.m.responsibility = resp;
+    mo.seed = o.m.seed;
+    mo.verbose = true;
+
+    try out.print("marl-run — MARL-11, the marble, {s}\n", .{@tagName(builtin.mode)});
+    try out.print("  fixture {d}³ over extent {d:.0} (a power of two: the conversion is exact), vein {d:.2}\n", .{ marble_mod.FIXTURE_RES, marble_mod.FIXTURE_EXTENT, marble_mod.FIXTURE_VEIN });
+    try out.print("  {d} distinct exemplars each side; rbf re-reads them for {d} batches of {d}\n", .{ mo.pool, mo.iterations, mo.batch });
+    try out.print("  MARL: regions {d}³, budget {d}, θ {d:.3}, coverage {d:.2}, responsibility {d:.2}\n\n", .{ mo.m.regions, mo.m.budget, mo.m.threshold, mo.m.coverage, mo.m.responsibility });
+
+    const arms_out = try marble_mod.run(gpa, &vol, marble_mod.FIXTURE_VEIN, mo);
+    try marble_mod.report(out, arms_out);
+
+    try out.print("\n  pre-registered (tools/marl11_predict.py, before the run):\n", .{});
+    try out.print("    concentration ≥ {d:.1}   B/A ≥ {d:.1}   D/B ≤ {d:.1}   C/A ≤ {d:.1}\n", .{
+        th.MARL11_CONCENTRATION, th.MARL11_ORACLE_WORTH, th.MARL11_DISCOVERY, th.MARL11_ONLINE_COST,
+    });
+    try out.print("  MARL births {d} / updates {d} blind, {d} / {d} biased\n", .{ arms_out.d.births, arms_out.d.updates, arms_out.c.births, arms_out.c.updates });
+
+    // The evidence gradient. MARL-6R established under-evidence is a
+    // smooth gradient rather than a cliff, so what the blind arm's RMS
+    // does as the stream lengthens says whether the gap to batch Adam is
+    // a shortage of data or a property of the mechanism. Outside the
+    // equal-data protocol and therefore outside the gate: reported, never
+    // compared against a threshold.
+    try out.print("\n  the evidence gradient (arm D alone, past the equal-data protocol)\n", .{});
+    try out.print("    {s:>10} {s:>8} {s:>10} {s:>7} {s:>8}\n", .{ "exemplars", "kernels", "RMS band", "conc.", "seconds" });
+    for ([_]u32{ 1, 4, 16, 64 }) |mult| {
+        var m2 = mo;
+        m2.pool = mo.pool * mult;
+        const arm = try marble_mod.blindArm(gpa, &vol, marble_mod.FIXTURE_VEIN, m2);
+        try out.print("    {d:>10} {d:>8} {d:>10.5} {d:>7.2} {d:>8.2}\n", .{ arm.exemplars, arm.kernels, arm.rms_band, arm.concentration, arm.seconds });
     }
 }
