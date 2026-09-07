@@ -4505,6 +4505,108 @@ The property that made MARL-0 cheap is the property that stops MARL-8
 being possible in its obvious form. That tension is worth stating before
 anyone tries.
 
+## MARL-8 — recycling, and why geometry is not a transferable asset (Monday 2026-09-07)
+
+MARL-7 left the pathology exactly stated: capacity is always bought, never
+borrowed. MARL-8 is my own proposal for borrowing it — recycle at the
+refine/unrefine boundary. A retiring region's child is POOLED rather than
+destroyed; a refining region draws from the pool, translated to its own
+origin, instead of starting empty. Positions and shapes carried, weights
+reset.
+
+**It does not work, and the reason is the useful part.**
+
+### What was predicted, and what happened
+
+| | predicted | measured | |
+|---|---|---|---|
+| `MARL8_GROWTH` population, with over without | ≤ 0.85 | **1.045** | ❌ wrong direction |
+| `MARL8_NO_REGRESSION` RMS, with over without | ≤ 1.05 | 1.030 | ✅ vacuously |
+| `MARL8_ADOPTION` transplants that acquire weight | ≥ 0.5 | 0.723 | ✅ and withdrawn |
+
+Six moves, unrefinement at factor 2, R = 3:
+
+    move    RMS (none)   K (none)    RMS (recycle)   K (recycle)   moved
+      0      0.03079       5203        0.03067          5242          58
+      3      0.04560       7747        0.04522          8135         744
+      6      0.04453      10878        0.04581         11346         961
+
+961 kernels transplanted, ~493 births suppressed. Each borrowed kernel
+saved about half a purchase, so the population went UP. And the accuracy
+is untouched — not merely at the end but at every point of the recovery
+transient, which is where a pre-fitted geometry should have shown up if it
+was worth anything:
+
+    large drift          +1k       +20k      +100k      +400k
+    no recycling       0.10288    0.07378   0.04761    0.03338
+    recycling          0.10288    0.07379   0.04753    0.03384
+
+### Why: geometry is cheap locally and worthless imported
+
+My argument for carrying geometry rested on MARL-1 — deformation buys
+2.15× over birth-alone at fixed topology, so geometry is the expensive
+thing and weights are the cheap convex thing. That reasoning was sound
+about WHERE the value is and wrong about WHEN.
+
+Deformation's 2.15× accrues over a whole run of fitting geometry **to its
+own local data**. It is not a startup cost that can be pre-paid. A
+newly-refined region has a hundred thousand exemplars to fit its own
+geometry with, so arriving with someone else's costs it nothing and saves
+it nothing. The bottleneck was never acquiring geometry; it was having the
+RIGHT geometry for THIS data, and that can only be found here.
+
+> **Geometry is not a transferable asset in this architecture. It is cheap
+> to acquire locally and worthless imported.**
+
+Donor selection makes no difference either — nearest-region against
+most-recent gives 11 346 against 11 362 — because at realistic retirement
+rates the pool is a one-deep buffer and there is no choice to make. I
+built the selection to fix a flaw that the retirement rate had already
+made unreachable.
+
+### A second metric withdrawn, and it was mine again
+
+`MARL8_ADOPTION` held at 0.723 and means nothing. NLMS distributes a
+residual over whatever basis is present, so a transplanted kernel anywhere
+with support acquires weight whether or not it was worth carrying.
+Adoption measures PRESENCE, not usefulness. That is the second metric this
+campaign has had to withdraw for being unable to fail — after G26 (b)'s
+precision, which age alone scored 0.969 on — and both were mine. The
+pattern in both: I measured a quantity the mechanism trivially produces
+rather than the effect the mechanism was supposed to have.
+
+### What survives
+
+One design decision, gated: **a transplant is inert at the moment it
+lands.** Weights reset to zero means the prediction is unchanged bit for
+bit by the act of transplanting, and the convex part is relearned against
+the recipient's own parent. Carrying the donor's weights would inject a
+correction fitted to a DIFFERENT parent's error, which is the one way this
+could have been actively harmful rather than merely useless. G28 holds it,
+and the mutation — letting the weights ride along — breaks it.
+
+The mechanism stays in the tree behind `--recycle`, default off, so a
+later phase can re-test it cheaply if the fixture changes.
+
+### What this says about reuse generally
+
+MARL-8 closes reuse in its TRANSPLANT form and says nothing about the
+other form. A dictionary of shapes is a different proposition: it does not
+carry specific geometry between places, it constrains the SPACE of
+geometries so that each kernel has fewer parameters to fit at all. That is
+a representational change rather than an allocator one, and this result
+does not bear on it.
+
+But there is a sharper reading available, and it is the honest one to
+carry forward. If geometry is cheap to acquire locally, then "capacity is
+always bought" costs only kernel COUNT and not learning. And a model whose
+kernel count grows linearly with the number of genuinely distinct worlds
+it has seen may simply be paying the correct price. The campaign has never
+tested a world whose new structure is unlike its old — every drift has
+been the same shell translated — so the question of whether that growth is
+a pathology or an honest bill is still open, and it is a fixture question
+before it is an architecture question.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

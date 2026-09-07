@@ -1111,4 +1111,59 @@ pub const MARL7_RECOVERY: f32 = 0.9;
 /// genuinely needs capacity of its own.
 pub const MARL7_HYSTERESIS_GROWTH: f32 = 1.4;
 
+// ── MARL-8 (recycling: borrowing capacity instead of buying it) ──────
+//
+// From `tools/marl8_predict.py`. MARL-7's pathology stated exactly:
+// accuracy flat under repeated drift, capacity linear, and every kernel
+// load-bearing so none of it can be deleted. The model never reuses
+// anything.
+//
+// MARL-8 recycles at the refine/unrefine boundary — a retiring region's
+// child is POOLED rather than destroyed, and a refining region draws from
+// the pool, translated to its own origin, instead of starting empty.
+// Positions and shapes carried, WEIGHTS RESET, because MARL-1 established
+// the weights are the convex fast part and geometry is what deformation
+// spends 2.15× buying.
+//
+// The ceiling first: MARL-7's six moves bought 961 kernels a move while
+// retiring 2.5 regions a move at ~70 kernels each. So about 18% of what
+// is bought is available to borrow, and recycling is BOUNDED BY THE
+// RETIREMENT RATE. Every number below has to be read against that.
+
+/// G27 (a): child population after six moves, with recycling over without.
+///
+/// PROPOSED from the ceiling: 18% of new kernels could be borrowed, so a
+/// fifth off the growth is the ask, with room for transplants that do not
+/// take.
+///
+/// **REFUTED, and in the wrong direction.** Measured 1.045 — 11 346
+/// kernels against 10 878 without recycling. 961 kernels were transplanted
+/// and roughly 493 births suppressed, so each borrowed kernel saved about
+/// half a purchase: a donor region's child had tiled a WHOLE region, and
+/// the recipient only needed structure in part of its own.
+pub const MARL8_GROWTH: f32 = 0.85;
+
+/// G27 (a), the other half: RMS with recycling over RMS without.
+///
+/// PROPOSED at the noise band these runs show between seeds. A
+/// transplanted kernel arrives at weight zero, so at the moment of
+/// transplant the prediction is UNCHANGED — the mechanism cannot make
+/// things worse instantly, only slowly and only if the geometry is wrong
+/// for its new home.
+///
+/// **HELD, vacuously.** Measured 1.030 over six moves, and identical at
+/// every point of the recovery transient (0.10288 / 0.07379 / 0.04753 /
+/// 0.03384 against 0.10288 / 0.07378 / 0.04761 / 0.03338). Recycling does
+/// not regress accuracy because it does not affect accuracy at all.
+pub const MARL8_NO_REGRESSION: f32 = 1.05;
+
+/// G27 (b): transplanted kernels whose weight has risen above a tenth of
+/// the child's mean |w|.
+///
+/// PROPOSED as a floor. Transplants start at zero; if they are in the
+/// wrong place for their new region they stay near zero and the mechanism
+/// is a no-op dressed as a saving. Half, because some fraction of any
+/// donor set lands where the new region has nothing for it to do.
+pub const MARL8_ADOPTION: f32 = 0.5;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

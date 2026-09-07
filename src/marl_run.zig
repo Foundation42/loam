@@ -83,7 +83,9 @@ const usage =
     \\  --unrefine F        MARL-7: retire a region's child level when the
     \\                      parent's error there has grown F× past what it was
     \\                      when the region was refined (0 = off, MARL-2..6)
-    \\  --unrefine-after N  exemplars a region must be refined for first (2000)
+    \\  --unrefine-after N  routed exemplars a region must see first (300)
+    \\  --recycle           MARL-8: bank a retiring region's child and transplant
+    \\                      it into the next region to refine — borrow, not buy
     \\  --drift6            MARL-6: move the world at a known exemplar count and
     \\                      watch. Stationary control, small and large drift
     \\  --drift-at N        when the world moves (default 200000)
@@ -204,6 +206,8 @@ fn parse(args: []const []const u8) !?Opts {
             o.p.suff_ref = try parseF32(try next(args, &i));
         } else if (std.mem.eql(u8, a, "--unrefine")) {
             o.p.unrefine = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--recycle")) {
+            o.p.recycle = true;
         } else if (std.mem.eql(u8, a, "--unrefine-after")) {
             o.p.unrefine_after = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--drift6")) {
@@ -518,7 +522,7 @@ fn driftRepeat(gpa: std.mem.Allocator, o: Opts) !void {
     try h.stream_n(o.drift_at);
 
     try out.print("MARL-7 — the world moves {d} times ({s}, R {d:.3}, unrefine {d:.1})\n", .{ o.repeat, @tagName(builtin.mode), o.m.responsibility, o.p.unrefine });
-    try out.print("  {s:>6} {s:>10} {s:>10} {s:>9} {s:>9} {s:>9} {s:>8}\n", .{ "move", "RMS", "parent", "child K", "parent K", "unrefined", "mean|w|" });
+    try out.print("  {s:>6} {s:>10} {s:>9} {s:>9} {s:>9} {s:>9} {s:>8}\n", .{ "move", "RMS", "child K", "unrefined", "banked", "moved", "adopted" });
     var tp = o.m.truth;
     var i: u32 = 0;
     while (i <= o.repeat) : (i += 1) {
@@ -530,11 +534,11 @@ fn driftRepeat(gpa: std.mem.Allocator, o: Opts) !void {
         defer gpa.free(pr.p);
         defer gpa.free(pr.y);
         try h.stream_n(100_000);
-        try out.print("  {d:>6} {d:>10.5} {d:>10.5} {d:>9} {d:>9} {d:>9} {d:>8.3}\n", .{
-            i,                              try h.rms(pr.p, pr.y, null),
-            try h.parentRms(pr.p, pr.y),    h.child.kernels.items.len,
-            h.parent.kernels.items.len,     h.unrefined_count,
-            h.child.weightStats().mean_abs,
+        try out.print("  {d:>6} {d:>10.5} {d:>9} {d:>9} {d:>9} {d:>9} {d:>8.3}\n", .{
+            i,                    try h.rms(pr.p, pr.y, null),
+            h.child.kernels.items.len, h.unrefined_count,
+            h.pool.items.len,     h.transplanted,
+            h.adoption(),
         });
     }
 }
@@ -604,7 +608,10 @@ fn drift6(gpa: std.mem.Allocator, o: Opts) !void {
                 try h.parentRms(pr.p, pr.y),
                 try h.childRms(pr.p),
                 ev_now,
-                h.child.kernels.items.len - kn,
+                // NET, and signed: with unrefinement the population can
+                // SHRINK across a window, and this column underflowed the
+                // first time it did.
+                @as(i64, @intCast(h.child.kernels.items.len)) - @as(i64, @intCast(kn)),
             });
         }
 

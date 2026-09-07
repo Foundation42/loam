@@ -1528,6 +1528,17 @@ pub const PressureOptions = struct {
     /// Zero disables it, which is MARL-2 through MARL-6, so every earlier
     /// gate keeps measuring what it measured.
     unrefine: f32 = 0,
+    /// MARL-8: a retiring region's child is POOLED rather than destroyed,
+    /// and a refining region draws from the pool — translated to its own
+    /// origin — instead of starting empty. Positions and shapes are
+    /// carried; weights are reset to zero, so the transplant changes the
+    /// prediction by nothing at the moment it happens and the convex part
+    /// is relearned in the new region's own terms against its own parent.
+    ///
+    /// Reuse is an ALLOCATOR operation. The exact locality that stops a
+    /// gradient walking a kernel across the domain says nothing about an
+    /// allocator moving one.
+    recycle: bool = false,
     /// Routed exemplars a region must see before its baseline is taken
     /// and it becomes eligible — long enough for the EWMA to settle at a
     /// rate of 0.02, and short enough that a region actually reaches it:
@@ -1536,6 +1547,14 @@ pub const PressureOptions = struct {
     /// never reachable and the first version of this never fired once.
     unrefine_after: u32 = 300,
 };
+
+/// A banked child, and where it came from. The source region matters: a
+/// donor set's geometry is only right for a recipient whose structure sits
+/// at a similar angle, and on a moving shell that means a NEARBY region.
+/// The first version picked the most recent retirement — a temporal
+/// correspondence, which a move does provide — and it transplanted
+/// pancakes at the wrong orientation, adding more kernels than it saved.
+pub const Donor = struct { from: u32, kernels: std.ArrayListUnmanaged(Kernel) };
 
 /// What the scheduler knows about one refined region. Nothing here is new
 /// physics — every field is a quantity an earlier phase already measured
@@ -1647,6 +1666,16 @@ pub const Hierarchy = struct {
     events_at_drift: u64 = 0,
     seen_at_drift: u64 = 0,
     updates_at_drift: []u32 = &.{},
+    /// MARL-8: banked donor sets, each one region's child expressed
+    /// RELATIVE to its region's origin, so it can be instantiated
+    /// anywhere. A set rather than loose kernels, because the relative
+    /// arrangement is most of what was learned.
+    pool: std.ArrayListUnmanaged(Donor) = .{},
+    transplanted: usize = 0,
+    transplant_events: u32 = 0,
+    /// Indices of the child kernels that arrived by transplant, for the
+    /// adoption measurement. Diagnostics only.
+    transplant_marks: std.ArrayListUnmanaged(u32) = .{},
     /// MARL-7 bookkeeping: regions retired, and the child kernels that
     /// went with them.
     unrefined_count: u32 = 0,
@@ -1709,6 +1738,106 @@ pub const Hierarchy = struct {
         self.gpa.free(self.sched);
         if (self.updates_at_drift.len > 0) self.gpa.free(self.updates_at_drift);
         self.gpa.free(self.ever_refined);
+        for (self.pool.items) |*d| d.kernels.deinit(self.gpa);
+        self.pool.deinit(self.gpa);
+        self.transplant_marks.deinit(self.gpa);
+    }
+
+    /// The origin of a parent region, in domain coordinates.
+    fn regionOrigin(self: *const Hierarchy, r: u32) [3]f32 {
+        const rr = self.parent.opts.regions;
+        const c = [3]u32{ r % rr, (r / rr) % rr, r / (rr * rr) };
+        const h = self.parent.h;
+        return .{ @as(f32, @floatFromInt(c[0])) * h, @as(f32, @floatFromInt(c[1])) * h, @as(f32, @floatFromInt(c[2])) * h };
+    }
+
+    /// Bank a retiring region's child, relative to its own origin.
+    fn bank(self: *Hierarchy, r: u32) !void {
+        const o = self.regionOrigin(r);
+        var set = std.ArrayListUnmanaged(Kernel){};
+        errdefer set.deinit(self.gpa);
+        for (self.child.kernels.items) |k| {
+            const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
+            if (self.parent.regionOf(mu) != r) continue;
+            var rel = k;
+            inline for (0..3) |a| rel.p[MU + a] -= o[a];
+            rel.p[W] = 0; // the geometry is carried; the weight is not
+            rel.m1 = [_]f32{0} ** PARAMS;
+            rel.m2 = [_]f32{0} ** PARAMS;
+            rel.t = 0;
+            rel.updates = 0;
+            rel.frozen = false;
+            try set.append(self.gpa, rel);
+        }
+        if (set.items.len == 0) {
+            set.deinit(self.gpa);
+            return;
+        }
+        try self.pool.append(self.gpa, .{ .from = r, .kernels = set });
+    }
+
+    /// Instantiate a banked set into a refining region, choosing the
+    /// NEAREST donor. Geometry is what is being carried, and on a moving
+    /// shell the piece of structure a region holds is only similar to the
+    /// piece a nearby region held — orientation is local. Picking by
+    /// recency instead transplanted pancakes at the wrong angle, and added
+    /// more kernels than it suppressed.
+    fn transplant(self: *Hierarchy, r: u32) !void {
+        if (self.pool.items.len == 0) return;
+        const want = self.regionOrigin(r);
+        var best: usize = 0;
+        var best_d: f32 = std.math.inf(f32);
+        for (self.pool.items, 0..) |*d, i| {
+            const o = self.regionOrigin(d.from);
+            const dd = (o[0] - want[0]) * (o[0] - want[0]) + (o[1] - want[1]) * (o[1] - want[1]) + (o[2] - want[2]) * (o[2] - want[2]);
+            if (dd < best_d) {
+                best_d = dd;
+                best = i;
+            }
+        }
+        const donor = self.pool.swapRemove(best);
+        var set = donor.kernels;
+        defer set.deinit(self.gpa);
+        const o = self.regionOrigin(r);
+        for (set.items) |k| {
+            var nk = k;
+            inline for (0..3) |a| nk.p[MU + a] += o[a];
+            const mu = [3]f32{ nk.p[MU], nk.p[MU + 1], nk.p[MU + 2] };
+            // A donor set can spill past a region's face; anything that
+            // lands outside the child's domain is dropped rather than
+            // clamped, because a clamped kernel is a kernel in a place
+            // nothing chose for it.
+            if (mu[0] < 0 or mu[0] > 1 or mu[1] < 0 or mu[1] > 1 or mu[2] < 0 or mu[2] > 1) continue;
+            const owner = self.child.regionOf(mu);
+            nk.owner = owner;
+            nk.mu0 = mu;
+            nk.born_at = self.seen;
+            const ki: u32 = @intCast(self.child.kernels.items.len);
+            try self.child.kernels.append(self.child.gpa, nk);
+            self.child.clamp(&self.child.kernels.items[ki]);
+            try self.child.regions[owner].own.append(self.child.gpa, ki);
+            if (nk.reach > self.child.regions[owner].max_reach) self.child.regions[owner].max_reach = nk.reach;
+            try self.transplant_marks.append(self.gpa, ki);
+            self.transplanted += 1;
+        }
+        self.transplant_events += 1;
+    }
+
+    /// Of the kernels that arrived by transplant, the share whose weight
+    /// has risen off zero into real use. A transplant that stays at zero
+    /// is a no-op dressed as a saving.
+    pub fn adoption(self: *const Hierarchy) f32 {
+        if (self.transplant_marks.items.len == 0) return 0;
+        const bar = self.child.weightStats().mean_abs * 0.1;
+        var used: u32 = 0;
+        var alive: u32 = 0;
+        for (self.transplant_marks.items) |ki| {
+            if (ki >= self.child.kernels.items.len) continue; // compacted away
+            alive += 1;
+            if (@abs(self.child.kernels.items[ki].p[W]) > bar) used += 1;
+        }
+        if (alive == 0) return 0;
+        return @as(f32, @floatFromInt(used)) / @as(f32, @floatFromInt(alive));
     }
 
     /// Retire a region's child level and hand the region back to the
@@ -1728,6 +1857,7 @@ pub const Hierarchy = struct {
             d.* = self.parent.regionOf(mu) == r;
             if (d.*) n += 1;
         }
+        if (self.popts.recycle) try self.bank(r);
         try self.child.compact(dead);
         self.parent.unfreezeRegion(r);
         self.refined[r] = false;
@@ -1892,6 +2022,7 @@ pub const Hierarchy = struct {
             self.sched[r].last_served = self.seen;
             if (self.ever_refined[r]) self.rerefined_count += 1;
             self.ever_refined[r] = true;
+            if (self.popts.recycle) try self.transplant(r);
         }
     }
 
@@ -3509,3 +3640,63 @@ test "G26 (a) the capacity a moved world leaves behind is LOAD-BEARING, so kerne
 // What would discriminate is a world where structure leaves regions that
 // were refined at different times, which this target does not provide.
 // That is a fixture problem, and MARL-8's to fix if it needs the metric.
+
+// ── MARL-8's gate ─────────────────────────────────────────────────────
+//
+// Recycling did not work. What it did do is establish that geometry is
+// not a transferable asset here, and one design decision inside it — the
+// weight reset — is worth protecting, because it is what makes a
+// transplant SAFE rather than merely ineffective.
+
+test "G28 a transplant is inert at the moment it lands: the geometry arrives, the weights do not" {
+    // The one thing MARL-8 built that clearly works. A banked kernel is
+    // instantiated at weight zero, so the prediction is unchanged by the
+    // act of transplanting — bit for bit, not approximately. The convex
+    // part is then relearned in the new region's own terms against its own
+    // parent, which is what MARL-1 said the weights are for.
+    //
+    // Carrying the donor's weights instead would inject a correction
+    // fitted to a DIFFERENT parent's error, which is the one way this
+    // mechanism could have been actively harmful rather than merely
+    // useless.
+    //
+    // MUTATION: `rel.p[W] = 0` removed from `bank`, so donor weights ride
+    // along — the prediction jumps the moment a region refines and the
+    // bitwise check below fails. Verified by hand.
+    const gpa = testing.allocator;
+    const t = TruthParams{ .sharpness = 2 };
+    var moved = t;
+    moved.shift = .{ 0, -0.30, 0 };
+
+    var h = try Hierarchy.init(gpa, .{ .truth = t, .responsibility = 3 }, .{ .unrefine = 2, .recycle = true });
+    defer h.deinit();
+    try h.stream_n(100_000);
+    try h.drift(gpa, moved);
+    try h.stream_n(200_000);
+    // The mechanism actually ran, or the gate is watching nothing.
+    try testing.expect(h.transplant_events > 0);
+    try testing.expect(h.transplanted > 100);
+
+    // Bank a region by hand and transplant it into another: the prediction
+    // must not move anywhere, by any amount.
+    var st = rng.Stream.region(77, 0x7B00, 0);
+    var before: [300]f32 = undefined;
+    var pts: [300][3]f32 = undefined;
+    for (&pts, &before) |*p, *b| {
+        p.* = .{ st.unit(), st.unit(), st.unit() };
+        b.* = try h.predict(p.*);
+    }
+    var donor: u32 = 0;
+    while (donor < h.parent.regions.len and !h.refined[donor]) donor += 1;
+    try testing.expect(donor < h.parent.regions.len);
+    try h.bank(donor);
+    try testing.expect(h.pool.items.len > 0);
+    var target: u32 = @intCast(h.parent.regions.len - 1);
+    while (target > 0 and h.refined[target]) target -= 1;
+    try h.transplant(target);
+
+    for (pts, before) |p, b| {
+        try testing.expectEqual(@as(u32, @bitCast(b)), @as(u32, @bitCast(try h.predict(p))));
+    }
+    std.debug.print("\n  G28: {d} kernels transplanted over {d} events; banking region {d} into {d} moved the prediction at 300 probes by exactly nothing ({s})\n", .{ h.transplanted, h.transplant_events, donor, target, @tagName(builtin.mode) });
+}

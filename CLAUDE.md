@@ -50,6 +50,8 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -- --sharpness 2 --responsibility 3 --drift-repeat 6   # MARL-7: six moves — accuracy flat, capacity linear
     zig build marl -- --sharpness 2 --responsibility 3 --unrefine 2 --drift6   # unrefinement: precise, and it does not repay
     zig build test -Dtest-filter="G26"             # MARL-7's gate; tools/marl7_predict.py, three of whose four were REFUTED
+    zig build marl -- --sharpness 2 --responsibility 3 --unrefine 2 --recycle --drift-repeat 6   # MARL-8: borrow instead of buy — it does not work
+    zig build test -Dtest-filter="G28"             # MARL-8's gate: a transplant is inert when it lands
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -149,6 +151,17 @@ pathology is not that old representation goes bad, it is that new
 representation is always bought rather than borrowed.** MARL-8 is reuse,
 not erosion — and the obstacle is that exact locality is precisely what
 stops a kernel being re-pointed.
+
+MARL-8 tried that reuse, by recycling a retiring region's child into the
+next region to refine. **It does not work**: population went UP 4.5%,
+accuracy was untouched at every timescale including the recovery
+transient, and donor selection made no difference. The reason is worth
+keeping — MARL-1's "deformation buys 2.15×" accrues over a run of fitting
+geometry TO ITS OWN LOCAL DATA, so it is not a startup cost that can be
+pre-paid. **Geometry is cheap to acquire locally and worthless imported.**
+What survives is one design decision, gated: a transplant is INERT when it
+lands (weights reset, prediction unchanged bit for bit), so it can never
+be actively harmful. `--recycle` stays, default off.
 
 ## The ledger
 
