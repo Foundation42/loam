@@ -4265,6 +4265,105 @@ responsibility-radius debt is a 6× multiplier on the evidence budget, and
 every conclusion about scarcity from MARL-3 onward was measured while
 paying it.
 
+## MARL-6R — the learning unit corrected, and what survives it (Monday 2026-09-07)
+
+Christian's interstitial, and deliberately boring: no new mechanism, only
+the responsibility radius moved from full support to 3, the regime MARL-1
+established and every phase since ignored. The question is not whether
+that is better — MARL-1 answered it — but **which conclusions from MARL-2
+to MARL-6 survive when the unit cost of learning is corrected.**
+
+### The five anchors
+
+**Stationary refinement.** Accuracy is indifferent; work is not.
+
+    sharpness   R = 5.657                      R = 3
+       ×1       0.02076  1 973 874  430/k      0.02116   322 914   72/k
+       ×2       0.03528  2 049 288  472/k      0.03481   352 203   77/k
+       ×4       0.04423  1 733 899  461/k      0.04479   303 990   77/k
+
+Within 1.3% on every target, at a sixth of the work. Kernel counts,
+concentration and refinement precision all unmoved.
+
+**Routing (MARL-4).** The trade survives; the efficient regime does not.
+
+    floor/gain    R = 5.657                    R = 3
+      1 / 0       0.04423  461/k  conc 1.65    0.04479  77/k  1.70
+      0.05 / 6    0.04477  305/k       2.13    0.04729  56/k  2.16
+      0.02 / 3    0.05082  217/k       2.50    0.05095  41/k  2.56
+
+Concentration still trades against evidence, and the exchange rate is
+STEEPER: at full support 0.05/6 bought +29% concentration for +1.2% of
+RMS, and at R = 3 the same setting costs +5.6%. The "broad efficient
+regime" was partly an artifact of the waste — six times redundant gradient
+work is slack, and starving the stream matters less when there is slack to
+take it out of.
+
+**The MARL-5 crossover is gone.** At full support biased routing lost to
+uniform until about 175 000 exemplars; at R = 3 it wins at every horizon
+tested, from 100 000 to 800 000. The crossover was the biased arm starving
+early, and a sixfold cheaper learning event feeds it sooner.
+
+**Drift is indifferent to the correction.** Every MARL-6 number reappears
+within a few percent: small drift 0.05018 against 0.05203, large 0.04861
+against 0.04882, stranding 0.921 against 0.917, precision falling to 0.66×
+against 0.69×, small drift still worse than large. Committed capacity is
+about commitment, not about gradient economics.
+
+### The finding: the "critical evidence" transition was a confound
+
+Swept in the corrected units, evidence per kernel degrades RMS smoothly
+and monotonically, and nothing goes pathological:
+
+    duty     RMS      kernels   updates/kernel   trained   mean |w|
+    0.05   0.06131      669           6           0.149     0.142
+    0.10   0.05871     1190          10           0.366     0.153
+    0.20   0.05723     1888          17           0.657     0.158
+    0.40   0.05173     2727          31           0.817     0.156
+    0.70   0.05131     3437          53           0.894     0.152
+    1.00   0.04479     3973          77           0.925     0.147
+
+Six updates per kernel — a tenth of what the campaign called catastrophic —
+and the weights are healthy at 0.142. **There is no cliff.** So the
+campaign's repeated sightings of "capacity you cannot train is worse than
+capacity you do not have" were reading two different things as one:
+
+- **Under-BASIS-DENSITY** is the catastrophe. Coverage refused, budget
+  capped, residual-only birth — three doors, all producing mean |w| of 13
+  to 17 and divergence. Kernels too sparse to cover their ground, each
+  made answerable for territory it cannot represent.
+- **Under-EVIDENCE** is a gradient, not a cliff. It costs accuracy
+  monotonically and never destabilises anything.
+
+At full support the two were coupled — a sparse basis also means fewer
+kernels overlap any point, so each gets fewer updates — which is why they
+read as one phenomenon for five phases. Correcting the learning unit
+separates them.
+
+**That matters directly for MARL-7.** Kernel death reduces basis density,
+which is the dangerous axis. Withdrawing evidence is safe. An erosion
+mechanism that removes kernels must hold density, and one that merely
+stops feeding a region need not.
+
+### What survives, of the five asked
+
+| | |
+|---|---|
+| 1. capacity you cannot train is worse than none | **amended** — true of density, not of evidence |
+| 2. biased routing eventually beats uniform at fixed duty | **survives, strengthened** — no crossover left |
+| 3. concentration trades against evidence sufficiency | **survives, steeper** |
+| 4. frozen residual hierarchy preferable under drift | **survives unchanged** |
+| 5. obsolete capacity accumulates after drift | **survives unchanged** |
+
+### The recommendation, and what was deliberately not done
+
+The default stays at full support, so G17 through G23 keep measuring what
+they measured and the campaign's record stays comparable. G24 is the gate
+that pins the correction — 0.980× the RMS for 0.184× the work — and MARL-7
+should run at R = 3 from its first line, because pricing birth and death
+against a learning event that costs six times what it needs to would be
+pricing the wrong thing twice over.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

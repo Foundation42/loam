@@ -45,6 +45,8 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G22"             # MARL-5's gates; tools/marl5_predict.py, all three of whose numbers were REFUTED
     zig build marl -- --sharpness 2 --drift6 --hysteresis   # MARL-6: move the world at 200k and watch; then move it back
     zig build test -Dtest-filter="G23"             # MARL-6's gates; tools/marl6_predict.py, two of whose four held
+    zig build marl -- --responsibility 3 --sharpness 2 --hier   # MARL-6R: the corrected learning unit — same accuracy, a sixth of the work
+    zig build test -Dtest-filter="G24"             # the recalibration gate. MARL-7 onward should run at R = 3
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -122,6 +124,16 @@ the parent moves under it. What does not survive is COMMITTED CAPACITY:
 precision against the current target falls to 0.62, and moving the world
 back gives the same spike as moving it away — no memory, only
 accumulation. Erosion (§15) has its first concrete motivation.
+
+MARL-6R then repaid the responsibility debt and separated something the
+campaign had been reading as one thing: **under-BASIS-DENSITY is the
+catastrophe** (mean |w| of 13–17, three doors) while **under-EVIDENCE is a
+gradient, not a cliff** — six updates per kernel is merely less accurate,
+not pathological. They were coupled only because a sparse basis also means
+fewer kernels overlap. So an erosion mechanism that removes kernels must
+hold density; one that merely stops feeding a region need not. The default
+stays at full support for comparability, but **MARL-7 onward should run at
+`--responsibility 3`** (G24: 0.980× the RMS for 0.184× the work).
 
 ## The ledger
 

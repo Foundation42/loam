@@ -3181,3 +3181,54 @@ test "G23 (b) capacity is stranded where the structure used to be, and refinemen
     try testing.expect(prec_d <= prec_c * thresholds.MARL6_PRECISION_FALL);
     std.debug.print("  G23 (b): {d:.3} of pre-move child kernels stranded outside the current band against the control's {d:.3}; refinement precision {d:.3} against {d:.3} ({d:.2}×) ({s})\n", .{ frac_d, frac_c, prec_d, prec_c, prec_d / prec_c, @tagName(builtin.mode) });
 }
+
+// ── MARL-6R's gate ────────────────────────────────────────────────────
+//
+// The interstitial: no new mechanism, only the learning unit corrected.
+// MARL-1 established that a responsibility radius of 3 preserves accuracy
+// at a sixth of the work, and then every phase from MARL-2 to MARL-6
+// reasoned about evidence, starvation and budget while paying the full
+// support cost anyway. This gate is what stops that debt being taken on
+// again silently.
+
+test "G24 the hierarchy is indifferent to the responsibility radius in accuracy and sixfold cheaper in work" {
+    // The recalibration's whole claim, and the one MARL-7's economics will
+    // rest on. Everything a later phase might read — error, capacity,
+    // concentration, refinement precision — is unchanged; only the price
+    // of a learning event moves.
+    //
+    // MUTATION: the responsibility test dropped from the update loop, so
+    // both arms gather gradients over the whole support set — the work
+    // ratio goes to one and the assertion below fails. It is G18 (c)'s
+    // mutation, which is the right one: this gate is that finding carried
+    // into the hierarchy.
+    const gpa = testing.allocator;
+    const tp = TruthParams{ .sharpness = 2 };
+    const pr = try probesOf(gpa, tp, 0xB0B, 2048);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    var full = try Hierarchy.init(gpa, .{ .truth = tp }, .{});
+    defer full.deinit();
+    try full.stream_n(80_000);
+    var lean = try Hierarchy.init(gpa, .{ .truth = tp, .responsibility = 3 }, .{});
+    defer lean.deinit();
+    try lean.stream_n(80_000);
+
+    const rms_full = try full.rms(pr.p, pr.y, null);
+    const rms_lean = try lean.rms(pr.p, pr.y, null);
+    // Accuracy is indifferent, in both directions — a lean model that was
+    // merely better would be a different finding and would want its own
+    // threshold.
+    try testing.expect(rms_lean < rms_full * 1.1);
+    try testing.expect(rms_lean > rms_full * 0.9);
+    // And the work is not.
+    const work_full = full.parent.stats.updates + full.child.stats.updates;
+    const work_lean = lean.parent.stats.updates + lean.child.stats.updates;
+    try testing.expect(work_lean * 4 < work_full);
+    // Nothing a later phase reads has moved.
+    try testing.expect(lean.child.kernels.items.len > full.child.kernels.items.len * 3 / 4);
+    try testing.expect(lean.childConcentration() > full.childConcentration() * 0.8);
+    try testing.expect(lean.child.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
+    std.debug.print("\n  G24: RMS {d:.5} → {d:.5} ({d:.3}×) for work {d} → {d} ({d:.3}×); {d} kernels → {d}, concentration {d:.2} → {d:.2} ({s})\n", .{ rms_full, rms_lean, rms_lean / rms_full, work_full, work_lean, @as(f64, @floatFromInt(work_lean)) / @as(f64, @floatFromInt(work_full)), full.child.kernels.items.len, lean.child.kernels.items.len, full.childConcentration(), lean.childConcentration(), @tagName(builtin.mode) });
+}
