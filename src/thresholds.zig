@@ -478,4 +478,98 @@ pub const RBF_FIT_GAIN: f32 = 2;
 /// becomes the threshold.
 pub const RBF_ANISO_GAIN: f32 = 2;
 
+// ── MARL-0 (docs/MARL_CAMPAIGN.md; src/marl.zig) ─────────────────────
+//
+// Every number below was written BEFORE a single exemplar streamed, and
+// every one of them comes out of `tools/marl_predict.py` — a second
+// program that reimplements the truth field from marl.zig's constants and
+// knows nothing about the learner. That is the brief's rule for a gate
+// that measures something new, and MARL-0 is nothing but new
+// measurements. The first result never becomes the threshold; the
+// measured values live in the ledger.
+
+/// G17 (e): streaming exemplars must lower the held-out RMS by this
+/// factor from the empty model's, which predicts zero everywhere and so
+/// scores the truth's own RMS (0.1458).
+///
+/// PROPOSED, from this much theory: the target's variance splits 43% into
+/// the windowed swell and 60% into the shell (−3% cross term). Learning
+/// the swell perfectly and the shell not at all buys a gain of 1.32;
+/// learning the shell perfectly and the swell not at all buys 1.58. A
+/// gate at 2 needs 75% of the variance gone, which NEITHER PART ALONE CAN
+/// SUPPLY — so it cannot be passed by resolving the easy half, which is
+/// the only way this gate could be vacuous.
+pub const MARL0_RMS_GAIN: f32 = 2;
+
+/// G17 (f): kernel centres per unit volume in the shell's band, over the
+/// same in the quiet slab where the truth is identically zero.
+///
+/// PROPOSED as a FLOOR with a decade of headroom, not an estimate of the
+/// value — the theory here is an asymmetry of mechanism, not a number. A
+/// birth in the shell is driven by an amplitude-0.9 ridge at every
+/// exemplar that lands on it. A birth in the quiet slab needs a leakage
+/// cascade to stay above the surprise threshold across a gap wider than a
+/// kernel's reach: each generation's residual is the previous
+/// generation's Gaussian tail, and the tail of a tail is what has to
+/// clear the same threshold. Ten is where a floor sits when the mechanism
+/// is asymmetric and its magnitude is what the run is for.
+pub const MARL0_CAPACITY_RATIO: f32 = 10;
+
+/// G17 (c): kernels whose support contains one exemplar — the campaign's
+/// §20 proposition 2, "a useful update touches only a tiny fraction of
+/// model state", as a count and as a fraction.
+///
+/// PROPOSED, from this much theory: a birth is refused once some kernel
+/// already reads above `coverage` at the exemplar, so kernels pack at
+/// about one per ball of radius r_cov = √(−2 ln coverage) = 1.449
+/// Mahalanobis widths, while each is non-zero out to r_cut = √CUTOFF =
+/// 5.657. The number overlapping any point is the volume ratio,
+/// (r_cut/r_cov)³ = 59.5. The bound is twice that: descent widens a
+/// kernel past its birth width, and a packing estimate ignores overlap.
+///
+/// This number is the price of an exp(−16) cutoff, and it is worth
+/// reading as a finding rather than a nuisance — sixty kernels overlap
+/// every point BECAUSE the kernel is generous, and the generosity is
+/// there so that `rbf`'s material read is exactly the entry far away.
+pub const MARL0_MAX_TOUCHED: usize = 120;
+pub const MARL0_MAX_TOUCHED_FRACTION: f64 = 0.05;
+
+/// G17 (c): the radius beyond which a learning event changes the
+/// prediction by NOTHING — bitwise, not to an epsilon. Adam's bound on
+/// |m̂|/√v̂, which sets how far one step can displace a centre.
+///
+/// PROPOSED, and this one is a proof rather than a guess. A touched
+/// kernel's cutoff box reaches at most `h` on every axis (the clamp), so
+/// if it covers x its centre is within h of x and its support within 2h.
+/// A step moves that centre by at most rate·K, a birth puts a new kernel
+/// AT x with reach ≤ h, and nothing else in the model is written. So
+/// every sample outside 2h + steps·rate·K is untouched — the campaign's
+/// proposition 3, which is structural here and not an empirical hope.
+///
+/// The bound is LOOSE (0.52 of the domain at the defaults). The radius
+/// actually observed is the finding and belongs in the ledger.
+pub const MARL0_ADAM_K: f32 = 3.1622776601683795; // (1−β₁)/√(1−β₂), β = (0.9, 0.999)
+
+/// The bound, in the model's own terms: 2h from the clamp, plus whatever
+/// one event can displace a centre by.
+///
+/// AMENDED AFTER THE FIRST RUN, and the amendment is a finding rather than
+/// a tuning — it makes the bound SMALLER, which is the opposite of what
+/// tuning a gate to pass would do. What was pre-registered above assumed
+/// Adam, whose step is bounded by rate·K whatever the residual. Adam turned
+/// out to be the wrong optimiser for single-exemplar learning (see
+/// `marl.Optimizer`) and NLMS replaced it — and an NLMS step has no
+/// a-priori bound at all, because it is proportional to a residual and a
+/// weight that nothing caps. Handed the NLMS rate, the pre-registered
+/// formula returned 5.08 of a unit domain: a bound larger than anything
+/// that exists, and G17 (d) asserting "no probe beyond it moved" could not
+/// fail. A vacuous gate is worse than no gate, so the model now carries an
+/// explicit TRUST REGION — a step may not move a centre more than
+/// `Options.trust` region edges — and the bound is that, exactly, for any
+/// optimiser. G17 (d) additionally requires the bound to be smaller than
+/// the domain, so this particular vacuity cannot come back quietly.
+pub fn marl0ReachBound(h: f32, steps: u32, trust: f32) f32 {
+    return h * (2 + @as(f32, @floatFromInt(steps)) * trust);
+}
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

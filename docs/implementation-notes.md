@@ -2997,6 +2997,304 @@ the packing of L moves here, it moves in rill in the same beat. The gate
 failing IS that notification — it is not a flake, and it is not rill's problem
 to notice later.
 
+## MARL-0 — learning as local deformation (Monday 2026-09-07 — Christian: "I had this idea that Loam could do double duty as an ML platform … I put a campaign in the docs folder")
+
+`docs/MARL_CAMPAIGN.md` is the brief. What landed is `src/marl.zig`, its
+seedbed `src/marl_run.zig` (`zig build marl`), the predictions in
+`tools/marl_predict.py`, the thresholds in `thresholds.zig`, and G17 (a)
+to (g) beside the code in `rbf.zig`'s manner. Nothing is on the sim path,
+nothing is a channel, nothing is in any hash, and the rest of the suite is
+untouched.
+
+### Where MARL is allowed to live, and where it is not
+
+Christian's split, drawn before a line was written and the reason the
+first day did not touch a brick:
+
+    substrate — scheduling, publication, deterministic merging, hashing,
+    lifetimes, the active set                            → reusable
+    field storage — sample planes, halos, seams, the B-spline, the
+    Lipschitz summaries                                  → NOT MARL storage
+
+The campaign's "the substrate should not know that learning is happening"
+holds for the first list and fails for the second. A brick is planes of
+f32 over an 11³ block under a seam contract and a per-channel Lipschitz
+bound; kernels are a variable-length parameter list with no per-sample
+meaning. In planes, the seam pass would hand brick A's centre coordinates
+the coarse interpolant of brick B's, and `Summary.lipschitz` would bound
+the gradient of parameter soup. So MARL-0 borrows the substrate's IDEAS —
+a region owning its own state, a conservative bound a query rejects a
+region by, exact locality — and owns its own memory. Whether kernels earn
+a home inside a brick is MARL-0.5's question, and the saturation data
+below is what should answer it (campaign §10).
+
+The kernel is a deliberate TWIN of `rbf.zig`'s rather than a call into it.
+`rbf.zig` now carries the cross-repo bit-pin, and a learning experiment
+must not be able to move the kernel out from under rill and the shader by
+refactoring for its own convenience. G17 (a) is this file's half: the two
+read the same bits at the same point, byte equality in f32.
+
+### The predictions, written before a single exemplar streamed
+
+`tools/marl_predict.py`, a second program that reimplements the truth
+field from `marl.zig`'s constants and knows nothing about the learner —
+`g13_predict.py`'s shape and for the same reason.
+
+| | predicted | why |
+|---|---|---|
+| `MARL0_RMS_GAIN` | 2 | the target's variance is 43% swell, 60% shell, −3% cross. Learning the swell perfectly and the shell not at all buys 1.32; the shell alone buys 1.58. A gate at 2 needs 75% of the variance, which NEITHER PART ALONE CAN SUPPLY — the only way this gate could have been vacuous by construction |
+| `MARL0_MAX_TOUCHED` | 120 | a birth is refused once a kernel reads above `coverage`, so kernels pack at one per ball of r_cov = √(−2 ln 0.35) = 1.449 widths while each is live to r_cut = √32 = 5.657. The overlap count is the volume ratio (r_cut/r_cov)³ = 59.5; the bound is twice it |
+| `MARL0_MAX_TOUCHED_FRACTION` | 0.05 | §20 proposition 2, "a tiny fraction of model state" |
+| `MARL0_CAPACITY_RATIO` | 10 | a FLOOR with a decade of headroom, not an estimate: the theory is an asymmetry of mechanism, not a number |
+| the interference radius | 2h + one event's displacement | a proof, not a guess — and it needed an amendment, below |
+
+### What the run said
+
+Defaults: 6³ regions (h = 0.1667, σ_max 0.02946), budget 64, θ 0.02,
+coverage 0.35, three steps, rate_w 0.5, rate_geom 0.2, trust h/3, seed 7.
+ReleaseSafe.
+
+| | 200 000 exemplars | 1 000 000 | predicted |
+|---|---|---|---|
+| held-out RMS | 0.14399 → 0.02326 (**gain 6.19**) | 0.14580 → 0.01202 (**12.13**) | ≥ 2 |
+| max abs error | 1.0053 → 0.3340 | 1.0176 → 0.1303 | — |
+| learning events | 17.7% of exemplars | 12.0% | — |
+| kernels | 3 648, no saturation at all | 4 071 | — |
+| kernels touched per event | 86.0 (2.36% of the model) | 108.9 (2.68%) | ≤ 120, ≤ 0.05 |
+| kernels evaluated per prediction | 288.3 | 345.3 | — |
+| regions touched | 10.8 of 27 | 11.6 | — |
+| centre drift, mean / max | 0.00066 / 0.02015 | 0.00086 / 0.02605 | — |
+| kernels that left their birth region | 14 of 3 648 | 23 of 4 071 | — |
+| shell band : quiet slab | 8 454 : **0** per unit³ | 10 079 : **0** | ≥ 10 |
+| wall clock | 2.19 s | 11.6 s | — |
+
+The error falls at every checkpoint and the event rate falls with it —
+68% of exemplars provoking work at a thousand, 17.7% at two hundred
+thousand. That is §12's picture arriving on its own: broad regions settle,
+activity stays where the structure is.
+
+**The quiet slab took nothing.** Not a small number of kernels — none, at
+either run length, and none under any instrument except Adam. §20's
+proposition 5 is answered by that line alone: the error field is a thing
+Loam's existing machinery would know what to do with, because it is
+already shaped like an active set.
+
+**Interference is a fact about bits.** One learning event, 20 000 probes,
+at 1 000 000 exemplars:
+
+    ∞-distance   max |Δŷ|      the proved bound is 0.5000
+       0.083     2.193e-2
+       0.167     2.633e-3
+       0.250     7.091e-6
+       0.333     0.000e0      ← and every bucket beyond it
+    the observed radius — the furthest probe whose bits moved — 0.2418
+
+Zero probes changed beyond the bound. §20 proposition 3 is not an
+empirical hope in this model: `CUTOFF` returns a hard zero, so the only
+ways to disturb a distant region are to move a centre there or birth a
+kernel that overlaps it, and both are bounded. The observed radius is half
+the proved one, which is what a loose proof looks like when it is honest.
+
+### Adam is the wrong optimiser for one exemplar at a time
+
+The sharpest finding of the day, and it cost a full rebuild of the step.
+`rbf.fit` uses Adam, the campaign names Adam, and Adam is wrong here.
+
+Adam divides the gradient by its own running magnitude — the property that
+makes it scale-free over a batch. With ONE exemplar per step the gradient
+is mostly noise, m̂/√v̂ is ±1 whatever the residual, and every touched
+kernel takes a full `rate`-sized step forever. It violates the campaign's
+own premise literally: *learning is deformation in response to surprise*,
+and Adam deforms just as hard when there is no surprise left.
+
+Measured, both at 200 000 exemplars, everything else equal:
+
+| | Adam | NLMS |
+|---|---|---|
+| held-out RMS | 0.14399 → **0.15328** (gain 0.94) | → 0.02326 (6.19) |
+| centre drift, mean / max | **0.570 / 1.541** (the domain is 1) | 0.00066 / 0.02015 |
+| kernels that left their birth region | 28 184 of 28 436 | 14 of 3 648 |
+| kernels | 28 436, **26 638 saturation events**, 167/216 regions full | 3 648, none |
+| shell : quiet density | 6 249 : 52 545 — **inverted** | 8 454 : 0 |
+| wall clock | 7.90 s | 2.19 s |
+
+A model with eight times the capacity, predicting *worse than empty*, with
+its kernels piled into the region where the truth is identically zero.
+
+What replaced it is normalised least mean squares on the weights and the
+NATURAL gradient on the geometry, both driven by one attribution
+
+    a_i = e · g_i / Σ_j g_j²
+
+the share of the residual kernel *i* is answerable for. The normalisation
+is not cosmetic: about ninety kernels overlap any point, and ninety
+unnormalised corrections each big enough to answer the whole residual
+overshoot it ninetyfold. The natural gradient on the centre is the
+pleasant part — preconditioning by the kernel's own covariance collapses
+the whole thing, since Σ(Lv) = L⁻ᵀL⁻¹Lv = L⁻ᵀv = d, so
+
+    Δμ ∝ −(w · a) · d
+
+a kernel that under-reads at *x* simply moves toward *x*, by its share and
+no more. No matrix, and no units to get wrong. Adam is kept as
+`--optimizer adam`, an instrument and G17 (f)'s mutation.
+
+### Three things the instruments and the gates found
+
+**The unbounded log-width** (`--width 0.4`, a panic at 10 000 exemplars).
+Nothing bounded a kernel from below: descent widened one until `expf`
+underflowed L's diagonal to zero, `halfExtents` divided by it, the reach
+came back infinite, and the reach projection added log(∞) to the
+log-width. The centre clamp then let the NaN through, because
+`if (v < 0 or v > 1)` is false for a NaN and no ordered comparison catches
+one. Both fixed — σ ≤ h as an outer floor, and the centre clamp written as
+`!(v >= 0 and v <= 1)` with an assert. The floor changes no converged
+model, which is what an outer bound should do.
+
+**The reach projection did not converge, and a field was hiding it.** The
+gather's exactness rests on every kernel's cutoff box reaching at most one
+region edge. The projection scaled L by f = reach/h and then stored
+`min(reach, h)` — so the FIELD said the invariant held while the geometry
+did not, on 0.6% of clamps. Replacing the store with an assert made the
+assert fire, and the reason is arithmetic: for a kernel one ulp over `h`,
+f = 1 + 2⁻²³, and log(f) ≈ 1.2e-7 is SMALLER THAN THE ULP OF THE LOG-WIDTH
+ITSELF (~3.5, ulp 2.4e-7). The increment rounds away, the shape does not
+move, and the loop spins on a kernel that is already correct to within a
+float. A minimum shrink of one part in a thousand fixes it and terminates
+by construction. Side effect worth recording: reach clamps fell from
+335 466 to 30 963 per 200 000 exemplars, because nine tenths of them were
+that boundary case re-firing to no effect. The model is otherwise
+unmoved — gain 6.21 → 6.19, 3 640 → 3 648 kernels.
+
+**The quiet slab was in the wrong place, and the gate on the EXPERIMENT
+caught it.** The slab exists to be unreachable, not merely zero: the
+window ends at 0.70 and a kernel reaches at most h, so nothing born on
+structure should get into it. At 6³ that furthest reach is 0.8667, and the
+slab started at 0.85. The derivation the slab exists to support was false
+for the length of one gate run, while every measured number using it was
+right — the slab was empty anyway. `the truth has the three parts the
+campaign asked for` asserts the inequality directly and failed; the slab
+moved to 0.90 (volume 0.0998) and the assertion is now true with 0.0333 of
+margin. A gate on the target rather than on the learner is what this kind
+of error needs, because G17 (f) would have gone on passing.
+
+### The region bound is live only where kernels are narrow
+
+Each region carries `max_reach`, the largest cutoff box it owns —
+`Summary.covers`'s idea in one float, conservative so it may only ever be
+too large. At the default birth width it prunes **nothing**, because a
+newborn sits at the clamp and pins its region's bound to *h*, which is
+further than any neighbour's cube. At `--width 0.4` it prunes 4.68 regions
+per prediction. It is reported on every run so it can never be silently
+dead, and the honest reading is that it earns its place only in a model
+whose kernels have had room to narrow.
+
+### The vacuous bound, and the amendment
+
+`marl0ReachBound` was pre-registered as `2h + steps · rate · K` with
+K = (1−β₁)/√(1−β₂) — Adam's bound on how far one step can displace a
+centre. When NLMS replaced Adam the gate went on calling it, now with the
+NLMS rate, and it returned **5.0768 of a unit domain**: a bound larger than
+anything that exists, and G17 (d)'s "no probe beyond it moved" could not
+fail. It passed on nothing.
+
+An NLMS step has no a-priori bound at all — it is proportional to a
+residual and a weight that nothing caps — so the model now carries an
+explicit TRUST REGION (`Options.trust`, a third of a region per step) and
+the bound is `h · (2 + steps · trust)` = 0.5000, exactly, for any
+optimiser. G17 (d) additionally asserts the bound is smaller than the
+domain and that probes exist beyond it, so this vacuity cannot come back
+quietly. The trust region has never bitten at the defaults (`trust 0` on
+every run above) — drift is fifty times under it — which is the point: it
+costs nothing and makes the proof hold in the case that is not the default.
+
+Amending a pre-registered number after a run is what the house rule
+forbids, so it is recorded as what it is. The amendment makes the bound
+SMALLER, which is the opposite of tuning a gate to pass, and it was forced
+by replacing the step rule the original derivation assumed. `MARL0_ADAM_K`
+stays where it was, documenting the instrument's bound.
+
+### The gates, and what each was paid for
+
+| gate | mutation | result |
+|---|---|---|
+| G17 (a) the kernel is `rbf`'s, bit for bit | `CUTOFF` 32 → 30 | fails |
+| G17 (b) the gradient is the finite difference's | centre components reversed | fails |
+| | centre gradient halved | fails |
+| | `l_ii` dropped from a log-diagonal | fails |
+| | `d_i` dropped from an off-diagonal | fails |
+| G17 (c) the 27-region gather IS the sum over the model | the reach projection removed | fails |
+| | gather the own region only | fails |
+| G17 (d) an event changes nothing beyond the bound | `gaussian`'s cutoff return removed | fails |
+| G17 (e) the model learns | births refused and both rates zero | gain exactly 1 |
+| G17 (f) capacity follows complexity | `--optimizer adam` | ratio inverts to 0.1 |
+| G17 (g) the model is a function of (seed, count, options) | the stream keyed by a constant | fails |
+| the truth has the three parts | — | it is the gate that caught the slab |
+
+Three notes on the biting. G17 (b) needs its loss summed over sixteen
+points in f64: differenced as a single f32 expression the same check fails
+at the second digit on cancellation alone, and the gradient it was accusing
+is correct. G17 (c) compares the gather against a reference that walks
+EVERY region in linear index order — the order the gather visits its
+twenty-seven in — so the two sums add the same terms in the same order;
+summed in kernel-index order instead they differ in the last two places,
+which is a true statement about associativity and a useless one about
+locality. And one mutation was reported as SURVIVING when it had only
+failed to compile: dropping `lv` outright leaves it unused, which is a
+build error and not a bite. The harness now distinguishes the two, and the
+real mutations (reversing and halving) both fail as they must.
+
+### What G17 (e) does not witness — a question for Christian
+
+With births refused AND both rates zero the model stays empty and the gain
+is exactly 1, so the gate is not vacuous. But **birth alone clears it**:
+with no descent whatsoever, kernels seeded at the exemplar with the
+residual as their weight reach gain 2.85 at 200 000 exemplars against the
+full learner's 6.19. Birth alone also empties the quiet slab, so it clears
+G17 (f) too.
+
+So the two gates witness *the model learns* and not *the descent works*.
+That is a real hole and I am not going to plug it by writing a threshold
+now that I have seen 2.85 and 6.19 — that is the first result becoming the
+threshold, exactly what the house rule is for. Recorded, and MARL-1 should
+pre-register a number for the descent's own contribution before it runs.
+The decomposition to work from, all at 200 000 exemplars from an empty
+0.14399: birth alone 0.05055 with 3 264 kernels, birth and descent 0.02326
+with 3 648. The descent buys less than half the kernels' worth of capacity
+and more than half the remaining error.
+
+### Recorded, not built
+
+- **Parallel learning needs one ruling first.** Gradient descent is not
+  order-free: sums of gradients commute, sequential steps do not, and
+  Adam's moments certainly do not. A parallel MARL must compute gradients
+  against the PUBLISHED parameters and apply one step at commit — Jacobi,
+  not Gauss-Seidel. It fits "operators write deltas, never bricks" exactly
+  and it costs convergence rate. That is a price and it belongs in the
+  design before someone meets it as a bug. Trigger: MARL-0.5, the first
+  time a learning event runs on a job system.
+- **About ninety kernels overlap every point, and that is the cutoff's
+  price.** `CUTOFF` = 32 makes a kernel live out to 5.66 widths while it is
+  only USEFUL out to about 1.45, so the overlap count is 3.9³ ≈ 60 whatever
+  the scale — measured 86 at 200 000 exemplars and 109 at a million,
+  because descent widens kernels past their birth width. The generosity is
+  there so `rbf`'s material read is exactly the entry far away, and it is
+  paid for here in evaluations per prediction (288, then 345). Worth
+  reading as a finding, not a nuisance. Trigger: if MARL ever needs the
+  cutoff moved, it moves in rill and the shader in the same beat, and
+  G17 (a) is the notification.
+- **rill already has the D-dimensional evaluator MARL-3 wants**
+  (`rill/src/rbf.zig`, MAX_D = 8), behind an explicit no-edge ruling
+  between the repos. MARL is the first thing that will make that ruling
+  cost something — but not before MARL-3, and at D = 3 nothing is needed.
+- The kernel budget was never reached at the defaults (0 saturation
+  events, 0/216 regions full), so the campaign's §10 saturation data comes
+  from the instruments instead: `--width 0.4` saturates 111/216 regions
+  with 10 779 events and drives the held-out RMS to 0.26790, worse than
+  empty. Narrow births are the failure mode, not the budget — a kernel born
+  at 40% of the widest the clamp allows needs eight times as many of
+  itself to satisfy the same coverage, and the budget runs out first.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

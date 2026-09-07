@@ -79,6 +79,23 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| runner_cmd.addArgs(args);
     b.step("run", "Run loam-run: zig build run -- [opts]").dependOn(&runner_cmd.step);
 
+    // marl-run: MARL-0's seedbed (docs/MARL_CAMPAIGN.md). A separate
+    // executable, not a flag on loam-run: MARL is not the sim — no World,
+    // no step, no fed clock, nothing in a hash — and a flag would say
+    // otherwise.
+    const marl_mod = b.createModule(.{
+        .root_source_file = b.path("src/marl_run.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    marl_mod.addImport("loam", mod);
+    const marl_exe = b.addExecutable(.{ .name = "marl-run", .root_module = marl_mod });
+    b.installArtifact(marl_exe);
+    const marl_cmd = b.addRunArtifact(marl_exe);
+    marl_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| marl_cmd.addArgs(args);
+    b.step("marl", "Run marl-run: zig build marl -- [opts]").dependOn(&marl_cmd.step);
+
     // verify-dump: the cross-language half of the dump gate. loam-run
     // writes a snapshot, and the struple PYTHON port reads it back with no
     // loam code on that side — one witness is prose.
@@ -117,4 +134,11 @@ pub fn build(b: *std.Build) void {
     test_run_mod.addImport("common", tm.common);
     const run_tests_exe = b.addTest(.{ .root_module = test_run_mod });
     test_step.dependOn(&b.addRunArtifact(run_tests_exe).step);
+    const marl_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/marl_run.zig"),
+        .target = target,
+        .optimize = test_optimize,
+    });
+    marl_test_mod.addImport("loam", tm.loam);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = marl_test_mod })).step);
 }

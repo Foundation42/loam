@@ -20,6 +20,10 @@ run per edit makes the harness the activity rather than the work.
     zig build run -- --scene marble --steps 110 --volume 64:slice.ppm  # the material seedbed: the marble (sheet veins) as a material field, a colour slice; --scene flecks the first
     zig build run -Doptimize=ReleaseSafe -- --scene marble --steps 110 --rbf 256:marble.lrbf   # the field packed into Gaussians (a tool run; the fit is not a sim measurement)
     zig build run -- --help                   # loam-run, the seedbed
+    zig build marl -- --exemplars 200000           # MARL-0: local online RBF learning (docs/MARL_CAMPAIGN.md)
+    zig build marl -- --exemplars 1000000 --interference --pgm out/m   # the error field as a picture, and what one event disturbed
+    zig build marl -- --optimizer adam             # the instrument: the batch optimiser, and why it is wrong per-exemplar
+    zig build test -Dtest-filter="G17"             # MARL's gates; python3 tools/marl_predict.py is where their numbers came from
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -40,6 +44,20 @@ Rules that hold whatever you picked:
   `--phases` prints wall-clock per phase, and the numbers in the ledger
   state which build they came from. One suite per commit, not per edit.
 - One GPU gate at a time, when a sibling repo's are involved.
+
+## MARL is not the sim
+
+`src/marl.zig` and `marl-run` are a learning experiment
+(`docs/MARL_CAMPAIGN.md`), on `rbf.zig`'s standing: no World, no step, no
+fed clock, nothing in any hash, and a separate executable rather than a
+flag on the seedbed. Christian's split governs what it may borrow —
+Loam's SUBSTRATE (scheduling, publication, deterministic merging, hashing,
+lifetimes, the active set) is reusable; Loam's FIELD STORAGE (sample
+planes, halos, seams, the B-spline, the Lipschitz summaries) is NOT MARL
+storage, because kernels are a parameter list and a seam pass would
+interpolate them. MARL's kernel is a deliberate TWIN of `rbf.zig`'s, held
+to it bit for bit by G17 (a): a learning experiment must not be able to
+move the kernel out from under rill and the shader.
 
 ## The ledger
 

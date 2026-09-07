@@ -46,6 +46,9 @@ pub const dump = @import("dump.zig");
 pub const seedbed = @import("seedbed.zig");
 pub const bark = @import("bark.zig");
 pub const rbf = @import("rbf.zig");
+/// MARL-0: local online RBF learning (docs/MARL_CAMPAIGN.md). Not the sim
+/// path, not a channel, not in any hash — `rbf`'s standing.
+pub const marl = @import("marl.zig");
 
 // The working surface, re-exported flat.
 pub const Domain = lattice.Domain;
@@ -81,5 +84,6 @@ test {
     _ = seedbed;
     _ = bark;
     _ = rbf;
+    _ = marl;
     _ = @import("tests.zig");
 }
