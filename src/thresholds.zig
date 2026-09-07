@@ -1467,4 +1467,131 @@ pub const MARL12_SHARING: f32 = 1.25;
 /// one-channel number sat.
 pub const MARL12_ONLINE_COST: f32 = 2.0;
 
+// ── MARL-13 (the occlusion cache: the first NOISY field) ─────────────
+//
+// From `tools/marl13_predict.py`. Twelve phases and every field the
+// campaign learned was EXACT. Ambient occlusion is (1/M)·Σ V(x, ωᵢ) over M
+// sampled directions — a Binomial(M, p)/M estimate with σ = √(p(1−p)/M),
+// a half at one ray and a sixteenth at sixty-four. G33 (a) measures the
+// fixture's estimator against that theory and it tracks it.
+
+/// G33 (b): how far the measured RMS² at M = 4 sits from the line through
+/// M = 1 and M = 16 in 1/M.
+///
+/// PROPOSED at 1.30 either side, and it is a LAW rather than a bound.
+/// NLMS with step μ does not converge on noisy data, it hovers, and the
+/// hovering costs μ/(2−μ) of the measurement variance no matter how much
+/// data arrives. So
+///
+///     RMS² = bias² + μ/(2−μ) · V/M
+///
+/// which is linear in 1/M. Fitted from the ends and checked in the middle,
+/// as MARL-10's law was: a line through two points is not a claim, the
+/// third point is.
+///
+/// This is the first thing the campaign has met that MORE DATA DOES NOT
+/// FIX, which is the opposite of everything MARL-11 concluded and is why
+/// it is gated as a law rather than mentioned as a caveat.
+///
+/// **HELD, at 1.023.** RMS at M = 1/4/16 is 0.35980/0.22497/0.17174; the
+/// line through the ends predicts 0.22246 at M = 4 and the measurement is
+/// 0.22497. The intercept — the representation error with the noise
+/// extrapolated away — is 0.15110.
+///
+/// One thing the law does NOT explain, and it is worth more than the fit.
+/// The slope implies a variance of 0.32, and a binomial's is at most 0.25,
+/// so something else is scaling with the noise. It is CAPACITY: 9 923
+/// kernels at one ray a sample against 7 656 at sixteen, for the same
+/// 60 000 samples. A noisy residual crosses the surprise threshold where a
+/// clean one would not, so the model births on noise — §5's "do not
+/// confuse noise with complexity" arriving as a measurement rather than an
+/// instruction.
+pub const MARL13_NOISE_LAW: f32 = 1.30;
+
+/// G33 (c): RMS at `rate_w` 0.5 over RMS at 0.05, at one ray a sample.
+///
+/// PROPOSED as a FLOOR at 2.0. The theory says 3.6 — √(0.3333/0.0256) —
+/// and the floor is two because the bias term does not shrink with the
+/// rate and caps how much of the 3.6 can show.
+///
+/// Derived before the run, not swept. It is MARL-12's √C in another
+/// disguise: a default that was correct on the data the campaign happened
+/// to have, and wrong the moment the data changed character. `rate_w` 0.5
+/// answers one exemplar exactly and hovers at 0.577σ forever; 0.05 costs
+/// 0.160σ and still converges to 1e-7 over the ~300 samples a kernel sees.
+///
+/// **REFUTED, and left standing.** Measured 1.29 against a floor of 2.0.
+///
+/// The diagnosis is the phase's finding. The LMS floor analysis treats the
+/// model as a fixed basis with noisy weights, and this model is not that.
+/// Noise enters by THREE doors and `rate_w` closes one:
+///
+///   the WEIGHTS  — `rate_w`, the door the theory is about. Worth 1.29.
+///   the GEOMETRY — `rate_geom`, since a noisy residual moves centres and
+///                  shapes as readily as weights. Closing it as well takes
+///                  the total to 1.67 AND drops the population from 11 176
+///                  to 7 113, because a settled geometry covers better and
+///                  births less.
+///   the TOPOLOGY — births are gated on the RAW surprise, which is noisy
+///                  however slowly the weights follow it. No rate closes
+///                  this one; it needs a noise-aware birth test, and that
+///                  is not built.
+pub const MARL13_RATE_BOTH_DOORS: f32 = 1.67;
+pub const MARL13_RATE: f32 = 2.0;
+
+/// G33 (d), THE HEADLINE: RMS(MARL) over RMS(a dense grid), at EQUAL BYTES
+/// and EQUAL RAY BUDGET.
+///
+/// PROPOSED as a CEILING at parity, as MARL-11's headline was and for the
+/// same reason — it is the number that can embarrass the campaign, and a
+/// comfortable margin would stop it being able to.
+///
+/// `rbf.zig` exists because Christian asked for a packed Gaussian set
+/// "instead of the giant volume texture", so the giant volume texture is
+/// who it has to beat. Equal bytes because memory is what a cache is
+/// rationed by; equal rays because the rays are the expense being cached,
+/// and a grid handed unlimited rays would be compared on a resource nobody
+/// has.
+///
+/// The case for the grid is stronger than it looks: at 1 500 kernels it
+/// gets 24³ cells and ~578 rays each, so its own noise is 0.021 and it is
+/// limited by RESOLUTION rather than by noise — and it never has to work
+/// out where to look. The case for MARL is that a grid spends its cells
+/// uniformly while occlusion is ~1 over the open majority of the cube, and
+/// that many samples can be averaged through one kernel where a grid cell
+/// gets one shot at its own centre.
+///
+/// **REFUTED at 1.854, and the refutation is the useful part.** MARL
+/// scores 0.12568 against the grid's 0.06779 at 365 KiB against 356, both
+/// spending 2 000 000 marched directions.
+///
+/// TWO mechanisms came out of it, both gated in G33 (d).
+///
+/// **The background.** A hard cutoff makes a Gaussian decay to EXACTLY
+/// zero, so a constant non-zero background is not free — it has to be held
+/// up by overlapping kernels everywhere it extends. Occlusion is ≈1 across
+/// the open majority of a cube. Every field this campaign ever learned had
+/// a ZERO background (the quiet slab, the marble's matrix), so it never
+/// grew the bias term `rbf.zig` has had from the day it was written — "the
+/// entry is the BIAS: the matrix costs nothing, only the structure costs
+/// kernels". Learning `1 − AO` instead, which is one negation and no new
+/// code, scores 0.08975 with 8 057 kernels: 1.40× the accuracy for 14%
+/// less capacity.
+///
+/// **The domain.** A grid pays memory for every cell whether or not
+/// anything is ever asked there. A renderer asks for occlusion at SHADING
+/// POINTS, which are on surfaces — so the volume-uniform comparison above
+/// is the artificial one. Restricted to a shell around the geometry, MARL
+/// scores 0.13222 at 139 KiB against the grid's 0.14503 at 128, a ratio of
+/// **0.912**, with a lookup 2× cheaper than in the volume case because the
+/// population fell to 3 547.
+///
+/// So the packed set does beat the giant volume texture, in the regime
+/// `rbf.zig` was written for and not in the one this threshold assumed:
+/// when the interesting set is SPARSE IN THE DOMAIN. The marble's veins
+/// were. A volume-filling occlusion field is not. That is the sentence the
+/// phase bought, and it is worth more than the parity it was set at.
+pub const MARL13_SHELL: f32 = 0.912;
+pub const MARL13_TEXTURE: f32 = 1.0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

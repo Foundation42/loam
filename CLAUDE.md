@@ -60,6 +60,7 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G31"             # MARL-11's gates; tools/marl11_predict.py, two of whose four were REFUTED
     zig build marl -- --marble9                    # MARL-12: NINE channels on one geometry — two materials, so the sharing can cost something
     zig build test -Dtest-filter="G32"             # MARL-12's gate; tools/marl12_predict.py. The widening's own gate is the suite being UNCHANGED
+    zig build test -Dtest-filter="G33"             # MARL-13: the occlusion cache — the first NOISY field; tools/marl13_predict.py, two of whose three were REFUTED
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -269,6 +270,45 @@ with one, every channel is the blend times a constant, the nine are exactly
 collinear, and a shared basis is free by construction — a fixture that can
 only agree is not a fixture.
 
+MARL-13 then built the OCCLUSION CACHE Christian named on the first
+morning, and it is the first field the campaign has learned from NOISY
+samples — ambient occlusion is a Binomial(M, p)/M estimate, σ = √(p(1−p)/M),
+a half at one ray. Three results.
+
+**The learner has a noise floor and it belongs to the RATE.** NLMS with
+step μ does not converge on noisy data, it hovers, at μ/(2−μ) of the
+measurement variance HOWEVER MUCH DATA ARRIVES — so `RMS² = bias² +
+μ/(2−μ)·V/M`, linear in 1/M, held at 1.023 (G33 b). The first thing this
+campaign has met that more data does not fix.
+
+**Noise enters by three doors and a rate closes one.** `rate_w` 0.5 → 0.05
+is worth 1.29× (the pre-registered floor of 2.0 is REFUTED); adding
+`rate_geom` 0.2 → 0.02 takes it to 1.67× and drops the population 11 176 →
+7 113. The third door is the TOPOLOGY: births are gated on the raw
+surprise, so **the model births on noise** — 9 923 kernels at one ray a
+sample against 7 656 at sixteen, same samples. No rate closes that; it
+needs a noise-aware birth test, and §5's "do not confuse noise with
+complexity" is now a measurement rather than an instruction.
+
+**Against a giant volume texture, at equal bytes and equal rays: MARL
+LOSES 1.854× on a volume-filling field and WINS at 0.912 on a shell around
+geometry.** Two mechanisms. A hard cutoff makes a Gaussian decay to exactly
+zero, so a constant non-zero background must be held up by overlapping
+kernels everywhere it extends — and every field the campaign ever learned
+had a ZERO background, so it never grew the bias term `rbf.zig` has had
+from the start ("the entry is the BIAS"). Learning `1 − AO` is one negation
+and worth 1.40× for 14% less capacity. And a grid pays memory for every
+cell whether or not anything is asked there, while a renderer asks at
+SHADING POINTS. So: **a learned sparse field beats a dense grid when the
+interesting set is SPARSE IN THE DOMAIN, and loses when the field is
+non-trivial everywhere.** The marble's veins were sparse; a volume-filling
+occlusion field is not; a shell is.
+
+Honest costs: a cache lookup is 6 651 ns against a texture fetch's 13 — the
+27-region gather is exact, not free, and at 9 334 kernels over 216 regions
+"local" means ~1 166 kernels. G33 costs ~25 s of suite, most of it the
+4 096-ray reference, which stays because the headline turns on 0.912.
+
 ## The ledger
 
 `docs/implementation-notes.md` — every decision made while building, with
@@ -335,8 +375,14 @@ a trigger. Loud, never a guess — a refusal lands on the node that refused.
   in a different order; G1 runs serial and over common's JobSystem and
   compares the bytes against a frozen reference.
 - **The carrier is composed, never added.** `surface` (Phase 2, R8–R11)
-  is a signed implicit, negative inside, clamped to ±3 cells of the
-  brick's gauge; +band is "far", the absent value. A contribution is a
+  is a signed implicit, POSITIVE INSIDE, clamped to ±3 cells of the
+  brick's gauge; −band is "far", the absent value. (This read "negative
+  inside" until MARL-13 needed to ray-march it. `src/tests.zig`'s own
+  sheet gate samples `Channel.surface` and prints φ = +2.00 on the
+  sheet's axis, +1.28 four units along it, −1.53 two and a half ACROSS
+  it, −2.72 nine beyond its width. A marcher written from the old prose
+  finds occlusion in empty space and none inside a trunk — a bug that
+  renders as a plausible picture.) A contribution is a
   `SurfaceOp` — a plane of signed distances with a collar k, an order and
   a mode (join = smooth union, cut = CSG difference) — applied in order
   at commit. Fronts sweep capsules with k = 0: a chain of a front's own

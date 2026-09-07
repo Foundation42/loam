@@ -5093,6 +5093,149 @@ measured, on MARL-10's precedent.
 Which is the marble's second half done, and the last thing that stood
 between the campaign and a real material field.
 
+## MARL-13 — the occlusion cache, and the first NOISY field (Monday 2026-09-07)
+
+Christian named this one on the morning MARL started — "an irradiance or
+occlusion cache is exactly what gave me the idea" — and MARL-11's loss
+argued it is the regime MARL is actually for. That phase found the binding
+constraint is EVIDENCE, and lost to a batch optimiser that re-read its pool
+4.7 times. A cache cannot be re-read: each sample is computed once, at
+whatever point the renderer asked about, and never seen again. A batch bake
+is not a slower option there, it is not an option.
+
+### What is new is the noise
+
+Twelve phases and every field the campaign learned was EXACT. `truthOf`
+returns the answer; `rbf.target` returns the answer. Ambient occlusion is
+`(1/M)·Σ V(x, ωᵢ)` over M sampled directions — a Binomial(M, p)/M estimate
+with σ = √(p(1−p)/M), a half at one ray and a sixteenth at sixty-four.
+G33 (a) measures the fixture's estimator against that theory: σ 0.2114
+against the binomial's 0.2167 at four rays, 0.0541 against 0.0542 at
+sixty-four. §5's "do not confuse noise with complexity" was a design
+instruction for twelve phases; this is the phase where there is finally
+some noise to not confuse.
+
+### A documentation bug found by needing to march
+
+`CLAUDE.md` said the carrier is "negative inside". **It is not.**
+`src/tests.zig`'s own sheet gate samples `Channel.surface` and prints
+φ = +2.00 on the sheet's axis, +1.28 four units along it, −1.53 two and a
+half ACROSS it and −2.72 nine beyond its width. **φ > 0 is solid.** A
+ray-marcher written from the prose finds occlusion in empty space and none
+inside a trunk — a bug that renders as a plausible picture. The line is
+corrected, with the measurement beside it.
+
+### The law: the learner has a noise floor, and it belongs to the RATE
+
+NLMS with step μ does not converge on noisy data; it hovers, and the
+hovering costs μ/(2−μ) of the measurement variance **however much data
+arrives**. So
+
+    RMS² = bias² + μ/(2−μ) · V/M
+
+which is linear in 1/M. Fitted from the ends and checked in the middle, as
+MARL-10's law was — a line through two points is not a claim, the third
+point is. Measured 0.35980 / 0.22497 / 0.17174 at M = 1/4/16; the line
+predicts 0.22246 at M = 4 against 0.22497 measured, a ratio of **1.023**
+against a ceiling of 1.30. The intercept, the representation error with the
+noise extrapolated away, is 0.15110.
+
+**This is the first thing the campaign has met that more data does not
+fix**, which is the exact opposite of MARL-11's conclusion and is why it is
+gated as a law rather than mentioned as a caveat.
+
+### Noise enters by three doors, and the rate closes one
+
+The fitted slope implies a variance of 0.32 and a binomial's is at most
+0.25 — so something else scales with the noise. It is CAPACITY. 9 923
+kernels at one ray a sample against 7 656 at sixteen, for the same 60 000
+samples: a noisy residual crosses the surprise threshold where a clean one
+would not, and **the model births on noise.**
+
+`MARL13_RATE` was pre-registered from μ/(2−μ) at a floor of 2.0 and is
+**REFUTED at 1.29**. The diagnosis is the finding:
+
+| door | closed by | worth |
+|---|---|---|
+| the weights | `rate_w` 0.5 → 0.05 | 1.29× |
+| + the geometry | `rate_geom` 0.2 → 0.02 | 1.67×, and 11 176 → 7 113 kernels |
+| the topology | nothing built | — |
+
+Closing the geometry door also *shrinks* the population, because a settled
+geometry covers better and births less. The third door cannot be closed by
+any rate: births are gated on the RAW surprise, which is noisy however
+slowly the weights follow it. It needs a noise-aware birth test.
+
+### The headline: refuted, and worth more than parity would have been
+
+`rbf.zig` exists because Christian asked for a packed Gaussian set "instead
+of the giant volume texture", so the giant volume texture is who it has to
+beat. Equal bytes (memory is what a cache is rationed by) and equal rays
+(the rays are the expense being cached), 2 000 000 marched directions each:
+
+| arm | rays | samples | kernels / grid | KiB | RMS | query ns |
+|---|---|---|---|---|---|---|
+| MARL, online | 16 | 125 000 | 9 334 | 364.6 | 0.12568 | 15 171 |
+| dense grid, trilinear | 21 | 91 125 | 45³ | 356.0 | **0.06779** | 36 |
+| MARL, on 1 − AO | 16 | 125 000 | 8 057 | 314.7 | 0.08975 | 13 680 |
+
+**REFUTED at 1.854.** And two mechanisms came out of it.
+
+**The background.** A hard cutoff makes a Gaussian decay to EXACTLY zero,
+so a constant non-zero background is not free — it has to be held up by
+overlapping kernels everywhere it extends. Occlusion is ≈1 across the open
+majority of a cube. Every field this campaign has ever learned had a ZERO
+background — the quiet slab, the marble's matrix — so **it never grew the
+bias term `rbf.zig` has had since the day it was written** ("the entry is
+the BIAS: the matrix costs nothing, only the structure costs kernels").
+Learning `1 − AO` instead is one negation and no new code, and it is worth
+1.40× the accuracy for 14% less capacity.
+
+**The domain.** A grid pays memory for every cell whether or not anything
+is ever asked there. A renderer asks for occlusion at SHADING POINTS, which
+are on surfaces — so the volume-uniform comparison is the artificial one.
+Restricted to a shell around the geometry:
+
+| arm | kernels / grid | KiB | RMS | query ns |
+|---|---|---|---|---|
+| MARL, shell, 1 − AO | 3 547 | 138.6 | **0.13222** | 6 651 |
+| dense grid, shell probes | 32³ | 128.0 | 0.14503 | 13 |
+
+**0.912.** The packed set beats the giant volume texture — in the regime
+`rbf.zig` was written for and not in the one the threshold assumed:
+
+    A learned sparse field beats a dense grid when the interesting set is
+    SPARSE IN THE DOMAIN, and loses to it when the field is non-trivial
+    everywhere.
+
+The marble's veins were sparse. A volume-filling occlusion field is not. A
+shell around geometry is.
+
+### What the numbers do not flatter
+
+A cache lookup is 6 651 ns against a texture fetch's 13. The 27-region
+gather is exact and it is not free: at 9 334 kernels over 216 regions,
+"local" means about 1 166 kernels evaluated, and MARL's locality advantage
+was always an argument about SPARSE occupancy. The first version of this
+harness read through `predictAll` — the O(N) reference the gather is
+CHECKED against, not a query path — and priced a lookup at 129 µs. That was
+mine, and it made the cache look 4 000× worse than a texture at the one
+thing a cache exists to be good at.
+
+The gate costs about 25 s of suite, most of it the 4 096-ray reference. It
+could be cut fourfold by taking 1 024, at the price of putting the
+reference's own noise at 2.6% of the smallest RMS measured instead of 0.7%
+— and the headline turns on a ratio of 0.912, so the reference stays where
+it is.
+
+### What this indicates next
+
+Two things, both concrete. A **bias term**, which `rbf.zig` has and MARL
+does not, and which the campaign never needed because its fields were all
+zero-background. And a **noise-aware birth test**, because the third door
+is open at every rate and 30% of the population at one ray a sample is
+capacity bought on noise.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

@@ -50,6 +50,7 @@ pub const rbf = @import("rbf.zig");
 /// path, not a channel, not in any hash — `rbf`'s standing.
 pub const marl = @import("marl.zig");
 pub const marble = @import("marble.zig");
+pub const cache = @import("cache.zig");
 
 // The working surface, re-exported flat.
 pub const Domain = lattice.Domain;
@@ -87,5 +88,6 @@ test {
     _ = rbf;
     _ = marl;
     _ = marble;
+    _ = cache;
     _ = @import("tests.zig");
 }
