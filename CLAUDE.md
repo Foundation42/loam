@@ -31,6 +31,9 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -- --budget 16                  # MARL-1 (5): saturation, forced
     zig build marl -- --tsv                        # one line of numbers, for driving a sweep
     zig build test -Dtest-filter="G18"             # MARL-1's gates; tools/marl1_predict.py is where their numbers came from
+    zig build marl -- --sharpness 2 --hier         # MARL-2: parent + child_delta against flat, on the same exemplars
+    zig build marl -- --sharpness 4 --refine 3     # MARL-2: the child's scale — there is an optimum, and past it more is worse
+    zig build test -Dtest-filter="G19"             # MARL-2's gates; tools/marl2_predict.py, two of whose five were REFUTED
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -72,7 +75,13 @@ RESPONSIBILITY is the subset permitted to take a gradient, and the NLMS
 normaliser Σg² is taken over that subset alone (G18 c). And BIRTH is
 topology acquisition while DESCENT is geometry adaptation — they are
 measured apart, at capacity held identical, or the number measures both
-(G18 a).
+(G18 a). MARL-2 adds a third: REFINEMENT is representational capacity, and
+a child learns `target − parent(x)` with the parent FROZEN, so what the
+child holds means "what the level above could not represent" (G19 a). Two
+of MARL-2's five pre-registered numbers were refuted and are left standing
+in `thresholds.zig` for Christian to strike — refinement turned out to be
+region-granular rather than structure-granular, and more capacity is not
+monotonically better.
 
 ## The ledger
 

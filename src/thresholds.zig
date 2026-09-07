@@ -651,4 +651,96 @@ pub const MARL1_OVERRESPONSIBILITY: f32 = 1.25;
 /// measurement, not the threshold.
 pub const MARL1_SATURATION_BUDGET: u32 = 16;
 
+// ── MARL-2 (the residual hierarchy) ──────────────────────────────────
+//
+// From `tools/marl2_predict.py`, before its runs. Christian's instruction
+// shapes the whole set: pre-register around WHERE the extra capacity
+// appears and not merely whether the total error improves, "otherwise an
+// unconditional second layer could pass while missing the point." So the
+// load-bearing gates below are about placement and concentration, and the
+// RMS one is the weakest of them.
+//
+// The ground truth they are scored against: of 216 parent regions, 47
+// touch the shell band — 21.8% of the domain, which is also the share of
+// exemplars a perfectly precise refiner would route to a child.
+
+/// G19 (a): kernels the CHILD holds in the quiet slab.
+///
+/// PROPOSED at zero with no slack, because it is a chain of derivations
+/// rather than an estimate: the truth is exactly zero past x = 0.90, no
+/// parent kernel born on structure can reach there, so the parent's
+/// post-update residual there is zero, so no covered event can raise that
+/// region's pressure above any positive threshold, so no region there is
+/// refined, so the child is never handed an exemplar there. One kernel in
+/// the slab means a link in that chain is broken and the gate should say
+/// which.
+pub const MARL2_CHILD_QUIET: u32 = 0;
+
+/// G19 (b): of the regions refinement opened, the share touching the
+/// shell band.
+///
+/// PROPOSED, from this much theory: the swell varies on a scale of about
+/// 0.3 — 1.8 region edges — and the parent tiles it at a coverage spacing
+/// of 0.0427, seven kernels per wavelength, which is ample. The ridge is
+/// thinner than one kernel and cannot be tiled at all. So pressure should
+/// fire on the ridge and almost nowhere else. Three quarters is a FLOOR
+/// rather than an estimate: a region beside the ridge can be pressured by
+/// its tail without the band itself reaching in.
+pub const MARL2_PRECISION: f32 = 0.75;
+
+/// G19 (c): the child's shell-band density over its density across the
+/// regions it occupies at all. THE GATE THIS EXPERIMENT EXISTS FOR.
+///
+/// PROPOSED: MARL-1 established that the parent's capacity rule is
+/// geometric — it tiles structure, at a shell-band concentration of about
+/// 1.66 (8 402 per unit³ in the band against roughly 5 067 across the
+/// volume it occupies). If refinement is adaptive REPRESENTATION rather
+/// than a second helping of the same rule, the child must be far more
+/// concentrated than that, because it is only ever handed exemplars in
+/// pressured regions. Three is double the parent's, and it is the number
+/// an unconditional second layer fails.
+///
+/// **REFUTED, and left standing for Christian to strike.** Measured 1.54,
+/// 1.67, 1.65 at sharpness ×1, ×2, ×4 — the child is barely more
+/// concentrated than the parent (1.20 to 1.22). The reason is the finding:
+/// refinement made the allocation REGION-granular, not structure-granular.
+/// The pressure signal picks the right regions (precision 0.94 to 1.00),
+/// and then inside them the child tiles by the same coverage rule the
+/// parent used, so a second level of a geometric rule is still geometric.
+/// At sharpness ×4 the band is a tenth of a refined region's volume and a
+/// concentrating child would read near 10; it reads 1.65. No gate asserts
+/// this number, because asserting a refuted prediction fails the suite and
+/// moving it would be the first result becoming the threshold.
+pub const MARL2_CONCENTRATION: f32 = 3;
+
+/// G19 (d): at sharpness ×2, the hierarchy's held-out gain as a multiple
+/// of flat MARL's at the same sharpness, same seed, same exemplars.
+///
+/// PROPOSED: flat MARL scores 6.19 at ×1, 2.62 at ×2 and 1.80 at ×4 —
+/// capacity density unmoved, accuracy falling. The child's grid is twice
+/// as fine, so its coverage spacing on the ridge is half the parent's and
+/// it can hold four times the kernels per unit of ridge area. A fourfold
+/// capacity increase on the component carrying most of the residual should
+/// buy well over half as much again overall.
+///
+/// **REFUTED, and left standing.** Measured 1.12, 1.32, 1.38 at sharpness
+/// ×1, ×2, ×4 — the right SHAPE (refinement helps most where the parent
+/// struggles most) at the wrong magnitude. A finer child does not fix it:
+/// at sharpness ×4 the refine multiple sweeps 1.22, 1.46, 1.36, 1.14 for
+/// ×2, ×3, ×4, ×6, so there is an optimum and past it MORE CAPACITY IS
+/// WORSE — 11 895 child kernels at ×6 score below 3 927 at ×2, because
+/// finer kernels sit in fewer responsibility sets and each is trained by
+/// fewer exemplars. Capacity and training compete at a fixed exemplar
+/// budget, which nothing in the prediction accounted for.
+pub const MARL2_SHARPNESS_RETENTION: f32 = 1.5;
+
+/// G19 (e): total gradient applications, hierarchy over flat, at the same
+/// exemplar count.
+///
+/// PROPOSED: only 21.8% of exemplars land in shell-touching regions and
+/// only those reach the child, and the parent STOPS learning there — so
+/// the child's work partly replaces the parent's rather than adding to
+/// it. Half again is generous for that.
+pub const MARL2_WORK_RATIO: f32 = 1.5;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

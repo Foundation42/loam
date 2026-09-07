@@ -3577,6 +3577,161 @@ mattered.
   bounded responsibility, not only on coverage — which is Christian's
   suggestion, and experiment 4 is the evidence for it.
 
+## MARL-2 — the residual hierarchy (Monday 2026-09-07)
+
+Christian's framing, which is the sentence the whole thing is built to
+test: **MARL-0 has adaptive computation, but not yet adaptive
+representation.** Work already follows unresolved state; capacity does
+not. Refinement is the missing operation, and the design is the delta
+patch — a child that learns only what its parent could not:
+
+    f(x) ≈ parent(x) + Δchild(x)
+
+Two levels, standalone, no recursion, no Loam tree. `src/marl.zig`'s
+`Hierarchy`, `marl-run --hier`, thresholds from
+`tools/marl2_predict.py` before the runs, gates G19 (a)–(c).
+
+**On the lattice precedent.** Christian cited `~/dev/lattice` as already
+containing this hierarchy — small child nodes delta-patching their parents
+in situ. I looked: the repo as it stands is the mesh-topology library
+(vert/edge/loop/face handles, Euler operators, BMesh parity), and the
+delta-patch hierarchy is not in its README, ledger, operators or parity
+docs. So this was built from his description rather than from that
+precedent, and if the proposal exists it is somewhere I did not find.
+
+### What was pre-registered, and how it came out
+
+| | predicted | measured (×1 / ×2 / ×4 sharpness) | |
+|---|---|---|---|
+| `MARL2_CHILD_QUIET` child kernels in the quiet slab | 0, no slack | 0 / 0 / 0 | ✅ |
+| `MARL2_PRECISION` refined regions touching the band | ≥ 0.75 | 1.000 / 0.947 / 0.941 | ✅ |
+| `MARL2_WORK_RATIO` work against flat | ≤ 1.5 | 0.597 / 0.543 / 0.552 | ✅ |
+| `MARL2_CONCENTRATION` child's band density over its own | ≥ 3 | 1.54 / 1.67 / 1.65 | ❌ |
+| `MARL2_SHARPNESS_RETENTION` gain against flat's | ≥ 1.5 | 1.12 / 1.32 / 1.38 | ❌ |
+
+Both refutations are left standing in `thresholds.zig` for Christian to
+strike. No gate asserts either: asserting a refuted prediction fails the
+suite, and moving one would be the first result becoming the threshold.
+
+    flat MARL          RMS 0.04659   3718 kernels   9 950 176 updates
+    parent alone           0.07166   3215              3 357 610
+    parent + child         0.03528   4339 (child)     2 049 288
+                                                   (sharpness ×2, 200 000 exemplars)
+
+### The mechanism works
+
+The delta semantics hold exactly. The parent is FROZEN where the child
+learns — really frozen, checked byte for byte across twenty thousand
+further exemplars, which matters because the responsibility radius lets an
+exemplar in a neighbouring region reach a kernel across the face. The
+prediction is the sum, bitwise, and each level is still the exact sum over
+its own model. The child never receives an exemplar in the quiet slab and
+holds nothing there, at every configuration tested.
+
+And it is CHEAPER than flat, which was not predicted in the right
+direction — 0.54 to 0.60 of flat's gradient applications, against a
+prediction of "at most half again". The parent stops learning in refined
+regions, so the child's work replaces the parent's rather than adding to
+it, and the child's finer kernels sit in smaller responsibility sets.
+
+### The pressure signal, and two implementations of one principle
+
+Christian's ruling was that refinement must not fire on "residual >
+threshold", because a large residual may be cheaply resolvable by ordinary
+deformation. I implemented that twice, and only one of the two was doing
+anything.
+
+**What works: the POST-UPDATE residual.** Pressure is the mean residual
+left after the update steps — what deformation could not remove with the
+kernels it had. Accumulated instead from the residual BEFORE the steps,
+precision collapses from 1.000 / 0.947 / 0.941 to 0.383 / 0.328 / 0.277
+and the refiner opens 119 regions instead of 34 to 42.
+
+**What did not: filtering to covered events.** The first implementation
+also restricted the statistic's sample to learning events where `coverage`
+was already satisfied — the basis saying it had the ground covered and
+being wrong anyway. It made precision WORSE at every setting:
+
+    min_events              10      25      50     150
+    covered events only  0.507   0.600   0.679   0.963
+    all learning events  0.919   0.923   1.000   1.000
+
+Dropping the events where a birth happened removes exactly the events the
+model handled well, which biases the mean upward everywhere and unevenly —
+a structured region births more, so it reaches `min_events` later and on a
+differently selected sample than a smooth one. The filter was a second,
+redundant attempt at a distinction the post-update residual already makes,
+and it cost precision to make it twice. Removed; the principle survives its
+implementation.
+
+**And the reason to have gated on placement at all.** When pressure is
+driven by raw surprise instead, the ACCURACY barely moves — 1.09 / 1.30 /
+1.35 against 1.12 / 1.32 / 1.38 — while precision falls by a factor of
+three and twice as much of the parent is frozen. A gate on RMS alone would
+have passed it. Christian's instruction to pre-register on where the
+capacity appears is what caught it, and G19 (b) is that gate.
+
+The threshold itself is a METHOD hyperparameter and was set the way one
+honestly can be, from the statistic's own noise floor rather than from
+ground truth: the unpressured population sits at 0.0044–0.0046 and does not
+move with the target's sharpness — it is the surprise threshold's residue —
+while the pressured population climbs 0.0060 → 0.0089 → 0.0107. One fixed
+number above that floor therefore refines little on an easy target and a
+great deal on a hard one, which is the property worth having.
+
+### The two refutations, which are the finding
+
+**Refinement is region-granular, not structure-granular.** The pressure
+signal picks the right regions — precision 0.94 to 1.00 — and then inside
+them the child tiles by the same coverage rule the parent used. A second
+level of a geometric rule is still geometric. At sharpness ×4 the shell
+band is about a tenth of a refined region's volume, so a child that
+concentrated on the structure would read near 10; it reads 1.65, barely
+above the parent's 1.20.
+
+So MARL-2 replaced the TRIGGER with a residual signal and left the
+ALLOCATION WITHIN a refined region geometric. That is the honest statement
+of where the boundary now sits, and it is one level deeper than MARL-1's
+version of the same finding rather than a repeat of it.
+
+**And more capacity is not monotonically better.** Sweeping the child's
+refinement multiple at sharpness ×4:
+
+    refine        ×2      ×3      ×4      ×6
+    child K     3 927   7 022   9 608  11 895
+    ratio        1.22    1.46    1.36    1.14
+    updates     1.37M   713k    457k    208k
+
+There is an optimum at ×3 and past it more kernels score worse — ×6 has
+three times ×2's capacity and beats it on nothing. The updates column says
+why: finer kernels sit in fewer responsibility sets, so each is trained by
+fewer exemplars, and capacity competes with training at a fixed exemplar
+budget. Nothing in the prediction accounted for that, and it is probably
+the more useful half of the refutation.
+
+### The gates, and what each was paid for
+
+| gate | mutation | result |
+|---|---|---|
+| G19 (a) the delta semantics, and the parent really held | `freezeRegion` made a no-op | fails |
+| | the parent never frozen on refinement | fails |
+| G19 (b) pressure fires where the parent CANNOT represent | pressure from the pre-update residual | fails |
+| G19 (c) the hierarchy beats flat and does less work | refinement never triggered | fails |
+
+### Where this leaves the campaign
+
+Christian's correspondence — Loam refines where a field cannot be
+represented at the current spatial resolution; MARL refines where a
+function cannot be represented at the current predictive resolution — is
+now half demonstrated. The DETECTION half works and is precise. The
+ALLOCATION half does not yet: having decided a region needs more
+representation, MARL still fills it geometrically.
+
+So the next question is not whether to recurse. It is whether a child's
+BIRTH rule can be residual-driven the way its trigger now is — capacity
+placed where the residual is, not where the tiling has a gap. Recursion on
+top of a geometric allocator would multiply the wrong thing.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

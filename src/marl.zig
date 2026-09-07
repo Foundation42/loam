@@ -435,6 +435,12 @@ pub const Kernel = struct {
     reach: f32,
     updates: u32 = 0,
     born_at: u64,
+    /// Held: the region this kernel belongs to has been refined, so its
+    /// contribution is the coarse approximation the child is learning the
+    /// residual of. Frozen for real — an exemplar in a NEIGHBOURING region
+    /// can reach a kernel across the face, and a "frozen" parent that
+    /// drifts by that route is a parent the child is chasing.
+    frozen: bool = false,
 
     pub fn shape(self: *const Kernel) Shape {
         return .{
@@ -486,6 +492,16 @@ pub const Event = struct {
     learned: bool,
     born: bool,
     saturated: bool,
+    /// Some kernel already read above `coverage` at the exemplar, so no
+    /// birth was called for. This is the half of the population that
+    /// matters for representation pressure: a residual that persists where
+    /// the basis said it had the ground covered is the basis being wrong
+    /// about itself, and a residual where nothing covers the ground is
+    /// just a birth waiting to happen.
+    covered: bool,
+    /// The residual AFTER the update steps. What deformation could not
+    /// remove from this exemplar with the kernels it had.
+    post_residual: f32,
     /// Kernels whose support contains the exemplar: exactly the set the
     /// prediction summed.
     touched: u32,
@@ -845,6 +861,22 @@ pub const Model = struct {
         if (k.reach > reg.max_reach) reg.max_reach = k.reach;
     }
 
+    /// Hold every kernel a region owns. The parent's contribution in a
+    /// refined region is RETAINED, not relearned — which is the whole of
+    /// the residual hierarchy's semantics: the child holds exactly what
+    /// this level could not.
+    pub fn freezeRegion(self: *Model, region: u32) void {
+        for (self.regions[region].own.items) |ki| self.kernels.items[ki].frozen = true;
+    }
+
+    pub fn frozenCount(self: *const Model) u32 {
+        var n: u32 = 0;
+        for (self.kernels.items) |*k| {
+            if (k.frozen) n += 1;
+        }
+        return n;
+    }
+
     /// Recompute every region's bound from the kernels it owns. Only ever
     /// LOWERS one, so it changes no answer — it makes the prune sharper,
     /// and the gate that the bound is conservative is what says so.
@@ -863,7 +895,7 @@ pub const Model = struct {
     /// steps on the kernels that were responsible — birthing one first if
     /// none of them covers the exemplar well enough.
     pub fn observe(self: *Model, x: [3]f32, y: f32) !Event {
-        var ev = Event{ .residual = 0, .surprise = 0, .learned = false, .born = false, .saturated = false, .touched = 0, .responsible = 0, .regions_touched = 0, .evaluated = 0, .visited = 0, .pruned = 0 };
+        var ev = Event{ .residual = 0, .surprise = 0, .learned = false, .born = false, .saturated = false, .covered = false, .post_residual = 0, .touched = 0, .responsible = 0, .regions_touched = 0, .evaluated = 0, .visited = 0, .pruned = 0 };
         var pt = std.time.Timer.start() catch null;
 
         try self.gather(x, &ev);
@@ -901,6 +933,7 @@ pub const Model = struct {
         self.stats.visited += ev.visited;
         self.stats.pruned += ev.pruned;
 
+        ev.covered = cover >= self.opts.coverage;
         if (ev.surprise <= self.opts.threshold) return ev;
 
         var lt = std.time.Timer.start() catch null;
@@ -962,6 +995,7 @@ pub const Model = struct {
             switch (self.opts.optimizer) {
                 .adam => for (self.hit.items) |ki| {
                     const k = &self.kernels.items[ki];
+                    if (k.frozen) continue;
                     if (mahal(k.shape(), x).r2 > resp2) continue;
                     if (!gradOne(k, x, e, &grad)) continue;
                     const mu0 = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
@@ -980,6 +1014,7 @@ pub const Model = struct {
                     const inv = 1 / (gg + 1e-6);
                     for (self.hit.items) |ki| {
                         const k = &self.kernels.items[ki];
+                        if (k.frozen) continue;
                         const sh = k.shape();
                         const m = mahal(sh, x);
                         if (m.r2 > resp2) continue;
@@ -1015,6 +1050,14 @@ pub const Model = struct {
         }
         for (self.hit.items) |ki| try self.rehome(ki);
 
+        {
+            var after: f32 = 0;
+            for (self.hit.items) |ki| {
+                const k = &self.kernels.items[ki];
+                after += k.p[W] * gaussian(k.shape(), x);
+            }
+            ev.post_residual = y - after;
+        }
         self.gen += 1;
         var seen_reg: u32 = 0;
         for (self.hit.items) |ki| {
@@ -1159,6 +1202,251 @@ pub const Model = struct {
             if (pred(self.opts.truth, .{ k.p[MU], k.p[MU + 1], k.p[MU + 2] })) n += 1;
         }
         return n;
+    }
+};
+
+// ── MARL-2: the residual hierarchy ────────────────────────────────────
+
+/// When a region is judged unable to REPRESENT what it is being asked to
+/// hold, as against merely not having learned it yet.
+///
+/// Christian's ruling, and the reason it is not "residual > threshold": a
+/// large residual may be cheaply resolvable by ordinary deformation, and
+/// refining on it would buy capacity the model did not need. What
+/// distinguishes the two is whether the basis already believed it had the
+/// ground covered. So pressure is measured ONLY over learning events where
+/// `coverage` was already satisfied — no birth was called for — and it is
+/// the residual left AFTER the update steps, which is what deformation
+/// could not remove with the kernels it had.
+///
+/// MARL-1 is the evidence this is the right signal: at sharpness ×4 the
+/// parent's kernel density on the ridge did not move while its accuracy
+/// fell by a factor of three. Coverage was satisfied and the residual
+/// stayed. That is the state this detects.
+pub const PressureOptions = struct {
+    /// Covered learning events a region must see before it can be judged.
+    /// Below this the mean is noise, and refining on noise is the failure
+    /// mode the campaign named in §5 — "do not confuse noise with
+    /// complexity". Fifty, swept: 25 / 50 / 100 / 150 / 300 give held-out
+    /// gains of 3.38 / 3.46 / 3.32 / 3.16 / 3.13 at sharpness ×2. Waiting
+    /// longer buys precision (1.000 at 300) and loses accuracy, because a
+    /// region that is refined late has already had its parent tile it.
+    min_events: u32 = 50,
+    /// Mean |post-update residual| over those events, above which the
+    /// region is under representation pressure.
+    ///
+    /// A METHOD hyperparameter, not a gate threshold, and chosen the way
+    /// one honestly can be: the statistic has a NOISE FLOOR made by the
+    /// regions that are not under pressure, and that floor is observable
+    /// without knowing where the structure is. Measured, it sits at 0.0044
+    /// to 0.0046 and does not move with the target's sharpness — it is the
+    /// surprise threshold's own residue. The pressured population does
+    /// move: 0.0060 at sharpness ×1, 0.0089 at ×2, 0.0107 at ×4. So a
+    /// threshold above the floor refines little on an easy target and a
+    /// great deal on a hard one, at one fixed number, which is the
+    /// property worth having. Seven thousandths clears the floor's highest
+    /// observed value (0.0067) at every sharpness tested.
+    threshold: f32 = 0.007,
+    /// The child's region grid, as a multiple of the parent's. Two, and
+    /// two levels only (Christian): enough to establish whether residual
+    /// refinement works at all, and recursion is the boring part after.
+    refine: u32 = 2,
+};
+
+/// Two levels, and the prediction is their SUM:
+///
+///     f(x) ≈ parent(x) + Δchild(x)
+///
+/// The child never sees the target. It sees `y − parent(x)` with the
+/// parent HELD, so what it holds has a precise meaning: the information
+/// the level above could not represent. That is the whole of the design,
+/// and the freezing is what makes the meaning true — a parent that went on
+/// learning in a refined region would be a parent the child is chasing.
+///
+/// Standalone on purpose, and two levels on purpose. No tree, no Loam
+/// storage, no recursion.
+pub const Hierarchy = struct {
+    gpa: std.mem.Allocator,
+    parent: Model,
+    child: Model,
+    popts: PressureOptions,
+    /// Per parent region.
+    refined: []bool,
+    covered_events: []u32,
+    post_sum: []f64,
+    /// The exemplar stream, keyed exactly as a flat `Model`'s is, so a
+    /// hierarchy and a flat learner at the same seed see THE SAME
+    /// exemplars in the same order. Any comparison between them that did
+    /// not is a comparison of two different experiments.
+    stream: rng.Stream,
+    seen: u64 = 0,
+    routed: u64 = 0,
+    refined_count: u32 = 0,
+
+    pub fn init(gpa: std.mem.Allocator, opts: Options, popts: PressureOptions) !Hierarchy {
+        var parent = try Model.init(gpa, opts);
+        errdefer parent.deinit();
+        var copts = opts;
+        copts.regions = opts.regions * popts.refine;
+        var child = try Model.init(gpa, copts);
+        errdefer child.deinit();
+        const n = parent.regions.len;
+        const refined = try gpa.alloc(bool, n);
+        errdefer gpa.free(refined);
+        @memset(refined, false);
+        const ce = try gpa.alloc(u32, n);
+        errdefer gpa.free(ce);
+        @memset(ce, 0);
+        const ps = try gpa.alloc(f64, n);
+        errdefer gpa.free(ps);
+        @memset(ps, 0);
+        return .{
+            .gpa = gpa,
+            .parent = parent,
+            .child = child,
+            .popts = popts,
+            .refined = refined,
+            .covered_events = ce,
+            .post_sum = ps,
+            .stream = rng.Stream.region(opts.seed, 0x4D41_524C, 0), // "MARL", the flat model's key
+        };
+    }
+
+    pub fn deinit(self: *Hierarchy) void {
+        self.parent.deinit();
+        self.child.deinit();
+        self.gpa.free(self.refined);
+        self.gpa.free(self.covered_events);
+        self.gpa.free(self.post_sum);
+    }
+
+    /// The sum. The child contributes exactly zero where it has no
+    /// kernels, so an unrefined domain reads as the parent alone — not
+    /// approximately, the cutoff makes it exact.
+    pub fn predict(self: *Hierarchy, q: [3]f32) !f32 {
+        return (try self.parent.predict(q)) + (try self.child.predict(q));
+    }
+
+    pub fn pressureOf(self: *const Hierarchy, region: u32) f32 {
+        if (self.covered_events[region] == 0) return 0;
+        return @floatCast(self.post_sum[region] / @as(f64, @floatFromInt(self.covered_events[region])));
+    }
+
+    pub fn observeOne(self: *Hierarchy) !void {
+        const x = [3]f32{ self.stream.unit(), self.stream.unit(), self.stream.unit() };
+        const y = truthOf(self.parent.opts.truth, x);
+        const r = self.parent.regionOf(x);
+        self.seen += 1;
+        if (self.refined[r]) {
+            self.routed += 1;
+            const held = try self.parent.predict(x);
+            _ = try self.child.observe(x, y - held);
+            return;
+        }
+        const ev = try self.parent.observe(x, y);
+        // Every learning event, NOT only the ones where coverage was
+        // already satisfied.
+        //
+        // Filtering to covered events was the first implementation of
+        // Christian's principle — refine where the basis said it had the
+        // ground covered and was still wrong — and it was the WRONG
+        // implementation, by a wide margin. Measured at four settings of
+        // `min_events`, precision with the filter was 0.507, 0.600, 0.679,
+        // 0.963; without it, 0.919, 0.923, 1.000, 1.000. Dropping the
+        // events where a birth happened removes exactly the events the
+        // model handled well, which biases the mean upward everywhere and
+        // unevenly: a structured region births more, so it reaches
+        // `min_events` later and on a differently-selected sample than a
+        // smooth one.
+        //
+        // The principle survives its implementation. What distinguishes
+        // "not learned yet" from "cannot be represented" is that this is
+        // the POST-UPDATE residual — what deformation could not remove
+        // with the kernels it had — and that is the whole of it. The
+        // coverage filter was a second, redundant attempt at the same
+        // distinction, and it cost precision to make it twice.
+        if (!ev.learned) return;
+        self.covered_events[r] += 1;
+        self.post_sum[r] += @abs(ev.post_residual);
+        if (self.covered_events[r] >= self.popts.min_events and
+            self.pressureOf(r) > self.popts.threshold)
+        {
+            self.refined[r] = true;
+            self.refined_count += 1;
+            self.parent.freezeRegion(r);
+        }
+    }
+
+    pub fn stream_n(self: *Hierarchy, n: u64) !void {
+        var i: u64 = 0;
+        while (i < n) : (i += 1) try self.observeOne();
+    }
+
+    pub fn rms(self: *Hierarchy, pts: []const [3]f32, targets: []const f32, max_abs: ?*f32) !f32 {
+        var acc: f64 = 0;
+        var mx: f32 = 0;
+        for (pts, targets) |p, t| {
+            const e = (try self.predict(p)) - t;
+            acc += @as(f64, e) * @as(f64, e);
+            mx = @max(mx, @abs(e));
+        }
+        if (max_abs) |m| m.* = mx;
+        return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len))));
+    }
+
+    /// The parent alone — what the model would score with the child
+    /// discarded. The difference between this and `rms` is the child's
+    /// contribution, stated rather than inferred.
+    pub fn parentRms(self: *Hierarchy, pts: []const [3]f32, targets: []const f32) !f32 {
+        var acc: f64 = 0;
+        for (pts, targets) |p, t| {
+            const e = (try self.parent.predict(p)) - t;
+            acc += @as(f64, e) * @as(f64, e);
+        }
+        return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(pts.len))));
+    }
+
+    /// Whether a parent region's cube touches the target's shell band —
+    /// the ground truth a refinement decision is scored against.
+    pub fn regionMeetsShell(self: *const Hierarchy, region: u32) bool {
+        const tp = self.parent.opts.truth;
+        const h = self.parent.h;
+        const rr = self.parent.opts.regions;
+        const c = [3]u32{ region % rr, (region / rr) % rr, region / (rr * rr) };
+        const N: u32 = 9;
+        var k: u32 = 0;
+        while (k <= N) : (k += 1) {
+            var j: u32 = 0;
+            while (j <= N) : (j += 1) {
+                var i: u32 = 0;
+                while (i <= N) : (i += 1) {
+                    const p = [3]f32{
+                        (@as(f32, @floatFromInt(c[0])) + @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(N))) * h,
+                        (@as(f32, @floatFromInt(c[1])) + @as(f32, @floatFromInt(j)) / @as(f32, @floatFromInt(N))) * h,
+                        (@as(f32, @floatFromInt(c[2])) + @as(f32, @floatFromInt(k)) / @as(f32, @floatFromInt(N))) * h,
+                    };
+                    if (Truth.inShell(tp, p)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Of the regions refinement opened, the share that actually touch
+    /// structure the parent could not resolve. A pressure signal that
+    /// fires on the smooth swell is buying capacity for something ordinary
+    /// deformation had in hand, which is the campaign's §5 failure —
+    /// noise mistaken for complexity — wearing a different hat.
+    pub const Precision = struct { refined: u32, on_shell: u32, false_positive: u32 };
+
+    pub fn precision(self: *const Hierarchy) Precision {
+        var on: u32 = 0;
+        var off: u32 = 0;
+        for (self.refined, 0..) |r, i| {
+            if (!r) continue;
+            if (self.regionMeetsShell(@intCast(i))) on += 1 else off += 1;
+        }
+        return .{ .refined = on + off, .on_shell = on, .false_positive = off };
     }
 };
 
@@ -1811,4 +2099,179 @@ test "G18 (e) the budget bites when it is below the natural occupancy, and not w
     try testing.expectEqual(@as(u32, 0), loose.saturatedRegions());
 
     std.debug.print("  G18 (e): budget {d} → {d} saturation events in {d} full regions; budget {d} → none at all ({s})\n", .{ thresholds.MARL1_SATURATION_BUDGET, tight.stats.saturations, tight.saturatedRegions(), loose.opts.budget, @tagName(builtin.mode) });
+}
+
+// ── MARL-2's gates ────────────────────────────────────────────────────
+//
+// Two of the five pre-registered numbers were REFUTED by the runs and are
+// recorded as refuted in `thresholds.zig` rather than moved:
+// `MARL2_CONCENTRATION` (predicted ≥ 3, measured 1.13 to 1.74) and
+// `MARL2_SHARPNESS_RETENTION` (predicted ≥ 1.5, measured 1.22 at the
+// defaults and 1.46 at its best). Striking or amending them is Christian's
+// call, so no gate below asserts either. What the gates cover is what the
+// runs confirmed, and the ledger has the rest.
+
+test "G19 (a) the residual hierarchy's semantics: the child holds exactly what the parent could not, and the parent really is held" {
+    // f(x) ≈ parent(x) + Δchild(x), and the whole meaning of that Δ rests
+    // on the parent being FROZEN where the child is learning. A parent
+    // that went on moving would be a parent the child is chasing, and the
+    // second level would stop meaning "what the first could not represent".
+    //
+    // Freezing has to survive the case that made it necessary: an exemplar
+    // in a NEIGHBOURING region reaching a kernel across the face, which the
+    // responsibility radius lets it do.
+    //
+    // MUTATION: `freezeRegion` made a no-op — the parent's kernels in
+    // refined regions move again, and the bitwise check below fails on the
+    // first one. Verified by hand.
+    const gpa = testing.allocator;
+    var h = try Hierarchy.init(gpa, .{ .truth = .{ .sharpness = 2 } }, .{});
+    defer h.deinit();
+    try h.stream_n(80_000);
+    try testing.expect(h.refined_count > 0); // not vacuous: something refined
+    try testing.expect(h.child.kernels.items.len > 0);
+
+    // Every frozen kernel, byte for byte, across another twenty thousand
+    // exemplars.
+    var held = std.ArrayListUnmanaged(struct { i: usize, p: [PARAMS]f32 }){};
+    defer held.deinit(gpa);
+    for (h.parent.kernels.items, 0..) |*k, i| {
+        if (k.frozen) try held.append(gpa, .{ .i = i, .p = k.p });
+    }
+    try testing.expect(held.items.len > 100);
+    try h.stream_n(20_000);
+    for (held.items) |rec| {
+        for (h.parent.kernels.items[rec.i].p, rec.p) |now, then| {
+            try testing.expectEqual(@as(u32, @bitCast(then)), @as(u32, @bitCast(now)));
+        }
+    }
+
+    // The prediction is the sum, exactly, and each level is still the sum
+    // over its own model.
+    var st = rng.Stream.region(11, 0xD117, 0);
+    var i: usize = 0;
+    while (i < 500) : (i += 1) {
+        const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+        const p = try h.parent.predict(q);
+        const c = try h.child.predict(q);
+        try testing.expectEqual(@as(u32, @bitCast(p + c)), @as(u32, @bitCast(try h.predict(q))));
+        try testing.expectEqual(@as(u32, @bitCast(h.parent.predictAll(q))), @as(u32, @bitCast(p)));
+        try testing.expectEqual(@as(u32, @bitCast(h.child.predictAll(q))), @as(u32, @bitCast(c)));
+    }
+
+    // And the child spends nothing where there is nothing — the chain of
+    // derivations in MARL2_CHILD_QUIET, checked at its end.
+    try testing.expectEqual(thresholds.MARL2_CHILD_QUIET, h.child.countIn(Truth.inQuiet));
+    std.debug.print("\n  G19 (a): {d} regions refined, {d} parent kernels held byte-identical across 20 000 further exemplars, {d} child kernels, {d} of them in the quiet slab ({s})\n", .{ h.refined_count, held.items.len, h.child.kernels.items.len, h.child.countIn(Truth.inQuiet), @tagName(builtin.mode) });
+}
+
+test "G19 (b) representation pressure fires where the parent CANNOT represent, not merely where it is wrong" {
+    // The campaign's §5 — "do not confuse noise with complexity" — as a
+    // number. Pressure is the mean post-update residual over learning
+    // events where COVERAGE WAS ALREADY SATISFIED: a residual that persists
+    // where the basis said it had the ground covered is the basis being
+    // wrong about itself, while a residual where nothing covers the ground
+    // is a birth waiting to happen and needs no new level.
+    //
+    // MUTATION, and it is the one that establishes the principle: pressure
+    // accumulated from `ev.surprise`, the residual BEFORE the update steps,
+    // instead of after them. Precision collapses to 0.383 / 0.328 / 0.277
+    // at sharpness ×1 / ×2 / ×4, and 119 regions are refined instead of
+    // 34 to 42 — the signal fires wherever the model is currently wrong
+    // rather than where it cannot be made right.
+    //
+    // What makes that mutation worth its place: the ACCURACY barely moves,
+    // 1.09 / 1.30 / 1.35 against 1.12 / 1.32 / 1.38. A gate on RMS alone
+    // would have passed a refiner that opened three times too many regions
+    // and froze twice as much of the parent. That is exactly the failure
+    // Christian's instruction to pre-register on placement was written to
+    // catch, and it caught it.
+    const gpa = testing.allocator;
+    var h = try Hierarchy.init(gpa, .{ .truth = .{ .sharpness = 2 } }, .{});
+    defer h.deinit();
+    try h.stream_n(80_000);
+
+    const p = h.precision();
+    try testing.expect(p.refined > 5); // not vacuous
+    const frac = @as(f32, @floatFromInt(p.on_shell)) / @as(f32, @floatFromInt(p.refined));
+    try testing.expect(frac >= thresholds.MARL2_PRECISION);
+
+    // The statistic must separate the two populations, or the precision
+    // above is an accident of where the threshold happened to fall.
+    var on: f64 = 0;
+    var on_n: u32 = 0;
+    var off: f64 = 0;
+    var off_n: u32 = 0;
+    for (0..h.parent.regions.len) |i| {
+        const idx: u32 = @intCast(i);
+        if (h.covered_events[idx] < h.popts.min_events) continue;
+        if (h.regionMeetsShell(idx)) {
+            on += h.pressureOf(idx);
+            on_n += 1;
+        } else {
+            off += h.pressureOf(idx);
+            off_n += 1;
+        }
+    }
+    try testing.expect(on_n > 5 and off_n > 5);
+    const on_mean = on / @as(f64, @floatFromInt(on_n));
+    const off_mean = off / @as(f64, @floatFromInt(off_n));
+    try testing.expect(on_mean > off_mean * 1.5);
+    std.debug.print("  G19 (b): {d} of {d} refined regions touch the band (precision {d:.3}, predicted ≥ {d:.2}); pressure {d:.5} on the band against {d:.5} off it ({s})\n", .{ p.on_shell, p.refined, frac, thresholds.MARL2_PRECISION, on_mean, off_mean, @tagName(builtin.mode) });
+}
+
+test "G19 (c) the hierarchy beats flat MARL on the same exemplars and does LESS work doing it" {
+    // The weakest of the pre-registered claims and the only one about RMS,
+    // deliberately: Christian's instruction was to gate on where the
+    // capacity appears rather than on whether the error improves, because
+    // an unconditional second layer would pass the second and fail the
+    // first. It did exactly that — see `MARL2_CONCENTRATION` in
+    // thresholds.zig, predicted ≥ 3 and measured 1.13 to 1.74, refuted and
+    // recorded rather than moved.
+    //
+    // What the work ratio shows was not predicted at all: the hierarchy is
+    // CHEAPER than flat, not dearer. The parent stops learning in refined
+    // regions, so the child's gradients replace the parent's rather than
+    // adding to them, and the child's finer kernels have smaller
+    // responsibility sets.
+    //
+    // MUTATION: refinement never triggered (the pressure threshold above
+    // anything observed) — the hierarchy IS the flat model, the ratio is 1
+    // and this gate fails. That was the first run's accidental state, when
+    // the threshold was set ten times too high.
+    const gpa = testing.allocator;
+    const tp = TruthParams{ .sharpness = 2 };
+    const pr = try probesOf(gpa, tp, 0xB0B, 2048);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    var flat = try Model.init(gpa, .{ .truth = tp });
+    defer flat.deinit();
+    const empty = try flat.rms(pr.p, pr.y, null);
+    flat.stats = .{};
+    try flat.stream_n(80_000);
+    const rms_flat = try flat.rms(pr.p, pr.y, null);
+
+    var h = try Hierarchy.init(gpa, .{ .truth = tp }, .{});
+    defer h.deinit();
+    try h.stream_n(80_000);
+    const rms_hier = try h.rms(pr.p, pr.y, null);
+    const rms_parent = try h.parentRms(pr.p, pr.y);
+
+    try testing.expect(rms_hier < rms_flat);
+    // And the child is what did it: the parent alone, with its refined
+    // regions frozen, is worse than the pair. (Whether it is also worse
+    // than FLAT depends on how long the run is — at 200 000 exemplars it
+    // is, 0.06697 against 0.04659, because freezing costs the parent more
+    // the longer it would have gone on learning. Not asserted, because it
+    // is a property of the horizon and not of the mechanism.)
+    try testing.expect(rms_parent > rms_hier);
+    const work = @as(f64, @floatFromInt(h.parent.stats.updates + h.child.stats.updates)) /
+        @as(f64, @floatFromInt(flat.stats.updates));
+    try testing.expect(work <= thresholds.MARL2_WORK_RATIO);
+    // Both levels stay in the convergent weight regime — refinement must
+    // not trade one pathology for another (MARL-1's finding).
+    try testing.expect(h.parent.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
+    try testing.expect(h.child.weightStats().mean_abs < thresholds.MARL1_OVERRESPONSIBILITY);
+    std.debug.print("  G19 (c): empty {d:.5}, flat {d:.5}, parent alone {d:.5}, parent + child {d:.5}; work {d:.3} of flat's (predicted ≤ {d:.1}) ({s})\n", .{ empty, rms_flat, rms_parent, rms_hier, work, thresholds.MARL2_WORK_RATIO, @tagName(builtin.mode) });
 }

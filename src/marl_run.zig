@@ -59,6 +59,14 @@ const usage =
     \\                      both. Reports RMS_A/RMS_B' at identical capacity
     \\  --tsv               one summary line, for driving sweeps
     \\
+    \\ MARL-2
+    \\  --hier              two-level residual hierarchy against flat MARL, same
+    \\                      seed and same exemplars: parent + child_delta
+    \\  --pressure T        mean post-update residual, over covered events, above
+    \\                      which a region is under representation pressure (0.05)
+    \\  --pressure-events N covered events a region must see first (default 200)
+    \\  --refine F          the child's region grid, as a multiple (default 2)
+    \\
 ;
 
 const Opts = struct {
@@ -73,6 +81,8 @@ const Opts = struct {
     quiet: bool = false,
     arms: bool = false,
     tsv: bool = false,
+    hier: bool = false,
+    p: marl.PressureOptions = .{},
 };
 
 fn parseF32(s: []const u8) !f32 {
@@ -136,6 +146,14 @@ fn parse(args: []const []const u8) !?Opts {
             o.quiet = true;
         } else if (std.mem.eql(u8, a, "--arms")) {
             o.arms = true;
+        } else if (std.mem.eql(u8, a, "--hier")) {
+            o.hier = true;
+        } else if (std.mem.eql(u8, a, "--pressure")) {
+            o.p.threshold = try parseF32(try next(args, &i));
+        } else if (std.mem.eql(u8, a, "--pressure-events")) {
+            o.p.min_events = try std.fmt.parseInt(u32, try next(args, &i), 10);
+        } else if (std.mem.eql(u8, a, "--refine")) {
+            o.p.refine = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--no-births")) {
             o.m.births = false;
         } else if (std.mem.eql(u8, a, "--features")) {
@@ -182,6 +200,7 @@ pub fn main() !void {
     };
 
     if (o.arms) return arms(gpa, o);
+    if (o.hier) return hier(gpa, o);
     var model = try marl.Model.init(gpa, o.m);
     defer model.deinit();
 
@@ -412,6 +431,108 @@ fn arms(gpa: std.mem.Allocator, o: Opts) !void {
     try out.print("    work_C/work_B' = {d:.3}\n", .{@as(f64, @floatFromInt(c.stats.updates)) / @as(f64, @floatFromInt(@max(1, b.stats.updates)))});
     const drift = b.driftOf();
     try out.print("    B' moved A's centres by {d:.5} on average, {d:.5} at most (h = {d:.4})\n", .{ drift.mean, drift.max, b.h });
+}
+
+/// MARL-2: the two-level residual hierarchy against flat MARL, on the same
+/// seed and the same exemplars. Every number Christian asked to see.
+fn hier(gpa: std.mem.Allocator, o: Opts) !void {
+    const out = std.io.getStdOut().writer();
+    const pr = try marl.probesOf(gpa, o.m.truth, 0xB0B, o.probe_n);
+    defer gpa.free(pr.p);
+    defer gpa.free(pr.y);
+
+    var flat = try marl.Model.init(gpa, o.m);
+    defer flat.deinit();
+    const rms0 = try flat.rms(pr.p, pr.y, null);
+    flat.stats = .{};
+    try flat.stream_n(o.exemplars);
+    const rms_flat = try flat.rms(pr.p, pr.y, null);
+
+    var h = try marl.Hierarchy.init(gpa, o.m, o.p);
+    defer h.deinit();
+    try h.stream_n(o.exemplars);
+    const rms_hier = try h.rms(pr.p, pr.y, null);
+    const rms_parent = try h.parentRms(pr.p, pr.y);
+
+    const V_SHELL = marl.volumeOf(o.m.truth, marl.Truth.inShell);
+    const V_QUIET = marl.volumeOf(o.m.truth, marl.Truth.inQuiet);
+    const prec = h.precision();
+
+    const hc: f64 = @floatFromInt(h.child.opts.regions);
+    const child_cell = 1.0 / (hc * hc * hc);
+    const child_occ = @as(f64, @floatFromInt(h.child.occupiedRegions())) * child_cell;
+    const child_density = if (child_occ > 0) @as(f64, @floatFromInt(h.child.kernels.items.len)) / child_occ else 0;
+    const child_shell = h.child.densityIn(marl.Truth.inShell, V_SHELL);
+    const child_conc = if (child_density > 0) @as(f64, child_shell) / child_density else 0;
+
+    const pc: f64 = @floatFromInt(o.m.regions);
+    const parent_cell = 1.0 / (pc * pc * pc);
+    const parent_occ = @as(f64, @floatFromInt(h.parent.occupiedRegions())) * parent_cell;
+    const parent_density = if (parent_occ > 0) @as(f64, @floatFromInt(h.parent.kernels.items.len)) / parent_occ else 0;
+    const parent_shell = h.parent.densityIn(marl.Truth.inShell, V_SHELL);
+    const parent_conc = if (parent_density > 0) @as(f64, parent_shell) / parent_density else 0;
+
+    const work_h = h.parent.stats.updates + h.child.stats.updates;
+    const work_ratio = @as(f64, @floatFromInt(work_h)) / @as(f64, @floatFromInt(@max(1, flat.stats.updates)));
+
+    try out.print("MARL-2 — the residual hierarchy against flat MARL ({s})\n", .{@tagName(builtin.mode)});
+    try out.print("  target: {d} feature(s), sharpness ×{d:.1}, frequency ×{d:.1}; {d} exemplars, {d} probes, seed {d}\n", .{ o.m.truth.features, o.m.truth.sharpness, o.m.truth.frequency, o.exemplars, o.probe_n, o.m.seed });
+    try out.print("  pressure: mean post-update residual > {d:.3} over ≥ {d} covered events; child grid ×{d}\n\n", .{ o.p.threshold, o.p.min_events, o.p.refine });
+
+    try out.print("  {s:<26} {s:>10} {s:>9} {s:>12} {s:>9}\n", .{ "", "RMS", "kernels", "updates", "mean |w|" });
+    try out.print("  {s:<26} {d:>10.5} {d:>9} {d:>12} {d:>9.4}\n", .{ "empty", rms0, 0, 0, 0.0 });
+    try out.print("  {s:<26} {d:>10.5} {d:>9} {d:>12} {d:>9.4}\n", .{ "flat MARL", rms_flat, flat.kernels.items.len, flat.stats.updates, flat.weightStats().mean_abs });
+    try out.print("  {s:<26} {d:>10.5} {d:>9} {d:>12} {d:>9.4}\n", .{ "  hierarchy: parent alone", rms_parent, h.parent.kernels.items.len, h.parent.stats.updates, h.parent.weightStats().mean_abs });
+    try out.print("  {s:<26} {d:>10.5} {d:>9} {d:>12} {d:>9.4}\n", .{ "  hierarchy: parent + child", rms_hier, h.child.kernels.items.len, h.child.stats.updates, h.child.weightStats().mean_abs });
+
+    try out.print("\n  gain against empty:  flat {d:.2}   hierarchy {d:.2}   ratio {d:.2}  (predicted ≥ {d:.1}, MARL2_SHARPNESS_RETENTION)\n", .{ rms0 / rms_flat, rms0 / rms_hier, (rms0 / rms_hier) / (rms0 / rms_flat), th.MARL2_SHARPNESS_RETENTION });
+    try out.print("  the child's own contribution: parent alone {d:.5} → with child {d:.5}, a factor of {d:.2}\n", .{ rms_parent, rms_hier, rms_parent / rms_hier });
+
+    try out.print("\n  WHERE the capacity went\n", .{});
+    try out.print("    refined regions        {d:>6} of {d}   {d} touch the shell band, {d} do not\n", .{ prec.refined, h.parent.regions.len, prec.on_shell, prec.false_positive });
+    try out.print("    precision              {d:>6.3}          predicted ≥ {d:.2} (MARL2_PRECISION)\n", .{ if (prec.refined > 0) @as(f32, @floatFromInt(prec.on_shell)) / @as(f32, @floatFromInt(prec.refined)) else 0, th.MARL2_PRECISION });
+    try out.print("    exemplars routed       {d:>6.3}          of {d} seen\n", .{ @as(f64, @floatFromInt(h.routed)) / @as(f64, @floatFromInt(h.seen)), h.seen });
+    try out.print("    parent frozen          {d:>6} kernels held in refined regions\n", .{h.parent.frozenCount()});
+    try out.print("    child in the shell band {d:>5} kernels, {d:.0} per unit³\n", .{ h.child.countIn(marl.Truth.inShell), child_shell });
+    try out.print("    child in the quiet slab {d:>5} kernels          predicted {d} (MARL2_CHILD_QUIET)\n", .{ h.child.countIn(marl.Truth.inQuiet), th.MARL2_CHILD_QUIET });
+    try out.print("    CONCENTRATION          parent {d:>5.2}   child {d:.2}   predicted ≥ {d:.1} (MARL2_CONCENTRATION)\n", .{ parent_conc, child_conc, th.MARL2_CONCENTRATION });
+
+    // The signal's own separability, printed whatever the threshold did —
+    // a refiner that fired on nothing and a refiner that fired on
+    // everything look identical in the table above, and neither says
+    // whether the STATISTIC can tell the two populations apart.
+    {
+        var on_lo: f32 = 1e9;
+        var on_hi: f32 = 0;
+        var on_sum: f64 = 0;
+        var on_n: u32 = 0;
+        var off_hi: f32 = 0;
+        var off_sum: f64 = 0;
+        var off_n: u32 = 0;
+        for (0..h.parent.regions.len) |i| {
+            const idx: u32 = @intCast(i);
+            if (h.covered_events[idx] < o.p.min_events) continue;
+            const pv = h.pressureOf(idx);
+            if (h.regionMeetsShell(idx)) {
+                on_lo = @min(on_lo, pv);
+                on_hi = @max(on_hi, pv);
+                on_sum += pv;
+                on_n += 1;
+            } else {
+                off_hi = @max(off_hi, pv);
+                off_sum += pv;
+                off_n += 1;
+            }
+        }
+        try out.print("\n  the pressure statistic's own separability ({d} regions judged)\n", .{on_n + off_n});
+        if (on_n > 0) try out.print("    shell-band regions     {d:>3}   mean {d:.5}  range {d:.5} … {d:.5}\n", .{ on_n, on_sum / @as(f64, @floatFromInt(on_n)), on_lo, on_hi });
+        if (off_n > 0) try out.print("    everywhere else        {d:>3}   mean {d:.5}  highest {d:.5}\n", .{ off_n, off_sum / @as(f64, @floatFromInt(off_n)), off_hi });
+    }
+
+    try out.print("\n  what it cost\n", .{});
+    try out.print("    work ratio             {d:>6.3}          predicted ≤ {d:.1} (MARL2_WORK_RATIO)\n", .{ work_ratio, th.MARL2_WORK_RATIO });
+    try out.print("    mean |w|               parent {d:.4}   child {d:.4}   both must stay under {d:.2}\n", .{ h.parent.weightStats().mean_abs, h.child.weightStats().mean_abs, th.MARL1_OVERRESPONSIBILITY });
+    _ = V_QUIET;
 }
 
 /// §11's interference, measured rather than argued: freeze the prediction
