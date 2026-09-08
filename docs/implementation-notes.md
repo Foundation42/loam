@@ -6369,6 +6369,111 @@ recorded 3.82× and 0.992×.
     zig build test -Dtest-filter="G40"        # 12 s
     python3 tools/marl21_predict.py           # extension included
 
+## MARL-22 — it was never a noise floor, and a third of the query set was a question nobody asks (Tuesday 2026-09-08)
+
+Christian, looking at MARL-21's numbers: *"Seems like the RBF might need a
+higher dimension? like it's struggling to represent? or am I reading it
+wrong?"*
+
+He was reading it right, and the campaign's own instrument had already said
+so and nobody read it back. **G33 (b) fits `RMS² = bias² + μ/(2−μ)·V/M` and
+its intercept — the error with ALL measurement noise removed — is 0.15110**,
+against a total of 0.17174 at sixteen rays. The error is **77% bias.** Every
+0.15 quoted in the prose from MARL-13 to MARL-21 was called a noise floor.
+It is a REPRESENTATION floor. The law itself held and was never wrong; the
+sentences written around it were.
+
+### G41 — where the representation error is
+
+The shell query set is drawn on `|φ| < band`, which STRADDLES the surface,
+so **354 of 1 024 probes (35%) sit INSIDE solid geometry**, where `aoAt`
+returns exactly 0 — and under `invert` that is a plateau at 1.0, the object
+MARL-16 measured at 5.679×.
+
+`MARL22_STEP` predicted the interior would be at least twice as costly per
+probe. **REFUTED at 1.268** — 0.17533 inside against 0.13831 outside. The
+damage is real but spread, not concentrated.
+
+### …and then the anchor, which is the phase
+
+**A renderer never shades inside a wall.** The interior was in the query set
+for no reason but the shape of `|φ| < band`. Deleting it:
+
+| trained on | scored on exterior probes | vs a constant |
+|---|---|---|
+| the full shell | 0.13836 | — |
+| **the exterior shell** | **0.06651** | — |
+| a constant predictor | 0.06870 | 1.000 |
+
+`MARL22_EXTERIOR` HELD at 0.481 — and the anchor says do not celebrate. The
+exterior arm is **0.968× a constant** where the full-shell arm is 0.446×.
+
+    Almost all of the cache's apparent skill on the grove's shell was
+    learning that a point inside a wall is occluded — which the geometry
+    already knows for free.
+
+MARL-17 introduced the anchor rule with the words "every RMS before this was
+quoted without an anchor". This gate PRINTED the anchor, pre-registered a
+threshold that ignored it, and was saved by the number it had already been
+told to print. Twice in one campaign is a habit, not an accident.
+
+### The other two, both refuted
+
+`MARL22_INVERT` predicted `invert` would stop mattering once the plateau was
+gone. **REFUTED at 1.655** — it matters MORE on an exterior shell (0.06651
+against 0.11010). The interior plateau was never what made it worth having;
+the open-sky end is, and MARL-13's choice stands for its original reason.
+
+`MARL22_CAPACITY` is the direct answer to the question. **REFUTED at
+1.392**: eight times the regions gives 9 711 kernels against 1 989 and the
+fit is half again WORSE. **The basis does not need more resolution — more
+resolution makes it worse.** Fifth sighting of MARL-1's invariant, and it
+points at MARL-11's law for the remedy: what binds is EVIDENCE.
+
+So Christian's reading was right and the cure he proposed is not the one.
+
+### And on a REAL level it goes the other way — MARL-17 was UNDERSTATED
+
+The grove's exterior shell is nearly flat because the grove is a regular
+lattice of identical spheres: every point just outside one sees much the
+same sky. That is a FIXTURE limit, and `oa_spirit3` says so. Same volume,
+same budget, `--exterior` against MARL-17's own configuration:
+
+| query set | a constant | MARL | vs constant | grid | MARL/grid |
+|---|---|---|---|---|---|
+| straddling (MARL-17's) | 0.26448 | 0.12976 | 0.491× | 0.20973 | 0.619 |
+| **exterior only** | 0.20617 | **0.06021** | **0.292×** | 0.15117 | **0.398** |
+
+A real level's exterior shell is NOT flat — the anchor only falls 0.2645 →
+0.2062 — and the cache does substantially better relative work on it
+(0.292× a constant against 0.491×). **MARL/grid improves from 0.619 to
+0.398: the learned field's advantage over a dense grid nearly doubles when
+you stop asking it about wall interiors.**
+
+So the fix is free, it is one line, and it makes the campaign's headline
+better rather than worse:
+
+    Draw the query shell OUTSIDE the geometry. A renderer never shades
+    inside a wall, and asking a cache to represent the step at a surface
+    spends its capacity on information the geometry already has.
+
+### What this does to the phases above it
+
+Nothing measured is retracted — every arm was compared against every other
+arm on the same query set, so the RATIOS stand. What changes is the reading:
+MARL-13 through MARL-21's absolute RMS figures are dominated by a
+discontinuity, their "noise floor" language is wrong, and MARL-20/21's
+0.15-ish static bake was representation-limited rather than noise-limited,
+which is why more rays did not help it and why a residual layer could not
+get under it.
+
+    zig build test -Dtest-filter="G41"                                  # 25 s
+    zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 120000 --exterior
+    python3 tools/marl22_predict.py
+
+`Options.exterior` defaults false and `probesOf` keeps its signature as a
+wrapper over `probesOfEx`, so every gate from G31 to G40 is untouched.
+
 ## Where this goes, against the map the campaign measured (Tuesday 2026-09-08)
 
 Christian's list, after MARL-17: radiance fields and GI, occlusion,

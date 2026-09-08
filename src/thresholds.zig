@@ -2419,4 +2419,115 @@ pub const MARL21_CONCENTRATE: f32 = 1.0;
 /// motion where adapting grows linearly — and it is NEVER accuracy.
 pub const MARL21_SURFACE: f32 = 1.0;
 
+// ── MARL-22 (is it representation? and a query nobody makes) ─────────
+//
+// Christian, looking at MARL-21: "Seems like the RBF might need a higher
+// dimension? like it's struggling to represent? or am I reading it wrong?"
+//
+// He is reading it right, and the campaign's own instrument already said
+// so. G33 (b) fits `RMS² = bias² + μ/(2−μ)·V/M`, and its intercept — the
+// error with ALL measurement noise removed — is **0.15110**. At M = 16 the
+// variance term is 0.0067 of an RMS² of 0.0295: the error is 77% BIAS.
+// Every 0.15 quoted from MARL-13 to MARL-21 was called a noise floor in the
+// prose. **It is a representation floor**, and the ledger is corrected.
+
+/// G41: RMS on probes INSIDE solid over RMS on probes outside, for the arm
+/// every phase since MARL-13 has been running. PROPOSED as a FLOOR at 2.0.
+///
+/// The shell is drawn on `|φ| < band`, which STRADDLES the surface, so for
+/// a sphere of radius 3.4 with a band of 1 the split is 25.5 inside against
+/// 45.9 outside — **36% of the query set is inside solid**, where `aoAt`
+/// returns exactly 0 and `invert` turns that into a plateau at 1.0. Which
+/// is precisely the object MARL-16 measured at 5.679×: a Gaussian basis
+/// with a hard cutoff cannot cheaply represent a plateau of any value.
+///
+/// If the error is spread evenly instead, the discontinuity is not the
+/// problem and the basis is simply short of capacity — which is the other
+/// half of the question and is `MARL22_CAPACITY`.
+///
+/// **REFUTED, at 1.268.** The interior IS worse per probe (0.17533 against
+/// 0.13831) but not by the factor a plateau at 1.0 implied. The
+/// discontinuity is not concentrated damage — it is spread, and its real
+/// cost shows up in `MARL22_EXTERIOR` instead.
+pub const MARL22_STEP: f32 = 2.0;
+
+/// G41: RMS(trained on the EXTERIOR shell) / RMS(trained on the full
+/// shell), both scored on exterior probes only. PROPOSED as a CEILING at
+/// 0.8.
+///
+/// **A renderer never shades inside a wall.** The interior was in the query
+/// set for no reason but the shape of `|φ| < band`, and removing it removes
+/// the expensive plateau and the step together. The kernels near a surface
+/// currently hold up a plateau on one side while tracking a varying field
+/// on the other; freed of the first they should fit the second better.
+///
+/// The scoring set is identical for both arms — only the training
+/// distribution differs — so this cannot be won by changing a denominator,
+/// which is the mistake MARL-20 and MARL-21 each made once.
+///
+/// **HELD at 0.481, and the anchor says do not celebrate.** Training on the
+/// exterior shell scores 0.06651 on exterior probes against 0.13836 for the
+/// full-shell model — and a CONSTANT PREDICTOR scores 0.06870 there. So the
+/// exterior arm is **0.968× a constant** where the full-shell arm is
+/// 0.446×: the field that looked twice as easy to fit IS twice as easy to
+/// fit, and the model is doing almost nothing on it.
+///
+/// **Almost all of the cache's apparent skill on the grove's shell was
+/// learning that a point inside a wall is occluded** — which the geometry
+/// already knows for free. That is MARL-17's anchor rule earning its keep
+/// twice: this gate printed the anchor, pre-registered a threshold that
+/// ignored it, and was saved by the number it had already been told to
+/// print.
+///
+/// It is a FIXTURE limit, and the Q3 run says so — see below.
+pub const MARL22_EXTERIOR: f32 = 0.8;
+
+/// G41: the ratio of the two orientations of the target on an exterior-only
+/// shell, whichever way round. PROPOSED as a CEILING at 1.15 — a claim that
+/// `invert` STOPS MATTERING once the interior is gone.
+///
+/// MARL-13 chose `invert` to make the open sky free and paid for it with a
+/// plateau at 1.0 inside solid; delete the interior and the payment
+/// disappears, but so does part of the reason, since an exterior shell is
+/// the band right beside geometry where AO runs about 0.2 to 0.9 with
+/// neither end a large plateau. MARL-13 measured 1.40× for inverting on the
+/// volume-uniform set; if it is still worth that much here, the plateau was
+/// not the mechanism.
+///
+/// **REFUTED, at 1.655.** Inverting is worth MORE on an exterior shell
+/// (0.06651 against 0.11010), not less. So the interior plateau was never
+/// what made `invert` worth having; the OPEN-SKY end is, and it survives
+/// the interior being deleted. MARL-13's choice stands for its original
+/// reason.
+pub const MARL22_INVERT: f32 = 1.15;
+
+/// G41: RMS(regions 12) / RMS(regions 6) on the exterior shell. PROPOSED as
+/// a CEILING at 0.85 — the other half of Christian's question, which is
+/// whether the basis is short of CAPACITY.
+///
+/// σ_max = h/√CUTOFF with h = 1/regions, so `regions` sets the finest scale
+/// the basis can resolve, and a step is approximated by a Gaussian sum to
+/// O(σ). If the residual error is the discontinuity, halving σ should
+/// roughly halve it. The ceiling sits well above that 0.5 because MARL-1's
+/// invariant cuts the other way: eight times the regions is eight times the
+/// population on the same evidence, and "capacity you cannot train is worse
+/// than capacity you do not have" has four sightings.
+///
+/// If it comes in ABOVE 1.0 then finer is WORSE, the answer to "does it
+/// need more" is no, it needs more EVIDENCE — MARL-11's law, and a fifth
+/// sighting.
+///
+/// **REFUTED, at 1.392 — and it is the direct answer to the question that
+/// started the phase.** Eight times the regions gives 9 711 kernels against
+/// 1 989 and the fit is half again WORSE (0.09260 against 0.06651).
+///
+/// **The basis does not need more resolution. More resolution makes it
+/// worse.** Fifth sighting of MARL-1's invariant — capacity you cannot
+/// train is worse than capacity you do not have — and it points at
+/// MARL-11's law for the remedy instead: what binds is EVIDENCE.
+///
+/// So Christian's reading was right and his proposed cure was not: it IS
+/// struggling to represent, and the answer is not a finer basis.
+pub const MARL22_CAPACITY: f32 = 0.85;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

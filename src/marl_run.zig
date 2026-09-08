@@ -97,6 +97,9 @@ const usage =
     \\                      static biased, and three schedules
     \\  --marble            MARL-11: the 2×2 against rbf.fit's batch Adam bake
     \\                      on a sheet-vein field — the first external baseline
+    \\  --exterior          MARL-22: draw the shell OUTSIDE the geometry only —
+    \\                      a renderer never shades inside a wall, and G41 found
+    \\                      the straddling shell's skill is mostly the step
     \\  --q3 FILE           MARL-17: the occlusion cache on a real Quake 3 level
     \\                      (tools/q3_volume.py writes FILE from a .bsp)
     \\  --marble9           MARL-12: the same arms at NINE channels on a sheet
@@ -132,6 +135,7 @@ const Opts = struct {
     marble: bool = false,
     marble9: bool = false,
     q3: ?[]const u8 = null,
+    exterior: bool = false,
     mo: marble_mod.ArmOptions = .{},
     /// Whether `--responsibility` was actually passed. The marble's arms
     /// are a PRE-REGISTERED configuration at G24's radius of 3, and
@@ -248,6 +252,8 @@ fn parse(args: []const []const u8) !?Opts {
             o.marble = true;
         } else if (std.mem.eql(u8, a, "--marble9")) {
             o.marble9 = true;
+        } else if (std.mem.eql(u8, a, "--exterior")) {
+            o.exterior = true;
         } else if (std.mem.eql(u8, a, "--q3")) {
             o.q3 = try next(args, &i);
         } else if (std.mem.eql(u8, a, "--marble-pool")) {
@@ -1155,6 +1161,7 @@ fn q3Cache(gpa: std.mem.Allocator, o: Opts, path: []const u8) !void {
     co.m.rate_w = 0.05; // MARL-13: the rate is the noise floor
     co.invert = true; // MARL-13: a zero background is the free one
     co.surface_band = 2 * cell; // where a renderer actually shades
+    co.exterior = o.exterior; // MARL-22: …and only OUTSIDE the geometry
 
     var solid: usize = 0;
     for (vol.data) |x| {
@@ -1165,7 +1172,7 @@ fn q3Cache(gpa: std.mem.Allocator, o: Opts, path: []const u8) !void {
     try out.print("  AO: {d} rays, reach {d:.0} units, step {d:.1}; queries within {d:.0} units of a surface\n", .{ co.ao.rays, co.ao.reach, co.ao.step, co.surface_band });
     try out.print("  {d} marched directions the budget, {d} probes at {d} rays each\n\n", .{ co.ray_budget, co.probes, cache.TRUTH_RAYS });
 
-    var pr = try cache.probesOf(gpa, &vol, co.ao, co.probes, co.seed, co.surface_band);
+    var pr = try cache.probesOfEx(gpa, &vol, co.ao, co.probes, co.seed, co.surface_band, co.exterior);
     defer pr.deinit(gpa);
     var mean: f64 = 0;
     for (pr.y) |y| mean += y;

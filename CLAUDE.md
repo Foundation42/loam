@@ -70,6 +70,8 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G38"             # MARL-19: the MILK ROUND — a schedule revealed in stages, NOISELESS. 65 s; tools/marl19_predict.py
     zig build test -Dtest-filter="G39"             # MARL-20: a MOVING OCCLUDER — static bake + residual layer. 11 s; tools/marl20_predict.py
     zig build test -Dtest-filter="G40"             # MARL-21: CONTACT — an object resting against geometry. 12 s; tools/marl21_predict.py
+    zig build test -Dtest-filter="G41"             # MARL-22: it was never a noise floor — and the shell asks a question nobody makes. 25 s
+    zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 120000 --exterior   # ... and on a real level it makes MARL/grid 0.619 → 0.398
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -288,7 +290,10 @@ a half at one ray. Three results.
 step μ does not converge on noisy data, it hovers, at μ/(2−μ) of the
 measurement variance HOWEVER MUCH DATA ARRIVES — so `RMS² = bias² +
 μ/(2−μ)·V/M`, linear in 1/M, held at 1.023 (G33 b). The first thing this
-campaign has met that more data does not fix.
+campaign has met that more data does not fix. **(MARL-22 corrects the prose
+that grew around this, not the law: the same fit's INTERCEPT is 0.15110
+against a total of 0.17174 at sixteen rays, so the error is 77% BIAS. Every
+"noise floor" written from here to MARL-21 was a REPRESENTATION floor.)**
 
 **Noise enters by three doors and a rate closes one.** `rate_w` 0.5 → 0.05
 is worth 1.29× (the pre-registered floor of 2.0 is REFUTED); adding
@@ -693,6 +698,58 @@ for: its value is MEMORY, BUILD TIME and UPDATE COST — a tenth, an eighth
 and a tenth, with a flat population under motion — and never accuracy.
 Which is the right trade anyway: nobody re-bakes a level because a crate
 moved.
+
+MARL-22 answered a question of Christian's — *"seems like the RBF might
+need a higher dimension? like it's struggling to represent?"* — and he was
+right about the diagnosis and wrong about the cure, which is the best kind
+of question to be handed.
+
+**It was never a noise floor.** G33 (b) had already measured it: the same
+fit's INTERCEPT, the error with all measurement noise removed, is 0.15110
+against a total of 0.17174 at sixteen rays. **77% bias.** Every 0.15 in the
+prose from MARL-13 to MARL-21 was mislabelled. The law held; the sentences
+around it did not.
+
+**And a third of the query set was a question nobody asks.** The shell is
+drawn on `|φ| < band`, which STRADDLES the surface, so 35% of probes sit
+INSIDE solid where `aoAt` returns exactly 0 — and under `invert` that is a
+plateau at 1.0, MARL-16's expensive object. **A renderer never shades inside
+a wall.** It was there for no reason but the shape of the test.
+
+Deleting it on the grove gives 0.06651 against the full-shell model's
+0.13836 — and the ANCHOR says do not celebrate: a constant scores 0.06870
+there, so the exterior arm is **0.968× a constant** where the full-shell arm
+is 0.446×. *Almost all of the cache's apparent skill on the grove's shell
+was learning that a point inside a wall is occluded, which the geometry
+already knows.* MARL-17 introduced the anchor rule for exactly this and the
+gate still pre-registered a threshold that ignored the number it was
+printing.
+
+**But on a REAL level it goes the other way, and MARL-17 was UNDERSTATED.**
+The grove's exterior shell is flat because it is a lattice of identical
+spheres; `oa_spirit3`'s is not. Same volume, same budget:
+
+| query set | a constant | MARL | vs constant | MARL/grid |
+|---|---|---|---|---|
+| straddling (MARL-17's) | 0.26448 | 0.12976 | 0.491× | 0.619 |
+| **exterior only** | 0.20617 | **0.06021** | **0.292×** | **0.398** |
+
+**The learned field's advantage over a dense grid nearly doubles when you
+stop asking it about wall interiors.** The fix is one line and free.
+
+**And the cure Christian proposed is refuted.** `regions` 6 → 12 gives 9 711
+kernels against 1 989 and the fit is 1.392× WORSE. **The basis does not need
+more resolution; more resolution makes it worse** — fifth sighting of
+MARL-1's invariant, pointing at MARL-11's law for the remedy: what binds is
+EVIDENCE. (`invert` was also re-tested and matters MORE on an exterior shell,
+1.655×, so MARL-13's choice stands for its original reason and not for the
+plateau.)
+
+Nothing measured above is retracted — every arm was compared on the same
+query set, so the RATIOS stand. What changes is the reading: those absolute
+RMS figures are dominated by a discontinuity, and MARL-20/21's static bake
+was representation-limited rather than noise-limited, which is why more rays
+never helped it and why a residual layer could not get under it.
 
 Recorded, not built. QAT belongs in the DISTILLATION transfer step
 (Christian's, and right) — a student is already re-fitting against a free

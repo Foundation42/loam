@@ -354,11 +354,15 @@ pub const Probes = struct {
 /// Expensive, and computed once for every arm to share, so what is
 /// compared is the arms and not their reference.
 pub fn probesOf(gpa: std.mem.Allocator, vol: *const bark.Volume, o: AoOptions, n: u32, seed: u64, band: f32) !Probes {
+    return probesOfEx(gpa, vol, o, n, seed, band, false);
+}
+
+pub fn probesOfEx(gpa: std.mem.Allocator, vol: *const bark.Volume, o: AoOptions, n: u32, seed: u64, band: f32, exterior: bool) !Probes {
     var st = rng.Stream.region(seed, 0x4341_4348, 0); // "CACH"
     var p = Probes{ .x = try gpa.alloc([3]f32, n), .y = try gpa.alloc(f32, n) };
     errdefer p.deinit(gpa);
     for (p.x, p.y) |*x, *y| {
-        x.* = drawQuery(vol, band, &st);
+        x.* = drawShell(vol, band, exterior, &st);
         y.* = aoTrue(vol, o, x.*, &st);
     }
     return p;
@@ -370,10 +374,25 @@ pub fn probesOf(gpa: std.mem.Allocator, vol: *const bark.Volume, o: AoOptions, n
 /// One draw from the query distribution: uniform through the cube, or
 /// rejection-sampled into the shell around the geometry.
 fn drawQuery(vol: *const bark.Volume, band: f32, st: *rng.Stream) [3]f32 {
+    return drawShell(vol, band, false, st);
+}
+
+/// The shell, optionally EXTERIOR ONLY.
+///
+/// `|φ| < band` straddles the surface, so a third of the shell is INSIDE
+/// solid geometry, where `aoAt` returns exactly 0 — and under `invert` that
+/// is a plateau at 1.0, which is the object MARL-16 measured at 5.679×. **A
+/// renderer never shades inside a wall.** MARL-22 exists because that
+/// query was in the set for no reason but the shape of the test above.
+fn drawShell(vol: *const bark.Volume, band: f32, exterior: bool, st: *rng.Stream) [3]f32 {
     var tries: u32 = 0;
     while (tries < 4096) : (tries += 1) {
         const q = [3]f32{ st.unit() * vol.extent, st.unit() * vol.extent, st.unit() * vol.extent };
-        if (band <= 0 or @abs(vol.at(q)) < band) return q;
+        if (band <= 0) return q;
+        const phi = vol.at(q);
+        if (exterior) {
+            if (phi < 0 and phi > -band) return q;
+        } else if (@abs(phi) < band) return q;
     }
     return .{ st.unit() * vol.extent, st.unit() * vol.extent, st.unit() * vol.extent };
 }
@@ -460,6 +479,9 @@ pub const Options = struct {
     probes: u32 = 2048,
     seed: u64 = 13,
     ao: AoOptions = .{},
+    /// Draw the shell OUTSIDE the geometry only, rather than straddling it
+    /// (MARL-22). Default false so every arm from G31 to G40 is untouched.
+    exterior: bool = false,
     m: marl.Options = .{ .responsibility = 3 },
 };
 
@@ -478,7 +500,7 @@ pub fn marlArm(gpa: std.mem.Allocator, vol: *const bark.Volume, o: Options, rays
     var timer = try std.time.Timer.start();
     var i: u64 = 0;
     while (i < n) : (i += 1) {
-        const q = drawQuery(vol, o.surface_band, &st);
+        const q = drawShell(vol, o.surface_band, o.exterior, &st);
         const raw = aoAt(vol, ao, q, &st);
         const y = if (o.invert) 1 - raw else raw;
         _ = try model.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, .{y});
@@ -864,7 +886,7 @@ pub fn teachInto(model: *marl.Model, vol: *const bark.Volume, o: Options, n: u64
     const inv = 1 / vol.extent;
     var i: u64 = 0;
     while (i < n) : (i += 1) {
-        const q = drawQuery(vol, o.surface_band, st);
+        const q = drawShell(vol, o.surface_band, o.exterior, st);
         const raw = aoAt(vol, ao, q, st);
         const y = if (o.invert) 1 - raw else raw;
         _ = try model.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, .{y});
@@ -2574,4 +2596,156 @@ test "G40 contact: an object resting against geometry, where a residual layer sh
     try testing.expect(d_surf < d_comp); // the reweighting is directionally right…
     try testing.expect(d_surf > d_re); // …and does not rescue the headline
     try testing.expect(d_surf > floor * 0.9); // because the base fit dominates
+}
+
+test "G41 the error is REPRESENTATION, and a third of it is a query nobody makes" {
+    // Christian: "Seems like the RBF might need a higher dimension? like
+    // it's struggling to represent?"
+    //
+    // G33 (b) had already answered the first half and nobody read it back:
+    // its intercept, the error with all measurement noise removed, is
+    // 0.15110 against a total of 0.17174 at M = 16. **77% bias.** Every
+    // 0.15 in this campaign's prose since MARL-13 has been called a noise
+    // floor and is a representation floor.
+    //
+    // This gate asks where that representation error IS.
+    const gpa = testing.allocator;
+    var vol = try groveVolume(gpa, GROVE_RES, GROVE_EXTENT);
+    defer vol.deinit(gpa);
+
+    var o = Options{ .samples = 60_000, .probes = 1024, .surface_band = 1.0, .invert = true };
+    o.m.rate_w = 0.05;
+    o.m.rate_geom = 0.02;
+
+    // The query set every phase since MARL-13 (d) has used: |φ| < band,
+    // which STRADDLES the surface.
+    var full = try probesOf(gpa, &vol, o.ao, o.probes, o.seed, o.surface_band);
+    defer full.deinit(gpa);
+    var inside_n: u32 = 0;
+    for (full.x) |x| {
+        if (vol.at(x) > 0) inside_n += 1;
+    }
+
+    var a = try teach(gpa, &vol, o, full);
+    defer a.deinit();
+
+    // Stratified: the same model, the same probes, split on the sign of φ.
+    const split = blk: {
+        var acc_in: f64 = 0;
+        var acc_out: f64 = 0;
+        var n_in: u32 = 0;
+        var n_out: u32 = 0;
+        for (full.x, full.y) |x, y| {
+            const p = (a.model.predict(.{ x[0] / vol.extent, x[1] / vol.extent, x[2] / vol.extent }) catch unreachable)[0];
+            const e = (1 - p) - y;
+            if (vol.at(x) > 0) {
+                acc_in += @as(f64, e) * e;
+                n_in += 1;
+            } else {
+                acc_out += @as(f64, e) * e;
+                n_out += 1;
+            }
+        }
+        break :blk [2]f32{
+            @floatCast(@sqrt(acc_in / @as(f64, @floatFromInt(@max(1, n_in))))),
+            @floatCast(@sqrt(acc_out / @as(f64, @floatFromInt(@max(1, n_out))))),
+        };
+    };
+
+    std.debug.print("\n  G41: the shell straddles the surface — {d} of {d} probes ({d:.0}%) are INSIDE solid, where AO is exactly 0 and `invert` makes it a plateau at 1.0 ({s})\n", .{
+        inside_n, full.x.len, 100 * @as(f64, @floatFromInt(inside_n)) / @as(f64, @floatFromInt(full.x.len)), @tagName(builtin.mode),
+    });
+    // THE ANCHOR, on every row. MARL-17 made this mandatory — "an RMS
+    // without it is a number with no scale" — and this gate is where the
+    // rule pays for itself twice over.
+    const anchorOf = struct {
+        fn f(ys: []const f32) f32 {
+            var m: f64 = 0;
+            for (ys) |y| m += y;
+            m /= @as(f64, @floatFromInt(ys.len));
+            var acc: f64 = 0;
+            for (ys) |y| acc += (y - m) * (y - m);
+            return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(ys.len))));
+        }
+    }.f;
+    const full_anchor = anchorOf(full.y);
+    std.debug.print("  G41: the arm every phase since MARL-13 runs — {d} kernels, RMS {d:.5} against a constant's {d:.5} ({d:.3}× it); {d:.5} INSIDE solid against {d:.5} outside: {d:.3}× (≥ {d:.1} predicted)\n", .{
+        a.kernels(), a.rms, full_anchor, a.rms / full_anchor, split[0], split[1], split[0] / split[1], thresholds.MARL22_STEP,
+    });
+
+    // THE EXTERIOR SHELL: the query set a renderer actually makes. Both
+    // arms are scored on the SAME exterior probes; only the training
+    // distribution differs, so this cannot be won on a denominator.
+    var ext = try probesOfEx(gpa, &vol, o.ao, o.probes, o.seed, o.surface_band, true);
+    defer ext.deinit(gpa);
+    var eo = o;
+    eo.exterior = true;
+    var b = try teach(gpa, &vol, eo, ext);
+    defer b.deinit();
+    const a_on_ext = blk: {
+        var acc: f64 = 0;
+        for (ext.x, ext.y) |x, y| {
+            const p = (a.model.predict(.{ x[0] / vol.extent, x[1] / vol.extent, x[2] / vol.extent }) catch unreachable)[0];
+            const e = (1 - p) - y;
+            acc += @as(f64, e) * e;
+        }
+        break :blk @as(f32, @floatCast(@sqrt(acc / @as(f64, @floatFromInt(ext.x.len)))));
+    };
+    const anchor = anchorOf(ext.y);
+
+    // …and whether `invert` still earns its place once the plateau is gone.
+    var ni = eo;
+    ni.invert = false;
+    var c = try teach(gpa, &vol, ni, ext);
+    defer c.deinit();
+
+    std.debug.print("  G41: on EXTERIOR probes only — trained on the full shell {d:.5}, trained on the exterior {d:.5} at {d} kernels: {d:.3}× (≤ {d:.1} predicted)\n", .{
+        a_on_ext, b.rms, b.kernels(), b.rms / a_on_ext, thresholds.MARL22_EXTERIOR,
+    });
+    std.debug.print("  G41: …AND THE ANCHOR. A constant predictor scores {d:.5} on the exterior shell against {d:.5} on the full one, so the two arms are {d:.3}× and {d:.3}× a constant. **The exterior field is nearly flat, and almost all of the cache's apparent skill on the shell was learning that a point inside a wall is occluded — which the geometry already knows.**\n", .{
+        anchor, full_anchor, b.rms / anchor, a.rms / full_anchor,
+    });
+    std.debug.print("  G41: and `invert` on an exterior shell — inverted {d:.5} at {d} kernels, plain {d:.5} at {d}: {d:.3}× (≤ {d:.2} predicted; MARL-13 measured 1.40× for it on the volume-uniform set)\n", .{
+        b.rms, b.kernels(), c.rms, c.kernels(), @max(b.rms, c.rms) / @min(b.rms, c.rms), thresholds.MARL22_INVERT,
+    });
+
+    // THE OTHER HALF: is it capacity? σ_max = h/√CUTOFF, so `regions` sets
+    // the finest scale the basis can resolve.
+    var fo = eo;
+    fo.m.regions = 12;
+    var f = try teach(gpa, &vol, fo, ext);
+    defer f.deinit();
+    std.debug.print("  G41: CAPACITY — regions 6 gives {d} kernels at {d:.5}, regions 12 gives {d} at {d:.5}: {d:.3}× (≤ {d:.2} predicted)\n", .{
+        b.kernels(), b.rms, f.kernels(), f.rms, f.rms / b.rms, thresholds.MARL22_CAPACITY,
+    });
+
+    // MARL22_STEP is REFUTED at 1.268 and not asserted: the interior is
+    // worse per probe, but not by the factor a plateau at 1.0 implied.
+    // What is asserted is that it IS worse, since the direction is the part
+    // the mechanism predicts.
+    try testing.expect(split[0] > split[1]);
+
+    // MARL22_EXTERIOR "HELD" at 0.481 and the anchor says not to celebrate:
+    // the exterior field is nearly flat, so the arm that looks twice as
+    // good is the arm with the easier target. Both facts are asserted,
+    // because the second is what stops the first being misread — which is
+    // exactly the failure MARL-17 introduced the anchor to prevent, and
+    // this gate walked into it anyway.
+    try testing.expect(b.rms / a_on_ext <= thresholds.MARL22_EXTERIOR);
+    try testing.expect(b.rms / anchor > 0.9); // barely better than a constant
+
+    // MARL22_INVERT is REFUTED at 1.655 — inverting matters MORE on the
+    // exterior shell, not less, so the interior plateau was not what made
+    // it worth having. The open-sky end is.
+    try testing.expect(@max(b.rms, c.rms) / @min(b.rms, c.rms) > thresholds.MARL22_INVERT);
+
+    // MARL22_CAPACITY is REFUTED at 1.392, and it is the direct answer to
+    // the question that started the phase. Eight times the regions is
+    // 9 711 kernels against 1 989 and the fit is HALF AGAIN WORSE. **The
+    // basis does not need more resolution; more resolution makes it
+    // worse.** Fifth sighting of MARL-1's invariant — capacity you cannot
+    // train is worse than capacity you do not have — and it points at
+    // MARL-11's law instead: what binds is EVIDENCE.
+    try testing.expect(f.rms > b.rms);
+    try testing.expect(f.kernels() > 4 * b.kernels());
 }
