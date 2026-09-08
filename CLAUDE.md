@@ -69,6 +69,7 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G37"             # MARL-18: CONSOLIDATION — distil, replace the master, resume learning. 79 s, four refutations; tools/marl18_predict.py
     zig build test -Dtest-filter="G38"             # MARL-19: the MILK ROUND — a schedule revealed in stages, NOISELESS. 65 s; tools/marl19_predict.py
     zig build test -Dtest-filter="G39"             # MARL-20: a MOVING OCCLUDER — static bake + residual layer. 11 s; tools/marl20_predict.py
+    zig build test -Dtest-filter="G40"             # MARL-21: CONTACT — an object resting against geometry. 12 s; tools/marl21_predict.py
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -653,6 +654,45 @@ Honest limit: the effect is MODEST (the object degrades the local bake by
 the grove. The case that would show it properly is CONTACT — an object
 resting against geometry — and it is untested, as are object-local frames
 (§8), a scheduler (§10) and a second mover.
+
+MARL-21 took MARL-20's residual layer to CONTACT — a 3.5-unit occluder
+RESTING against a grove sphere, which is the case a renderer actually has
+and where an object subtends nearly a hemisphere. All four numbers refuted,
+and the phase is worth more for it.
+
+**The physics is right and stronger than the floor said.** Stratified by
+distance from the object's surface, mean |Δ| runs 0.2455 / 0.0921 / 0.0449 /
+0.0108 over bands 0–1, 1–2, 2–4 and 4+. Contact is **0.2455 where contact
+happens**, 2.5× the floor it failed as a ball average of 0.0401 — because
+38% of the probes sit in the outermost band seeing nothing.
+
+    The affected ball is the SUPPORT, not the SCALE.
+
+A residual's support and its magnitude have entirely different geometries.
+This is MARL-20's dilution mistake made again, one level in, inside the
+region introduced to fix it — twice in two phases, so it is a rule now.
+
+**And MARL-4's mechanism does not rescue the headline.** Uniform-in-VOLUME
+sampling spends evidence in proportion to r², so the layer put ~38% of its
+samples where |Δ| = 0.0108 and 2% where |Δ| = 0.2455. Drawing the radial
+offset uniformly in DISTANCE instead needs no tuning constant and exactly
+cancels the r² — and bought 0.7% (1.030 → 1.023). The reason is the
+phase's real finding:
+
+    A residual layer is bounded below by the static bake it sits on.
+
+The composed prediction is `static + residual`, so its error carries the
+static model's own fit error on the base field (0.15078 here) while the
+residual can only remove the disturbance's contribution (mean 0.0401). **A
+full re-bake wins locally because it RE-FITS THE BASE as well**, not
+because it fits the disturbance better, and no sampling rule applied to the
+residual can touch the dominant term.
+
+So §7 is validated on its real merits and refuted on the one it was hoped
+for: its value is MEMORY, BUILD TIME and UPDATE COST — a tenth, an eighth
+and a tenth, with a flat population under motion — and never accuracy.
+Which is the right trade anyway: nobody re-bakes a level because a crate
+moved.
 
 Recorded, not built. QAT belongs in the DISTILLATION transfer step
 (Christian's, and right) — a student is already re-fitting against a free

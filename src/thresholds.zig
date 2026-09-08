@@ -2304,4 +2304,119 @@ pub const MARL20_COMPOSE: f32 = 1.15;
 /// MARL-16 made it free where nothing changed.
 pub const MARL20_REBUILD: f32 = 1.0;
 
+// ── MARL-21 (CONTACT: an object resting against geometry) ────────────
+//
+// MARL-20's residual layer worked and the effect was MODEST — a mover
+// floating in a corridor degraded the local bake by 1.142× and moved the
+// truth by 0.0483. The limit recorded then was that occlusion in a dense
+// grove is dominated by the grove: a mover in open space competes with
+// spheres already blocking most of the sky.
+//
+// CONTACT is the case a renderer cares about and the one that should bite.
+// At a contact point the object subtends nearly a HEMISPHERE, so the change
+// is not a few per cent, it is up to a half.
+
+/// G40: the mean |ΔAO| over the local probe set. PROPOSED as a FLOOR at
+/// 0.10 — roughly twice MARL-20's 0.0483 and a fifth of the hemisphere
+/// ceiling.
+///
+/// A FIXTURE VALIDITY number, checked first. MARL-20 burned two nulls on
+/// movers that disturbed nothing, and the lesson recorded then was that
+/// "the effect was too small to see" and "there is no effect" print exactly
+/// the same way.
+///
+/// **REFUTED as a ball average, at 0.0401 — and the physics it predicted is
+/// right and stronger than the floor.** Stratified by distance from the
+/// object's surface:
+///
+///     0 – 1     10 probes   mean |Δ| 0.2455   max 0.3145
+///     1 – 2     48          0.0921            0.1821
+///     2 – 4    257          0.0449            0.1155
+///     4 – …    197          0.0108            0.0483
+///
+/// Contact is 0.2455 where contact happens, 2.5× the floor, decaying
+/// twentyfold over four units. The ball average came to 0.0401 because 38%
+/// of the probes sit in the outermost band seeing essentially nothing.
+///
+/// **The affected ball is the SUPPORT, not the SCALE.** A residual's
+/// support and its magnitude have entirely different geometries — and this
+/// is MARL-20's dilution mistake made again, inside the region that was
+/// introduced to fix it.
+pub const MARL21_CONTACT: f32 = 0.10;
+
+/// G40: RMS(stale bake) / RMS(static + residual) on the local probe set.
+/// PROPOSED as a FLOOR at 1.5, where MARL-20's floating mover managed 1.09.
+/// The recovery should scale with the size of the thing there is to
+/// recover.
+///
+/// **REFUTED, at 1.050.** The residual recovers almost none of the stale
+/// bake's local error — not because the disturbance is small (it is not, in
+/// the band that matters) but because the error being measured is mostly
+/// not the disturbance. See `MARL21_SURFACE`.
+pub const MARL21_RECOVER: f32 = 1.5;
+
+/// G40, THE HEADLINE: RMS(static + residual) / RMS(a full re-bake) on the
+/// local probe set. PROPOSED as a CEILING at parity — **below** it, where
+/// MARL-20's `MARL20_COMPOSE` was pitched at 1.15 and measured 1.050.
+///
+/// MARL-11's law is what decides it: **evidence binds, not placement.** A
+/// re-bake spreads 60 000 samples over the whole query distribution, of
+/// which the affected ball is 7.2%, so about 4 320 land locally; the
+/// residual layer spends all 7 500 of its samples inside that ball. That is
+/// 1.74× the LOCAL evidence for an EIGHTH of the total cost — and the
+/// residual is the easier target besides, being zero outside the ball
+/// (free, MARL-16), measured by a correlated estimator that shares its rays
+/// (MARL-20), and carrying no background to hold up.
+///
+/// The claim is that a layered representation is not a cheap approximation
+/// to re-baking but is BETTER than it where it matters, for the campaign's
+/// oldest reason. The way it fails is named: the composed arm inherits the
+/// STATIC model's error on the unperturbed part and a re-bake refits
+/// everything, so the gate prints the static model's own local error as the
+/// floor the composed arm cannot go below.
+///
+/// **REFUTED, at 1.030**, and `MARL21_SURFACE` refutes the repair too. The
+/// evidence-concentration argument was sound and the term it applies to is
+/// not the one that dominates.
+pub const MARL21_CONCENTRATE: f32 = 1.0;
+
+/// G40, the second arm: RMS(static + residual)/RMS(a full re-bake) on the
+/// same local probe set, with the residual's TRAINING drawn uniformly in
+/// DISTANCE from the object's surface rather than uniformly in volume.
+/// PROPOSED as a CEILING at parity, and written AFTER G40's first run.
+///
+/// The stratified diagnostic said the physics was right and the metric was
+/// wrong: |Δ| is 0.2455 within a unit of the surface and 0.0108 beyond
+/// four, decaying twentyfold, while uniform-in-volume sampling puts 38% of
+/// the evidence in the outermost band and 2% in the innermost. **The
+/// affected ball is the SUPPORT, not the SCALE** — a residual's support and
+/// its magnitude have entirely different geometries.
+///
+/// MARL-4 already solved this by changing the STREAM rather than the model,
+/// and moved capacity concentration 1.65 → 2.50 doing it. The geometric
+/// analogue needs no tuning constant: uniform in distance puts equal
+/// numbers of samples in each band and exactly cancels the r² dilution.
+///
+/// The probes do not move — only where the layer spends its samples — so
+/// this is a clean test of MARL-4's mechanism and not a change of
+/// denominator.
+///
+/// **REFUTED, at 1.023** against uniform-in-volume's 1.030. MARL-4's
+/// mechanism is directionally right and worth almost nothing here, and the
+/// reason is the phase's real finding:
+///
+/// **A residual layer is bounded below by the static bake it sits on.** The
+/// composed prediction is `static + residual`, so its error carries the
+/// static model's own fit error on the base field — 0.15078 on this probe
+/// set — and the residual can only remove the part contributed by the
+/// disturbance, whose mean is 0.0401. **A full re-bake wins locally because
+/// it RE-FITS THE BASE as well**, not because it fits the disturbance
+/// better, and reweighting the residual's samples cannot touch the term
+/// that dominates.
+///
+/// So §7's value is memory, build time and update cost — MARL-20 measured
+/// them at a tenth, an eighth and a tenth, with a flat population under
+/// motion where adapting grows linearly — and it is NEVER accuracy.
+pub const MARL21_SURFACE: f32 = 1.0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

@@ -6273,6 +6273,102 @@ scheduler (§10), and any second mover.
 `teachResidualInto` are pure additions, so every gate from G33 to G38 reads
 as it did.
 
+## MARL-21 — contact, and the ceiling on a layered representation (Tuesday 2026-09-08)
+
+MARL-20's residual layer worked, and the honest limit recorded at the time
+was that the effect was MODEST: a mover floating in a corridor degraded the
+local bake by 1.142× and moved the truth by 0.0483, because ambient
+occlusion in a dense grove is dominated by the grove. Christian: "go for it
+with the more complex example. That is where it should start to shine."
+
+CONTACT is that example — a 3.5-unit occluder RESTING against a grove
+sphere, tangent with 0.21 of overlap, which is the case a renderer actually
+has. At a contact point the object subtends nearly a hemisphere.
+
+### The physics is right, and stronger than the floor said
+
+All three pre-registered numbers were refuted, and the stratified
+diagnostic says why:
+
+| distance from its surface | probes | mean \|Δ\| | max \|Δ\| | mean AO |
+|---|---|---|---|---|
+| 0 – 1 | 10 | **0.2455** | 0.3145 | 0.6931 |
+| 1 – 2 | 48 | 0.0921 | 0.1821 | 0.4963 |
+| 2 – 4 | 257 | 0.0449 | 0.1155 | 0.4683 |
+| 4 – … | 197 | 0.0108 | 0.0483 | 0.4401 |
+
+**`MARL21_CONTACT` REFUTED at 0.0401 as a ball average — and measured at
+0.2455 where contact happens, which is 2.5× the floor it failed.** The
+change decays twentyfold over four units, and 38% of the probes sit in the
+outermost band seeing essentially nothing.
+
+    The affected ball is the SUPPORT, not the SCALE.
+
+A residual's support and its magnitude have entirely different geometries:
+the support is `r + reach`, the magnitude lives within about a unit of the
+surface. This is MARL-20's dilution mistake made again — a global probe set
+diluted by a local object — one level in, inside the very region that was
+introduced to fix it. Twice in two phases, which is enough to make it a
+rule rather than an anecdote.
+
+### MARL-4's mechanism, and why it does not rescue the headline
+
+`MARL21_CONCENTRATE` had predicted the composed arm would BEAT a full
+re-bake locally, on MARL-11's law: evidence binds, and a re-bake spreads
+60 000 samples over the whole query set (≈4 320 landing locally) while the
+residual spends all 7 500 inside the ball. It measured **1.030**.
+
+The stratification named the flaw: uniform-in-VOLUME sampling puts evidence
+in proportion to r², so the layer spent ~38% of its samples where |Δ| =
+0.0108 — learning that zero is zero — and 2% where |Δ| = 0.2455. MARL-4
+already solved that class of problem by changing the STREAM rather than the
+model, and the geometric analogue needs no tuning constant at all: draw the
+radial offset uniformly in DISTANCE from the surface, which puts equal
+numbers in each band and exactly cancels the r².
+
+`MARL21_SURFACE` was frozen before that arm ran. **REFUTED at 1.023**,
+against uniform-in-volume's 1.030. The reweighting is directionally right
+and worth 0.7%.
+
+### The finding, which is a ceiling
+
+    A residual layer is bounded below by the static bake it sits on.
+
+The composed prediction is `static + residual`, so its error carries the
+static model's own fit error on the base field — 0.15078 on this probe set
+— and the residual can only remove the part contributed by the disturbance,
+whose mean is 0.0401. **A full re-bake wins locally because it RE-FITS THE
+BASE as well**, not because it fits the disturbance better. No sampling
+rule applied to the residual can touch the term that dominates.
+
+So Christian's §7 is validated on its real merits and refuted on the one it
+was hoped for. Its value is **memory, build time and update cost** —
+MARL-20 measured a tenth, an eighth and a tenth, with a flat population
+under motion where adapting grows two hundred kernels a move — and it is
+**never accuracy**. Which is the right trade for a renderer anyway: nobody
+re-bakes a level because a crate moved.
+
+    on 512 probes at the contact                kernels     KiB       RMS
+    the static bake's own floor (no mover)            —       —   0.15078
+    the static bake, now WRONG                     2638   103.0   0.15228
+    a full re-bake, ALL the rays                   2600   101.6   0.14074
+    static + residual, 1/8 the rays                 208     8.1   0.14501
+    …the SAME layer, sampled by distance            209     8.2   0.14394
+
+### One refactor, gated by being invisible
+
+`groveCentres` is split out of `groveVolume` so a mover can be placed
+against a sphere — same stream, same arithmetic, same order. And `drawNear`
+gained an exclusion for the interior of whatever occluder is actually
+present, because a point inside a solid returns AO = 0 by convention and a
+residual measured there would be the whole field over a region no renderer
+shades. The vacated position stays IN, since that is exactly where a stale
+residual has to be un-learned. G39 re-read at 3.83× and 0.997× against its
+recorded 3.82× and 0.992×.
+
+    zig build test -Dtest-filter="G40"        # 12 s
+    python3 tools/marl21_predict.py           # extension included
+
 ## Where this goes, against the map the campaign measured (Tuesday 2026-09-08)
 
 Christian's list, after MARL-17: radiance fields and GI, occlusion,

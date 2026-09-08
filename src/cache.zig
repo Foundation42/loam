@@ -70,6 +70,25 @@ const GROVE_JITTER: f32 = 1.6;
 /// crevices where two nearly touch — so the field has the full range and
 /// its detail is concentrated where the geometry is, which is the property
 /// a cache exists to exploit.
+/// The grove's sphere centres, split out of `groveVolume` so MARL-21 can
+/// rest a mover AGAINST one. Same stream, same arithmetic, same order — the
+/// volume is built from this and is unchanged bit for bit.
+pub fn groveCentres(extent: f32) [GROVE_N * GROVE_N * GROVE_N][3]f32 {
+    var centres: [GROVE_N * GROVE_N * GROVE_N][3]f32 = undefined;
+    var st = rng.Stream.region(1, 0x4752_4f56, 0); // "GROV"
+    const spacing = extent / @as(f32, @floatFromInt(GROVE_N));
+    var idx: usize = 0;
+    for (0..GROVE_N) |i| for (0..GROVE_N) |j| for (0..GROVE_N) |k| {
+        centres[idx] = .{
+            (@as(f32, @floatFromInt(i)) + 0.5) * spacing + (st.unit() - 0.5) * GROVE_JITTER,
+            (@as(f32, @floatFromInt(j)) + 0.5) * spacing + (st.unit() - 0.5) * GROVE_JITTER,
+            (@as(f32, @floatFromInt(k)) + 0.5) * spacing + (st.unit() - 0.5) * GROVE_JITTER,
+        };
+        idx += 1;
+    };
+    return centres;
+}
+
 pub fn groveVolume(gpa: std.mem.Allocator, res: u32, extent: f32) !bark.Volume {
     const cell = extent / @as(f32, @floatFromInt(res));
     var v = bark.Volume{
@@ -84,18 +103,7 @@ pub fn groveVolume(gpa: std.mem.Allocator, res: u32, extent: f32) !bark.Volume {
     };
     errdefer gpa.free(v.data);
 
-    var centres: [GROVE_N * GROVE_N * GROVE_N][3]f32 = undefined;
-    var st = rng.Stream.region(1, 0x4752_4f56, 0); // "GROV"
-    const spacing = extent / @as(f32, @floatFromInt(GROVE_N));
-    var idx: usize = 0;
-    for (0..GROVE_N) |i| for (0..GROVE_N) |j| for (0..GROVE_N) |k| {
-        centres[idx] = .{
-            (@as(f32, @floatFromInt(i)) + 0.5) * spacing + (st.unit() - 0.5) * GROVE_JITTER,
-            (@as(f32, @floatFromInt(j)) + 0.5) * spacing + (st.unit() - 0.5) * GROVE_JITTER,
-            (@as(f32, @floatFromInt(k)) + 0.5) * spacing + (st.unit() - 0.5) * GROVE_JITTER,
-        };
-        idx += 1;
-    };
+    const centres = groveCentres(extent);
 
     var lo: f32 = std.math.floatMax(f32);
     var hi: f32 = -std.math.floatMax(f32);
@@ -2037,7 +2045,7 @@ pub fn dynProbesNear(gpa: std.mem.Allocator, vol: *const bark.Volume, o: AoOptio
     var t = o;
     t.rays = TRUTH_RAYS;
     for (p.x, p.base, p.moved) |*x, *b, *m| {
-        x.* = drawNear(vol, band, mv, o, &st);
+        x.* = drawNearOutside(vol, band, mv, mv, o, &st);
         const pr = aoPair(vol, t, mv, x.*, &st);
         b.* = pr.base;
         m.* = pr.moved;
@@ -2069,6 +2077,49 @@ pub fn dynProbesOf(gpa: std.mem.Allocator, vol: *const bark.Volume, o: AoOptions
 /// changed regions" as a sampling rule — you know where the object is, so
 /// you know where the residual can be non-zero, exactly.
 fn drawNear(vol: *const bark.Volume, band: f32, mv: Mover, o: AoOptions, st: *rng.Stream) [3]f32 {
+    return drawNearOutside(vol, band, mv, null, o, st);
+}
+
+/// The same, excluding the interior of whatever object is actually present.
+///
+/// A point inside a solid returns AO = 0 by convention, so a residual
+/// measured there is the whole field and it would inflate every number in
+/// MARL-21 for a region no renderer ever shades. The exclusion is the
+/// CURRENT occluder only: the position a mover has VACATED is exactly where
+/// a stale residual has to be un-learned, so those points must stay in.
+/// Uniform in DISTANCE from the object's surface, rather than uniform in
+/// volume. MARL-21's second arm, and MARL-4's mechanism in geometric form.
+///
+/// Uniform-in-volume puts samples in proportion to r², so a layer spends
+/// most of its evidence in the outer shell of its own support — where the
+/// residual it is learning is essentially zero. Measured on the contact
+/// fixture: 38% of samples land where |Δ| = 0.0108 and 2% where |Δ| =
+/// 0.2455. **The affected ball is the SUPPORT, not the SCALE.** Drawing the
+/// radial offset uniformly instead puts equal numbers in each distance band
+/// and needs no tuning constant to do it.
+fn drawNearSurface(vol: *const bark.Volume, band: f32, mv: Mover, solid: ?Mover, o: AoOptions, st: *rng.Stream) [3]f32 {
+    var tries: u32 = 0;
+    while (tries < 4096) : (tries += 1) {
+        // A uniform direction, then a uniform distance out from the surface.
+        const z = 2 * st.unit() - 1;
+        const az = 2 * std.math.pi * st.unit();
+        const sxy = @sqrt(@max(0, 1 - z * z));
+        const rad = mv.r + st.unit() * o.reach;
+        const q = [3]f32{
+            mv.c[0] + sxy * fmath.cosf(az) * rad,
+            mv.c[1] + sxy * fmath.sinf(az) * rad,
+            mv.c[2] + z * rad,
+        };
+        if (q[0] < 0 or q[0] >= vol.extent or q[1] < 0 or q[1] >= vol.extent) continue;
+        if (q[2] < 0 or q[2] >= vol.extent) continue;
+        if (band > 0 and @abs(vol.at(q)) >= band) continue;
+        if (solid) |sv| if (sv.inside(q)) continue;
+        return q;
+    }
+    return drawNearOutside(vol, band, mv, solid, o, st);
+}
+
+fn drawNearOutside(vol: *const bark.Volume, band: f32, mv: Mover, solid: ?Mover, o: AoOptions, st: *rng.Stream) [3]f32 {
     const a = mv.affected(o);
     var tries: u32 = 0;
     while (tries < 4096) : (tries += 1) {
@@ -2081,6 +2132,7 @@ fn drawNear(vol: *const bark.Volume, band: f32, mv: Mover, o: AoOptions, st: *rn
         if (q[2] < 0 or q[2] >= vol.extent) continue;
         if (!mv.near(o, q)) continue;
         if (band > 0 and @abs(vol.at(q)) >= band) continue;
+        if (solid) |sv| if (sv.inside(q)) continue;
         return q;
     }
     return mv.c;
@@ -2114,13 +2166,20 @@ fn teachMoved(gpa: std.mem.Allocator, vol: *const bark.Volume, o: Options, mv: M
 /// because a residual left behind is a wrong NON-ZERO value and the model
 /// has to be taken back there to be told so.
 fn teachResidualInto(m: *marl.Model, vol: *const bark.Volume, o: Options, mv: Mover, over: []const Mover, n: u64, st: *rng.Stream) !void {
+    return teachResidualHow(m, vol, o, mv, over, n, st, false);
+}
+
+fn teachResidualHow(m: *marl.Model, vol: *const bark.Volume, o: Options, mv: Mover, over: []const Mover, n: u64, st: *rng.Stream, by_surface: bool) !void {
     var ao = o.ao;
     ao.rays = o.rays;
     const inv = 1 / vol.extent;
     var i: u64 = 0;
     while (i < n) : (i += 1) {
         const pick = over[@intCast(st.below(@intCast(over.len)))];
-        const q = drawNear(vol, o.surface_band, pick, ao, st);
+        const q = if (by_surface)
+            drawNearSurface(vol, o.surface_band, pick, mv, ao, st)
+        else
+            drawNearOutside(vol, o.surface_band, pick, mv, ao, st);
         const p = aoPair(vol, ao, mv, q, st);
         _ = try m.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, .{p.base - p.moved});
     }
@@ -2351,4 +2410,168 @@ test "G39 a moving occluder: complexity follows change" {
         }
         prev = mv;
     }
+}
+
+test "G40 contact: an object resting against geometry, where a residual layer should shine" {
+    // MARL-20's mover floated in a corridor and the effect was modest —
+    // 1.142× degradation, 0.0483 of mean change — because occlusion in a
+    // dense grove is dominated by the grove. CONTACT is the case a renderer
+    // cares about: at a contact point the object subtends nearly a
+    // HEMISPHERE, so the change is up to a half rather than a few per cent.
+    const gpa = testing.allocator;
+    var vol = try groveVolume(gpa, GROVE_RES, GROVE_EXTENT);
+    defer vol.deinit(gpa);
+
+    var o = Options{ .samples = 60_000, .probes = 512, .surface_band = 1.0, .invert = true };
+    o.m.rate_w = 0.05;
+    o.m.rate_geom = 0.02; // MARL-18 (c)'s, so the baseline is the best available
+    const N: u64 = 60_000;
+    const R: f32 = 3.5;
+
+    // RESTING AGAINST the middle sphere, pushed out along the diagonal
+    // toward the lattice body-centre, which is open space. Slightly
+    // overlapping rather than exactly tangent, so the contact is a contact
+    // and not a hover across a floating-point hair.
+    const cs = groveCentres(GROVE_EXTENT);
+    const host = cs[13]; // i = j = k = 1 at GROVE_N = 3
+    const body = GROVE_EXTENT / @as(f32, @floatFromInt(GROVE_N)); // 10.67, the body centre
+    var d = [3]f32{ body - host[0], body - host[1], body - host[2] };
+    const dl = @sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    inline for (0..3) |i| d[i] /= dl;
+    const reach = (GROVE_R + R) * 0.97;
+    const A = Mover{ .c = .{ host[0] + d[0] * reach, host[1] + d[1] * reach, host[2] + d[2] * reach }, .r = R };
+
+    var pr = try dynProbesOf(gpa, &vol, o.ao, A, o.probes, o.seed, o.surface_band);
+    defer pr.deinit(gpa);
+    var lpr = try dynProbesNear(gpa, &vol, o.ao, A, o.probes, o.seed, o.surface_band);
+    defer lpr.deinit(gpa);
+    const local_delta = blk: {
+        var acc: f64 = 0;
+        for (lpr.base, lpr.moved) |b, m| acc += @abs(b - m);
+        break :blk acc / @as(f64, @floatFromInt(lpr.x.len));
+    };
+
+    var stat = try teach(gpa, &vol, o, .{ .x = pr.x, .y = pr.base });
+    defer stat.deinit();
+    var re = try teachMoved(gpa, &vol, o, A, N);
+    defer re.deinit();
+
+    var res = try marl.Model.init(gpa, o.m);
+    defer res.deinit();
+    var s_res = rng.Stream.region(o.seed, 0x434f_4e54, 0); // "CONT"
+    try teachResidualInto(&res, &vol, o, A, &.{A}, N / 8, &s_res);
+
+    // The FLOOR the composed arm cannot go below: the static model's own
+    // error on the local set against the UNPERTURBED truth. A re-bake
+    // refits everything and does not inherit it; the composed arm does, and
+    // naming it is what keeps the headline honest.
+    const floor = rmsAgainst(&stat.model, lpr.x, lpr.base, vol.extent);
+    const d_stale = rmsAgainst(&stat.model, lpr.x, lpr.moved, vol.extent);
+    const d_re = rmsAgainst(&re.model, lpr.x, lpr.moved, vol.extent);
+    const d_comp = rmsComposed(&stat.model, &res, lpr.x, lpr.moved, vol.extent);
+
+    std.debug.print("\n  G40: a {d:.1}-unit mover RESTING on a {d:.1}-unit sphere ({d:.2} of overlap); it disturbs {d:.3} of the global query set and moves the local truth by {d:.4} ({s})\n", .{
+        R, GROVE_R, (GROVE_R + R) - reach, pr.disturbed(0.01), local_delta, @tagName(builtin.mode),
+    });
+    std.debug.print("  G40: {s:<38} {s:>8} {s:>8} {s:>10}\n", .{ "on 512 probes at the contact", "kernels", "KiB", "RMS" });
+    std.debug.print("  G40: {s:<38} {s:>8} {s:>8} {d:>10.5}\n", .{ "the static bake's own floor (no mover)", "—", "—", floor });
+    std.debug.print("  G40: {s:<38} {d:>8} {d:>8.1} {d:>10.5}\n", .{ "the static bake, now WRONG", stat.kernels(), @as(f64, @floatFromInt(stat.bytes())) / 1024.0, d_stale });
+    std.debug.print("  G40: {s:<38} {d:>8} {d:>8.1} {d:>10.5}\n", .{ "a full re-bake, ALL the rays", re.kernels(), @as(f64, @floatFromInt(re.bytes())) / 1024.0, d_re });
+    std.debug.print("  G40: {s:<38} {d:>8} {d:>8.1} {d:>10.5}\n", .{ "static + residual, 1/8 the rays", res.kernels.items.len, @as(f64, @floatFromInt(res.kernels.items.len * marl.PARAMS * 4)) / 1024.0, d_comp });
+    // STRATIFIED BY DISTANCE, because a mean over the affected ball is
+    // diluted by construction — the ball has radius r + reach and the
+    // contact is a couple of units across, so most probes in it are far
+    // from the object and see it as a small disc. This says whether
+    // contact is physically stronger and the average is hiding it, or
+    // whether there is simply no near-field effect to find.
+    {
+        const bands = [_]f32{ 1.0, 2.0, 4.0, 99.0 };
+        var lo: f32 = 0;
+        std.debug.print("  G40: {s:>26} {s:>7} {s:>10} {s:>10} {s:>10}\n", .{ "distance from its surface", "probes", "mean |Δ|", "max |Δ|", "mean AO" });
+        for (bands) |hi| {
+            var n: u32 = 0;
+            var acc: f64 = 0;
+            var mx: f32 = 0;
+            var ao: f64 = 0;
+            for (lpr.x, lpr.base, lpr.moved) |x, b, m| {
+                const dd = [3]f32{ x[0] - A.c[0], x[1] - A.c[1], x[2] - A.c[2] };
+                const surf = @sqrt(dd[0] * dd[0] + dd[1] * dd[1] + dd[2] * dd[2]) - A.r;
+                if (surf < lo or surf >= hi) continue;
+                n += 1;
+                acc += @abs(b - m);
+                mx = @max(mx, @abs(b - m));
+                ao += b;
+            }
+            if (n > 0) std.debug.print("  G40: {d:>22.0} — {d:<2} {d:>7} {d:>10.4} {d:>10.4} {d:>10.4}\n", .{
+                lo, @min(hi, 99), n, acc / @as(f64, @floatFromInt(n)), mx, ao / @as(f64, @floatFromInt(n)),
+            });
+            lo = hi;
+        }
+    }
+    std.debug.print("  G40: CONTACT {d:.4} of mean change (≥ {d:.2} predicted, REFUTED as a ball average — but 0.2455 in the contact band, which is 2.5× it); RECOVER {d:.3}× (≥ {d:.1}, REFUTED); CONCENTRATE {d:.3}× a full re-bake (≤ {d:.1}, REFUTED)\n", .{
+        local_delta, thresholds.MARL21_CONTACT,
+        d_stale / d_comp, thresholds.MARL21_RECOVER,
+        d_comp / d_re, thresholds.MARL21_CONCENTRATE,
+    });
+
+    // ── The second arm: MARL-4's mechanism, in geometric form ─────────
+    //
+    // The stratification above says the physics was right and the sampling
+    // was wrong. Uniform IN VOLUME puts evidence in proportion to r², so
+    // the layer spent ~38% of its samples where |Δ| = 0.0108 — learning
+    // that zero is zero — and 2% where |Δ| = 0.2455. Uniform IN DISTANCE
+    // from the surface puts equal numbers in each band, needs no tuning
+    // constant, and exactly cancels the r².
+    //
+    // The PROBES DO NOT MOVE. Only where the layer spends its samples
+    // changes, so this is a test of the sampling rule and not a change of
+    // denominator.
+    var sres = try marl.Model.init(gpa, o.m);
+    defer sres.deinit();
+    var s_surf = rng.Stream.region(o.seed, 0x434f_4e54, 0);
+    try teachResidualHow(&sres, &vol, o, A, &.{A}, N / 8, &s_surf, true);
+    const d_surf = rmsComposed(&stat.model, &sres, lpr.x, lpr.moved, vol.extent);
+    std.debug.print("  G40: {s:<38} {d:>8} {d:>8.1} {d:>10.5}\n", .{ "…the SAME layer, sampled by distance", sres.kernels.items.len, @as(f64, @floatFromInt(sres.kernels.items.len * marl.PARAMS * 4)) / 1024.0, d_surf });
+    std.debug.print("  G40: SURFACE {d:.3}× a full re-bake (≤ {d:.1} predicted), against uniform-in-volume's {d:.3}×; it recovers {d:.3}× of the stale bake's error\n", .{
+        d_surf / d_re, thresholds.MARL21_SURFACE, d_comp / d_re, d_stale / d_surf,
+    });
+
+    // MARL21_CONTACT, _RECOVER and _CONCENTRATE are all REFUTED and none is
+    // asserted. What is asserted is what the stratification found.
+    //
+    // Contact is real and STRONGER than the floor predicted, in the band
+    // where contact happens…
+    var near_delta: f64 = 0;
+    var near_n: u32 = 0;
+    for (lpr.x, lpr.base, lpr.moved) |x, b, m| {
+        const dd = [3]f32{ x[0] - A.c[0], x[1] - A.c[1], x[2] - A.c[2] };
+        if (@sqrt(dd[0] * dd[0] + dd[1] * dd[1] + dd[2] * dd[2]) - A.r >= 1.0) continue;
+        near_delta += @abs(b - m);
+        near_n += 1;
+    }
+    near_delta /= @as(f64, @floatFromInt(@max(1, near_n)));
+    try testing.expect(near_delta >= @as(f64, thresholds.MARL21_CONTACT) * 2);
+    // …and it is the mean over the ball that was the wrong instrument, for
+    // the same reason MARL-20's global probe set was: **the affected ball
+    // is the SUPPORT, not the SCALE.**
+    try testing.expect(local_delta < near_delta / 4);
+    // MARL21_SURFACE is REFUTED too, at 1.023 against uniform-in-volume's
+    // 1.030. MARL-4's mechanism is DIRECTIONALLY right and worth almost
+    // nothing here, and the reason is the phase's real finding.
+    //
+    // **A residual layer is bounded below by the static bake it sits on.**
+    // The composed prediction is `static + residual`, so its error carries
+    // the static model's fit error on the base field — 0.15078 on this
+    // probe set — and the residual can only remove the part contributed by
+    // the disturbance, whose mean is 0.0401. A full re-bake wins locally
+    // because it RE-FITS THE BASE as well, not because it fits the
+    // disturbance better. Reweighting the residual's samples cannot touch
+    // the term that dominates.
+    //
+    // So §7's value is memory, build time and update cost — which MARL-20
+    // measured at a tenth, an eighth and a tenth, with a flat population
+    // under motion where adapting grows linearly — and NEVER accuracy.
+    try testing.expect(d_surf < d_comp); // the reweighting is directionally right…
+    try testing.expect(d_surf > d_re); // …and does not rescue the headline
+    try testing.expect(d_surf > floor * 0.9); // because the base fit dominates
 }
