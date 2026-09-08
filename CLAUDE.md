@@ -72,6 +72,7 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G40"             # MARL-21: CONTACT — an object resting against geometry. 12 s; tools/marl21_predict.py
     zig build test -Dtest-filter="G41"             # MARL-22: it was never a noise floor — and the shell asks a question nobody makes. 25 s
     zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 120000 --exterior   # ... and on a real level it makes MARL/grid 0.619 → 0.398
+    python3 tools/edge_rbf.py                      # MARL-23: Bresenham's question — how tightly can Gaussians hold an edge? No learner, least squares, outside MARL
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -750,6 +751,54 @@ query set, so the RATIOS stand. What changes is the reading: those absolute
 RMS figures are dominated by a discontinuity, and MARL-20/21's static bake
 was representation-limited rather than noise-limited, which is why more rays
 never helped it and why a residual layer could not get under it.
+
+MARL-23 is Christian's Bresenham thread, run OUTSIDE MARL in
+`tools/edge_rbf.py` — no learner, analytic placement, least squares by SVD,
+so what the BASIS can do is separated from what the LEARNER finds. MARL-22
+had just made that the important distinction.
+
+**Bresenham's law, and it is exact until it is a cliff.** Measured as how
+FEW kernels reach a fixed accuracy: on a straight edge the saving is exactly
+the aspect ratio, one for one (aspect 1/2/4/8/16 → 64/32/16/8/4 kernels). On
+a curve it is linear up to a HARD CLIFF past which no kernel count works at
+all. The cliff obeys the sagitta scaling with a constant that holds to 8%
+over a fourfold range of curvature — 0.316, 0.365, 0.316, 0.315 at R =
+0.4/0.3/0.2/0.1:
+
+    max usable aspect ≈ 0.32 · √(2R / σ_n)
+
+0.32² ≈ 1/10, so: **a kernel may run straight until its sagitta reaches a
+TENTH of its own normal width** — an order of magnitude tighter than "until
+it leaves its own support", which is the bound you would write first and
+which is wrong by 3× in aspect.
+
+**Kernels on an edge cannot represent a step at all** — the first sweep
+scored 1.407× a constant, because the plateau IS the error. MARL-16 arriving
+before the experiment started, which is why every edge number here is taken
+on a RIDGE.
+
+**Coarse + residual is NOT cheaper to REPRESENT.** At equal total kernels
+against a uniform tiling, with the residual's width swept: 1.06×, 1.08×,
+0.82×, 0.95× — a wash. MARL-21's ceiling confirmed with no learner, no
+noise and no evidence limit. *A layered decomposition is cheaper to UPDATE,
+and that is the whole of its value* — which MARL-20 priced at a tenth of the
+memory, an eighth of the rays and a flat population under motion.
+
+**And a SECOND mechanism for "finer is worse".** MARL-22 blamed MARL-1's
+invariant (capacity you cannot train). Here there is no learner and
+unlimited evidence and finer is still worse — and the FIT error rises too,
+which a least-squares fit cannot do on more parameters unless the system is
+rank-deficient. **A Gaussian basis much finer than the feature is nearly
+linearly dependent**, so the extra kernels are unusable at any evidence.
+Two mechanisms, different remedies, and only MARL-1's is fixed by more data.
+
+What it says about the question that prompted it: an extra dimension on the
+residual layer would not buy representation, because the split itself does
+not. What WOULD is an anisotropic kernel aligned with the surface — already
+expressible in MARL's kernel. **The open question is not whether the basis
+can hold an edge tightly (it can, one kernel per 0.32·√(2Rσ) of arc) but
+whether the NLMS geometry step ever FINDS that orientation.** That is a
+learner question and it is the next thing to measure.
 
 Recorded, not built. QAT belongs in the DISTILLATION transfer step
 (Christian's, and right) — a student is already re-fitting against a free

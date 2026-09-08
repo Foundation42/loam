@@ -6474,6 +6474,141 @@ get under it.
 `Options.exterior` defaults false and `probesOf` keeps its signature as a
 wrapper over `probesOfEx`, so every gate from G31 to G40 is untouched.
 
+## MARL-23 — the edge sweep, outside MARL: Bresenham's question, answered (Tuesday 2026-09-08)
+
+Christian, pulling a thread after MARL-22: *"I'm just thinking back to
+Bresenham... There comes a question about drawing straight lines with RBFs
+and residuals and how tight you want them. That seems to be an experiment
+for some simple Python outside of MARL, so we can sweep it and play."*
+
+Right, and right about the venue. `tools/edge_rbf.py` has **no learner** —
+centres are placed analytically and the weights are least-squares by SVD.
+That separates what the BASIS can do from what the LEARNER finds, which
+every phase so far had tangled together, and MARL-22 had just made the
+distinction the important one.
+
+The kernel is MARL's term for term, hard cutoff included, so a plateau is
+not free here either.
+
+### 1. Bresenham's law, and it is exact until it is a cliff
+
+An elongated kernel laid along a circle of radius R with tangent half-length
+L departs from the curve by a sagitta of about `L²/2R`; it stops hugging the
+edge once that exceeds its own normal width, giving `aspect ≲ √(2R/σ_n)`.
+
+Measured as **how few kernels reach a fixed accuracy**, which is what a
+longer kernel is supposed to buy:
+
+    straight edge      aspect  1 → 64 kernels,  2 → 32,  4 → 16,  8 → 8,  16 → 4
+                       a saving of EXACTLY the aspect ratio, one for one
+
+    circle R = 0.30    aspect  1 → 128,  1.41 → 64,  2 → 64,  2.83 → 32
+                       aspect  4 → NEVER, at any count up to 256
+
+So the trade is **linear in aspect right up to a hard cliff**, and past the
+cliff no amount of extra capacity rescues an over-long kernel. That is
+Bresenham in continuous form: you run straight, one step per step, until the
+curve forces you to break.
+
+And the cliff obeys the sagitta scaling with a constant:
+
+| R | last aspect that works | √(2R/σ_n) | usable fraction |
+|---|---|---|---|
+| 0.40 | 2.83 | 8.9 | **0.316** |
+| 0.30 | 2.83 | 7.7 | **0.365** |
+| 0.20 | 2.00 | 6.3 | **0.316** |
+| 0.10 | 1.41 | 4.5 | **0.315** |
+
+Constant to within 8% over a fourfold range of curvature:
+
+    max usable aspect ≈ 0.32 · √(2R / σ_n)
+
+0.32² ≈ 1/10, so the criterion in words is: **a kernel may run straight
+until its sagitta reaches about a TENTH of its own normal width** — an order
+of magnitude tighter than "until it leaves its own support", which is the
+bound you would write down first and which is wrong by a factor of three in
+aspect.
+
+### 2. Kernels on an edge cannot represent a step at all
+
+The first form of the aspect sweep used a STEP as its target and scored
+**1.407× a constant predictor** — worse than useless. Kernels placed on an
+edge with the edge's own width cannot reach the plateau; the plateau IS the
+error. MARL-16 arriving before the sweep had started, and it is why every
+edge measurement here is taken on a RIDGE — the same edge with the plateau
+removed, which is exactly what a residual layer is handed.
+
+### 3. Coarse + residual is NOT cheaper to REPRESENT
+
+At equal total kernels, a uniform tiling of the domain against a coarse
+tiling plus a residual layer on the edge, with the residual layer's own
+width swept:
+
+| total | one layer | coarse + residual | ratio |
+|---|---|---|---|
+| 36 | 0.18312 | 0.17245 | 1.06× |
+| 64 | 0.17198 | 0.15946 | 1.08× |
+| 121 | 0.13670 | 0.16573 | 0.82× |
+| 256 | 0.11853 | 0.12465 | 0.95× |
+
+**A wash** — 0.76× to 1.18× across both edge shapes, with no trend. Which is
+MARL-21's ceiling confirmed in the cleanest possible setting: no learner, no
+noise, no evidence limit, analytic placement, exact least squares.
+
+    A layered decomposition is not cheaper to REPRESENT. It is cheaper to
+    UPDATE, and that is the whole of its value.
+
+MARL-20 measured the update side and it is not small: a tenth of the memory,
+an eighth of the rays, a tenth of the build time, and a FLAT population
+under motion where adapting grows two hundred kernels a move. But the
+representation question now has a clean negative from two independent
+directions.
+
+### 4. And a second reason finer is worse, distinct from MARL-1's
+
+MARL-22 found `regions` 6 → 12 made the fit 1.392× WORSE, and attributed it
+to MARL-1's invariant — capacity you cannot train. This sweep has no learner
+and unlimited evidence, and finer is still worse:
+
+    kernels    σ_n     eval      fit
+         16  0.0400  0.12211  0.12438
+         32  0.0200  0.08755  0.08816
+         64  0.0100  0.03450  0.03366     ← σ = the feature's own width
+        128  0.0050  0.06724  0.05005
+        256  0.0025  339.008  0.09104
+
+The FIT error rises along with the eval error past σ = the feature's width,
+which is not overfitting — with more parameters a least-squares fit error
+cannot rise unless the system is rank-deficient. **A Gaussian basis much
+finer than the feature it is fitting is nearly linearly dependent**, so the
+extra kernels are unusable however much evidence you have.
+
+So there are TWO mechanisms behind "finer is worse" and the campaign had
+only one:
+
+- MARL-1's, which is about EVIDENCE — capacity you cannot train.
+- This one, which is about the BASIS — capacity that is nearly a linear
+  combination of what you already have.
+
+They call for different remedies, and only the first is fixed by more data.
+
+### What it says about Christian's question
+
+He asked whether the residual layer should have an extra dimension while the
+tree stays as it is. §3 says the extra dimension would not buy
+representation — the split itself does not. §1 says what WOULD: an
+anisotropic kernel aligned with the surface, whose usable elongation is set
+by curvature, and which is already expressible in MARL's existing kernel.
+**The open question is not whether MARL's basis can hold an edge tightly —
+it can, one kernel per `0.32·√(2Rσ)` of arc — but whether the NLMS geometry
+step ever FINDS that orientation.** That is a learner question and it is the
+next thing to measure.
+
+    python3 tools/edge_rbf.py                  # all three sweeps, ~20 s
+    python3 tools/edge_rbf.py --sweep aspect   # the Bresenham one
+
+Nothing in `src/` changed.
+
 ## Where this goes, against the map the campaign measured (Tuesday 2026-09-08)
 
 Christian's list, after MARL-17: radiance fields and GI, occlusion,
