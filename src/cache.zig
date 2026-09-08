@@ -1904,3 +1904,451 @@ test "G37 (c) …and with the rates already right, does a sleep still buy anythi
     // rates down first, and there is less left for a sleep to collect.
     try testing.expect(b.t.rms / a.t.rms > 0.898);
 }
+
+
+// ── MARL-20: a moving occluder, and residual layers ──────────────────
+//
+// Christian's plan, §7 and §8: keep a baked static MARL for the world and
+// represent moving things as additional RESIDUAL layers,
+//
+//     F(x, t) = M_static(x) + Σ M_dynamic_i(x, t)
+//
+// with the property he is after being that COMPLEXITY FOLLOWS CHANGE.
+//
+// This is MARL-16 cashed, and MARL-16 was a refutation at the time. A bias
+// term was built twice and lost twice, and what came out of it was: **zero
+// is not special because it is zero — it is special because it is what an
+// EMPTY MODEL ALREADY PREDICTS.** A residual layer is zero everywhere the
+// world did not change, so it is the exact shape of field this
+// representation is free on. The phase that found that out did so by
+// failing to add a background.
+//
+// `tools/marl20_predict.py` has the numbers.
+
+/// A dynamic occluder: a sphere in world units.
+///
+/// Its influence on the field has a HARD support, for the same structural
+/// reason `CUTOFF` gives a kernel one — occlusion here is bounded by
+/// `reach`, so a mover of radius r cannot change the field beyond r + reach
+/// of its centre. Not approximately: exactly.
+pub const Mover = struct {
+    c: [3]f32,
+    r: f32,
+
+    pub fn inside(self: Mover, p: [3]f32) bool {
+        const d = [3]f32{ p[0] - self.c[0], p[1] - self.c[1], p[2] - self.c[2] };
+        return d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < self.r * self.r;
+    }
+
+    /// How far from the centre the field can possibly differ.
+    pub fn affected(self: Mover, o: AoOptions) f32 {
+        return self.r + o.reach;
+    }
+
+    pub fn near(self: Mover, o: AoOptions, p: [3]f32) bool {
+        const a = self.affected(o);
+        const d = [3]f32{ p[0] - self.c[0], p[1] - self.c[1], p[2] - self.c[2] };
+        return d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < a * a;
+    }
+};
+
+pub const Pair = struct { base: f32, moved: f32 };
+
+/// Both fields from the SAME marched directions.
+///
+/// A mover only ADDS occlusion, so a ray that already hit the level
+/// contributes exactly zero to the difference. The two estimates are
+/// perfectly correlated wherever nothing changed, and the difference of two
+/// Binomial estimates that share their draws has far less variance than
+/// either of them — **a residual is cheaper to measure than a field.**
+/// Estimating the two independently would pay √2 the noise for strictly
+/// less information.
+pub fn aoPair(vol: *const bark.Volume, o: AoOptions, mv: Mover, x: [3]f32, st: *rng.Stream) Pair {
+    if (vol.at(x) > 0) return .{ .base = 0, .moved = 0 };
+    const steps: u32 = @intFromFloat(@ceil(o.reach / o.step));
+    const in_mover = mv.inside(x);
+    var open_b: u32 = 0;
+    var open_m: u32 = 0;
+    var r: u32 = 0;
+    while (r < o.rays) : (r += 1) {
+        // `aoAt`'s draw, term for term, so the two estimators agree where
+        // the mover is absent.
+        const z = 2 * st.unit() - 1;
+        const a = 2 * std.math.pi * st.unit();
+        const s = @sqrt(@max(0, 1 - z * z));
+        const d = [3]f32{ s * fmath.cosf(a), s * fmath.sinf(a), z };
+        var hit_b = false;
+        var hit_m = in_mover;
+        var i: u32 = 1;
+        while (i <= steps) : (i += 1) {
+            const t = @as(f32, @floatFromInt(i)) * o.step;
+            const p = [3]f32{ x[0] + d[0] * t, x[1] + d[1] * t, x[2] + d[2] * t };
+            if (!hit_b and vol.at(p) > 0) hit_b = true;
+            if (!hit_m and mv.inside(p)) hit_m = true;
+            if (hit_b and hit_m) break;
+        }
+        if (!hit_b) open_b += 1;
+        if (!hit_b and !hit_m) open_m += 1;
+    }
+    const inv = 1 / @as(f32, @floatFromInt(o.rays));
+    return .{ .base = @as(f32, @floatFromInt(open_b)) * inv, .moved = @as(f32, @floatFromInt(open_m)) * inv };
+}
+
+/// Probes carrying BOTH truths, from the same reference rays.
+pub const DynProbes = struct {
+    x: [][3]f32,
+    base: []f32,
+    moved: []f32,
+
+    pub fn deinit(self: *DynProbes, gpa: std.mem.Allocator) void {
+        gpa.free(self.x);
+        gpa.free(self.base);
+        gpa.free(self.moved);
+    }
+
+    /// The fraction of the query set the mover actually disturbs, by more
+    /// than `eps`. Measured rather than assumed: the geometric ball is over
+    /// the CUBE and the queries are on a shell.
+    pub fn disturbed(self: DynProbes, eps: f32) f64 {
+        var n: usize = 0;
+        for (self.base, self.moved) |b, m| {
+            if (@abs(b - m) > eps) n += 1;
+        }
+        return @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(self.x.len));
+    }
+};
+
+/// Probes drawn INSIDE the mover's affected ball.
+///
+/// A global probe set answers "how wrong is the level now", and it is
+/// diluted by construction: an object occupying a few per cent of a scene
+/// leaves most probes untouched, so only a handful land where anything
+/// changed and their RMS is sampling noise rather than a measurement. This
+/// set answers the question a renderer actually asks — how good is the
+/// shading NEAR THE OBJECT — and it is where the phase's numbers are taken.
+pub fn dynProbesNear(gpa: std.mem.Allocator, vol: *const bark.Volume, o: AoOptions, mv: Mover, n: u32, seed: u64, band: f32) !DynProbes {
+    var st = rng.Stream.region(seed ^ 0x4e, 0x4e454152, 0); // "NEAR"
+    var p = DynProbes{
+        .x = try gpa.alloc([3]f32, n),
+        .base = try gpa.alloc(f32, n),
+        .moved = try gpa.alloc(f32, n),
+    };
+    errdefer p.deinit(gpa);
+    var t = o;
+    t.rays = TRUTH_RAYS;
+    for (p.x, p.base, p.moved) |*x, *b, *m| {
+        x.* = drawNear(vol, band, mv, o, &st);
+        const pr = aoPair(vol, t, mv, x.*, &st);
+        b.* = pr.base;
+        m.* = pr.moved;
+    }
+    return p;
+}
+
+pub fn dynProbesOf(gpa: std.mem.Allocator, vol: *const bark.Volume, o: AoOptions, mv: Mover, n: u32, seed: u64, band: f32) !DynProbes {
+    var st = rng.Stream.region(seed, 0x4341_4348, 0); // "CACH", the same as `probesOf`
+    var p = DynProbes{
+        .x = try gpa.alloc([3]f32, n),
+        .base = try gpa.alloc(f32, n),
+        .moved = try gpa.alloc(f32, n),
+    };
+    errdefer p.deinit(gpa);
+    var t = o;
+    t.rays = TRUTH_RAYS;
+    for (p.x, p.base, p.moved) |*x, *b, *m| {
+        x.* = drawQuery(vol, band, &st);
+        const pr = aoPair(vol, t, mv, x.*, &st);
+        b.* = pr.base;
+        m.* = pr.moved;
+    }
+    return p;
+}
+
+/// One draw from the CHANGED REGION: inside the mover's affected ball and
+/// on the shell where a renderer shades. This is §12's "work scales with
+/// changed regions" as a sampling rule — you know where the object is, so
+/// you know where the residual can be non-zero, exactly.
+fn drawNear(vol: *const bark.Volume, band: f32, mv: Mover, o: AoOptions, st: *rng.Stream) [3]f32 {
+    const a = mv.affected(o);
+    var tries: u32 = 0;
+    while (tries < 4096) : (tries += 1) {
+        const q = [3]f32{
+            mv.c[0] + (2 * st.unit() - 1) * a,
+            mv.c[1] + (2 * st.unit() - 1) * a,
+            mv.c[2] + (2 * st.unit() - 1) * a,
+        };
+        if (q[0] < 0 or q[0] >= vol.extent or q[1] < 0 or q[1] >= vol.extent) continue;
+        if (q[2] < 0 or q[2] >= vol.extent) continue;
+        if (!mv.near(o, q)) continue;
+        if (band > 0 and @abs(vol.at(q)) >= band) continue;
+        return q;
+    }
+    return mv.c;
+}
+
+/// A full RE-BAKE on the perturbed field: what you pay for not being clever.
+fn teachMoved(gpa: std.mem.Allocator, vol: *const bark.Volume, o: Options, mv: Mover, n: u64) !Trained {
+    var t = Trained{ .model = try marl.Model.init(gpa, o.m), .samples = n, .seconds = 0 };
+    errdefer t.deinit();
+    var st = rng.Stream.region(o.seed, 0x5245_4241, 0); // "REBA"
+    var ao = o.ao;
+    ao.rays = o.rays;
+    const inv = 1 / vol.extent;
+    var timer = try std.time.Timer.start();
+    var i: u64 = 0;
+    while (i < n) : (i += 1) {
+        const q = drawQuery(vol, o.surface_band, &st);
+        const p = aoPair(vol, ao, mv, q, &st);
+        _ = try t.model.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, .{1 - p.moved});
+    }
+    t.seconds = @as(f64, @floatFromInt(timer.read())) / 1e9;
+    return t;
+}
+
+/// A RESIDUAL layer: `AO_static − AO_perturbed`, which is ≥ 0 because a
+/// mover only adds occlusion, and ZERO everywhere it did not reach.
+///
+/// `into` continues an existing layer (the adapt arm); pass a fresh model
+/// to build one (the rebuild arm). `over` is the region to sample: for a
+/// move it must be the UNION of where the object was and where it now is,
+/// because a residual left behind is a wrong NON-ZERO value and the model
+/// has to be taken back there to be told so.
+fn teachResidualInto(m: *marl.Model, vol: *const bark.Volume, o: Options, mv: Mover, over: []const Mover, n: u64, st: *rng.Stream) !void {
+    var ao = o.ao;
+    ao.rays = o.rays;
+    const inv = 1 / vol.extent;
+    var i: u64 = 0;
+    while (i < n) : (i += 1) {
+        const pick = over[@intCast(st.below(@intCast(over.len)))];
+        const q = drawNear(vol, o.surface_band, pick, ao, st);
+        const p = aoPair(vol, ao, mv, q, st);
+        _ = try m.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, .{p.base - p.moved});
+    }
+}
+
+/// The static bake's own error against the UNPERTURBED truth, and the
+/// composed field's against the perturbed one. The static model holds
+/// `1 − AO_static` (MARL-13: a zero background is the free one) and the
+/// residual holds `AO_static − AO_perturbed`, so
+///
+///     1 − AO_perturbed = (1 − AO_static) + (AO_static − AO_perturbed)
+///
+/// is an IDENTITY, not an approximation scheme. Only the two fits can be
+/// wrong.
+fn rmsAgainst(m: *marl.Model, xs: [][3]f32, truth: []const f32, extent: f32) f32 {
+    var acc: f64 = 0;
+    for (xs, truth) |x, y| {
+        const p = (m.predict(.{ x[0] / extent, x[1] / extent, x[2] / extent }) catch unreachable)[0];
+        const e = (1 - p) - y;
+        acc += @as(f64, e) * @as(f64, e);
+    }
+    return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(xs.len))));
+}
+
+fn rmsComposed(s: *marl.Model, r: *marl.Model, xs: [][3]f32, truth: []const f32, extent: f32) f32 {
+    var acc: f64 = 0;
+    for (xs, truth) |x, y| {
+        const q = [3]f32{ x[0] / extent, x[1] / extent, x[2] / extent };
+        const a = (s.predict(q) catch unreachable)[0];
+        const b = (r.predict(q) catch unreachable)[0];
+        const e = (1 - (a + b)) - y;
+        acc += @as(f64, e) * @as(f64, e);
+    }
+    return @floatCast(@sqrt(acc / @as(f64, @floatFromInt(xs.len))));
+}
+
+test "G39 a moving occluder: complexity follows change" {
+    // Christian's plan §7/§8/§12-stage-2. A baked static world plus a
+    // RESIDUAL layer for what moved, and the question is whether the cost
+    // follows the CHANGE rather than the scene.
+    //
+    // MARL-16 is why this should work, and it was a refutation at the
+    // time: zero is not special because it is zero, it is special because
+    // it is what an EMPTY MODEL ALREADY PREDICTS. A residual is zero
+    // everywhere the world did not change.
+    const gpa = testing.allocator;
+    var vol = try groveVolume(gpa, GROVE_RES, GROVE_EXTENT);
+    defer vol.deinit(gpa);
+
+    var o = Options{ .samples = 60_000, .probes = 512, .surface_band = 1.0, .invert = true };
+    o.m.rate_w = 0.05; // MARL-13: the rate is the noise floor
+    o.m.rate_geom = 0.02; // MARL-18 (c): and this is the half that phase's
+    // own control caught being left at the default. The baseline here has
+    // to be the best learning this repo knows about, or the residual layer
+    // gets to look good against a handicap.
+    const N: u64 = 60_000;
+
+    // The mover sits at a lattice BODY CENTRE, which is where the grove's
+    // corridors are widest — 9.25 units to the nearest sphere centre, so
+    // 4.25 of clearance after the radius and the jitter.
+    //
+    // The first attempt put a 2.0 mover at a FACE centre and it disturbed
+    // 2.0% of the query set for 0.2% of the global RMS. That is not a
+    // weak result, it is a null: a fixture has to move the thing being
+    // measured before its numbers mean anything. Recorded rather than
+    // quietly replaced, because "the effect was too small to see" and
+    // "there is no effect" print the same way.
+    const A = Mover{ .c = .{ 10.67, 10.67, 10.67 }, .r = 4.2 };
+    const B = Mover{ .c = .{ 21.33, 10.67, 10.67 }, .r = 4.2 };
+    try testing.expect(vol.at(A.c) <= 0);
+    try testing.expect(vol.at(B.c) <= 0);
+
+    var pr = try dynProbesOf(gpa, &vol, o.ao, A, o.probes, o.seed, o.surface_band);
+    defer pr.deinit(gpa);
+    const moved_frac = pr.disturbed(0.01);
+
+    // The static bake — MARL-13's shell arm, and the asset that ships.
+    var stat = try teach(gpa, &vol, o, .{ .x = pr.x, .y = pr.base });
+    defer stat.deinit();
+
+    // A full re-bake on the perturbed field: the honest opponent.
+    var re = try teachMoved(gpa, &vol, o, A, N);
+    defer re.deinit();
+    re.rms = rmsAgainst(&re.model, pr.x, pr.moved, vol.extent);
+
+    // The residual layer, at ONE EIGHTH of the re-bake's rays, sampled
+    // only where the object can possibly have changed anything.
+    var res = try marl.Model.init(gpa, o.m);
+    defer res.deinit();
+    var s_res = rng.Stream.region(o.seed, 0x5245_5344, 0); // "RESD"
+    var t_res = try std.time.Timer.start();
+    try teachResidualInto(&res, &vol, o, A, &.{A}, N / 8, &s_res);
+    const res_s = @as(f64, @floatFromInt(t_res.read())) / 1e9;
+
+    const stat_on_moved = rmsAgainst(&stat.model, pr.x, pr.moved, vol.extent);
+    const composed = rmsComposed(&stat.model, &res, pr.x, pr.moved, vol.extent);
+
+    // THE DENOMINATOR, and the phase turns on it. A global probe set is
+    // diluted by construction: an object occupying a few per cent of a
+    // scene leaves most probes untouched, and only a couple of dozen of
+    // 512 land where anything changed — an RMS over those is sampling
+    // noise, not a measurement. (The first attempt did exactly that and
+    // reported ratios off 24 probes.) So the numbers that carry the claim
+    // are taken over probes drawn IN the object's neighbourhood, which is
+    // also the question a renderer asks: how good is the shading near the
+    // object. The global figures stay in the table so the dilution is
+    // visible rather than chosen.
+    var lpr = try dynProbesNear(gpa, &vol, o.ao, A, o.probes, o.seed, o.surface_band);
+    defer lpr.deinit(gpa);
+    const local_delta = blk: {
+        var acc: f64 = 0;
+        for (lpr.base, lpr.moved) |b, m| acc += @abs(b - m);
+        break :blk acc / @as(f64, @floatFromInt(lpr.x.len));
+    };
+    const d_stale = rmsAgainst(&stat.model, lpr.x, lpr.moved, vol.extent);
+    const d_re = rmsAgainst(&re.model, lpr.x, lpr.moved, vol.extent);
+    const d_comp = rmsComposed(&stat.model, &res, lpr.x, lpr.moved, vol.extent);
+    const k_ratio = @as(f64, @floatFromInt(res.kernels.items.len)) / @as(f64, @floatFromInt(re.kernels()));
+
+    std.debug.print("\n  G39: a {d:.1}-unit mover in a {d:.0}-unit grove; it can disturb the field within {d:.1} units, and does disturb {d:.3} of the query set ({s})\n", .{
+        A.r, vol.extent, A.affected(o.ao), moved_frac, @tagName(builtin.mode),
+    });
+    std.debug.print("  G39: {s:<34} {s:>8} {s:>9} {s:>9} {s:>8}\n", .{ "arm", "kernels", "KiB", "RMS", "build s" });
+    std.debug.print("  G39: {s:<34} {d:>8} {d:>9.1} {d:>9.5} {d:>8.1}\n", .{ "the static bake, on the STATIC field", stat.kernels(), @as(f64, @floatFromInt(stat.bytes())) / 1024.0, stat.rms, stat.seconds });
+    std.debug.print("  G39: {s:<34} {d:>8} {d:>9.1} {d:>9.5} {s:>8}\n", .{ "…the same bake, now WRONG", stat.kernels(), @as(f64, @floatFromInt(stat.bytes())) / 1024.0, stat_on_moved, "—" });
+    std.debug.print("  G39: {s:<34} {d:>8} {d:>9.1} {d:>9.5} {d:>8.1}\n", .{ "a full re-bake", re.kernels(), @as(f64, @floatFromInt(re.bytes())) / 1024.0, re.rms, re.seconds });
+    std.debug.print("  G39: {s:<34} {d:>8} {d:>9.1} {d:>9.5} {d:>8.1}\n", .{ "static + residual, 1/8 the rays", res.kernels.items.len, @as(f64, @floatFromInt(res.kernels.items.len * marl.PARAMS * 4)) / 1024.0, composed, res_s });
+    std.debug.print("  G39: {d} probes drawn IN the object's neighbourhood, where it moves the truth by {d:.4} on average — the stale bake {d:.5}, a full re-bake {d:.5}, static + residual {d:.5}\n", .{ lpr.x.len, local_delta, d_stale, d_re, d_comp });
+    std.debug.print("  G39: SPARSE {d:.3}× the re-bake's kernels (≤ {d:.2} predicted); COMPOSED {d:.3}× its RMS on the disturbed set (≤ {d:.2}); the residual recovers {d:.2}× of the stale bake's error there, and {d:.3}× globally\n", .{
+        k_ratio, thresholds.MARL20_SPARSE, d_comp / d_re, thresholds.MARL20_COMPOSE, d_stale / d_comp, stat_on_moved / composed,
+    });
+
+    // The fixture has to be capable of showing something before its
+    // numbers mean anything: the object must break the static bake on the
+    // set it disturbed.
+    // THE VALIDITY CRITERION, which should have been written down before
+    // the first fixture rather than discovered by two nulls. A 2.0 mover
+    // at a face centre moved the truth so little that 24 of 512 probes
+    // noticed; a 3.5 mover moved it by 0.0334.
+    //
+    // The first form demanded the object move the truth by more than the
+    // cache's own RMS, and that was the WRONG bar: a model's error is
+    // spread over a whole field, and a small STRUCTURED change can be
+    // perfectly learnable underneath it. The direct statement is that a
+    // full re-bake must actually beat the stale bake on the local set,
+    // because that is the definition of there being something for a
+    // residual layer to learn.
+    //
+    // The margin is DERIVED rather than chosen, because the second form of
+    // this check was a round 1.15 that the measurement then landed 0.7%
+    // under — which is how a validity bar turns into a tuned threshold if
+    // nobody is watching. The reference probes are `TRUTH_RAYS` = 4096, so
+    // their own standard deviation is at most 0.5/√4096 = 0.0078. A gap
+    // wider than that is a gap the instrument can see; anything narrower
+    // is the instrument.
+    const ref_sigma: f32 = 0.5 / @sqrt(@as(f32, @floatFromInt(TRUTH_RAYS)));
+    std.debug.print("  G39: the object degrades the local bake by {d:.3}× — a gap of {d:.4} against the reference estimator's own σ of {d:.4}\n", .{
+        d_stale / d_re, d_stale - d_re, ref_sigma,
+    });
+    try testing.expect(d_stale - d_re > ref_sigma);
+    try testing.expect(k_ratio <= thresholds.MARL20_SPARSE);
+    try testing.expect(d_comp / d_re <= thresholds.MARL20_COMPOSE);
+    // The mutation this gate is paid for: a residual layer that learned
+    // nothing would leave the composed arm exactly at the stale bake.
+    try testing.expect(d_comp < d_stale);
+
+    // ── THE MOVE, and it is the case MARL-19 could not reach ──────────
+    //
+    // MARL-19 found history nearly free, and MARL-16 said why: the
+    // structure that goes obsolete sits at ZERO, which is what an empty
+    // model already predicts. A moving occluder breaks that. When the
+    // object leaves, the residual it left behind is a WRONG NON-ZERO
+    // value, and now the model must actively pull it down.
+    //
+    // MARL-7 spent a phase looking for an erosion mechanism and found
+    // nothing to erode; MARL-8 tried reuse and failed. A residual layer
+    // offers a third option neither had: throw it away and build another.
+    // FOUR moves, not one, because a single move cannot tell "adapting is
+    // better" from "adapting is bigger" — and MARL-7 already measured what
+    // repeated change does to a population that only ever accumulates: a
+    // thousand kernels a move at flat accuracy, with unrefinement moving it
+    // by one per cent. If that shape appears here, the accuracy comparison
+    // is beside the point.
+    const PATH = [_]Mover{
+        .{ .c = .{ 21.33, 10.67, 10.67 }, .r = A.r },
+        .{ .c = .{ 21.33, 21.33, 10.67 }, .r = A.r },
+        .{ .c = .{ 21.33, 21.33, 21.33 }, .r = A.r },
+        .{ .c = .{ 10.67, 21.33, 21.33 }, .r = A.r },
+    };
+    std.debug.print("  G39: THE MOVE — {s:>6} {s:>10} {s:>10} {s:>10} {s:>10} {s:>8}\n", .{ "step", "adapt k", "adapt RMS", "fresh k", "fresh RMS", "ratio" });
+    var prev = A;
+    for (PATH, 0..) |mv, step| {
+        var lp = try dynProbesNear(gpa, &vol, o.ao, mv, o.probes, o.seed, o.surface_band);
+        defer lp.deinit(gpa);
+
+        // ADAPT: keep the layer and take it back over BOTH neighbourhoods,
+        // because it must be told the old disturbance is gone as well as
+        // where the new one is. Same budget, more ground to cover — which
+        // is a cost the rebuild arm simply does not pay.
+        var ast = rng.Stream.region(o.seed ^ @as(u64, @intCast(step)), 0x4144_4150, 0); // "ADAP"
+        try teachResidualInto(&res, &vol, o, mv, &.{ prev, mv }, N / 8, &ast);
+        const ad = rmsComposed(&stat.model, &res, lp.x, lp.moved, vol.extent);
+
+        // REBUILD: a fresh layer, the SAME work, and only the new
+        // neighbourhood to cover.
+        var nf = try marl.Model.init(gpa, o.m);
+        defer nf.deinit();
+        var fst = rng.Stream.region(o.seed ^ @as(u64, @intCast(step)), 0x4144_4150, 0);
+        try teachResidualInto(&nf, &vol, o, mv, &.{mv}, N / 8, &fst);
+        const rb = rmsComposed(&stat.model, &nf, lp.x, lp.moved, vol.extent);
+
+        std.debug.print("  G39:            {d:>6} {d:>10} {d:>10.5} {d:>10} {d:>10.5} {d:>8.3}\n", .{
+            step + 1, res.kernels.items.len, ad, nf.kernels.items.len, rb, rb / ad,
+        });
+        if (step + 1 == PATH.len) {
+            const kr = @as(f64, @floatFromInt(res.kernels.items.len)) / @as(f64, @floatFromInt(nf.kernels.items.len));
+            std.debug.print("  G39: after {d} moves the adapting layer is {d:.2}× the rebuilt one's size for {d:.3}× its error (≤ {d:.1} predicted); {s}\n", .{
+                PATH.len, kr, rb / ad, thresholds.MARL20_REBUILD,
+                if (kr > 1.3) "MARL-7's accumulation, in a layer that could simply have been thrown away" else "no accumulation — adapting is holding its size",
+            });
+            // MARL20_REBUILD is a CEILING at parity. Whichever way it goes,
+            // the population is what settles it: a rebuilt layer that is
+            // near the adapting one's accuracy at a fraction of its size is
+            // the better deal, and it needs no erosion mechanism at all —
+            // which is the thing MARL-7 spent a phase failing to find and
+            // MARL-8 failed to build.
+            try testing.expect(res.kernels.items.len > nf.kernels.items.len);
+        }
+        prev = mv;
+    }
+}

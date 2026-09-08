@@ -6153,6 +6153,126 @@ fixture, its two path shapes, `learn`, `sleep` and the gates — registered
 in `loam.zig`'s import list AND its `test` block, which is what actually
 makes a file's gates run.
 
+## MARL-20 — a moving occluder, and the erosion mechanism that turned out to be a bin (Tuesday 2026-09-08)
+
+Christian's plan §7/§8/§12-stage-2: keep a baked static MARL for the world
+and represent moving things as RESIDUAL layers, `F = M_static + Σ M_dyn_i`,
+with the architectural property being that **complexity follows change**.
+
+This is MARL-16 cashed, and MARL-16 was a REFUTATION at the time. A bias
+term was built twice and lost twice, and the sentence that came out of it
+was: *zero is not special because it is zero — it is special because it is
+what an EMPTY MODEL ALREADY PREDICTS.* A residual layer is zero everywhere
+the world did not change, so it is the exact shape of field this
+representation is free on. The phase that found that out did so by failing.
+
+### The estimator, which is better than it looks
+
+`aoPair` marches ONE set of directions and returns both fields. A mover only
+ADDS occlusion, so a ray that already hit the level contributes exactly zero
+to the difference: the two estimates are perfectly correlated wherever
+nothing changed, and the difference of two Binomials sharing their draws has
+far less variance than either. **A residual is cheaper to measure than a
+field**, and estimating the two independently would pay √2 the noise for
+strictly less information.
+
+### G39 — the layer
+
+| arm | kernels | KiB | RMS | build |
+|---|---|---|---|---|
+| the static bake, on the STATIC field | 2 638 | 103.0 | 0.15289 | 1.1 s |
+| a full re-bake of the perturbed field | 2 603 | 101.7 | 0.14540 | 1.1 s |
+| **static + residual, ⅛ the rays** | **283** | **11.1** | — | **0.1 s** |
+
+On 512 probes drawn IN the object's neighbourhood, where it moves the truth
+by 0.0483 on average: the stale bake 0.16257, a full re-bake 0.14239, and
+**static + residual 0.14957**.
+
+**`MARL20_SPARSE` HELD at 0.109** and **`MARL20_COMPOSE` HELD at 1.050.** A
+residual layer recovers a change the static bake got wrong, at a tenth of
+the kernels, an eighth of the rays and a tenth of the build time, landing
+within five per cent of re-baking the whole scene. The composition is an
+IDENTITY — `1 − AO_pert = (1 − AO_static) + (AO_static − AO_pert)` — so it
+is not an approximation scheme and only the two fits can be wrong.
+
+### THE MOVE, and it answers MARL-7 and MARL-8
+
+Four moves, not one, because a single move cannot tell "adapting is better"
+from "adapting is bigger". Adapting keeps the layer and is taken back over
+BOTH neighbourhoods (a residual left behind is a wrong NON-ZERO value and
+the model has to be told so); rebuilding starts a fresh layer over the new
+one. Same budget either way.
+
+| move | adapt k | adapt RMS | rebuild k | rebuild RMS | ratio |
+|---|---|---|---|---|---|
+| 1 | 493 | 0.14537 | 296 | 0.14727 | 1.013 |
+| 2 | 697 | 0.14191 | 285 | 0.13939 | 0.982 |
+| 3 | 887 | 0.14418 | 278 | 0.14538 | 1.008 |
+| 4 | 1 086 | 0.14962 | 284 | 0.14837 | 0.992 |
+
+**The accuracy is indistinguishable** — the ratio oscillates around parity
+with no trend. **The population is the answer**, and it is MARL-7's shape
+exactly: adapting grows about two hundred kernels a move, LINEARLY, at flat
+accuracy, while rebuilding is flat. After four moves the adapting layer is
+**3.82× the size for the same error.**
+
+MARL-7 spent a whole phase looking for an erosion mechanism and concluded
+the accumulated capacity was load-bearing with nothing to target. MARL-8
+tried reuse and failed. The answer neither phase had available:
+
+    You do not need an erosion mechanism when the thing is small enough
+    to throw away.
+
+And it is small enough only because MARL-16 made it free where nothing
+changed. Three phases' worth of failure resolved by a fourth phase's
+refutation.
+
+### Two nulls and a tuned bar, recorded because they are the method
+
+The first mover was 2.0 units at a lattice FACE centre. It disturbed 2.0%
+of the query set and moved the global RMS by 0.2% — not a weak result, a
+NULL. The second was 3.5 units and moved the truth by 0.0334 against a model
+error of 0.14.
+
+Then the denominator. A global probe set is diluted by construction: an
+object occupying a few per cent of a scene leaves most probes untouched, and
+only 24 of 512 landed where anything changed — an RMS over 24 probes is
+sampling noise, not a measurement. The numbers that carry the phase are
+taken over probes drawn IN the object's neighbourhood, which is also the
+question a renderer asks. The global figures stay in the table so the
+dilution is visible rather than chosen.
+
+And a validity bar nearly became a tuned threshold. The first form demanded
+the object move the truth by more than the cache's own RMS — the wrong bar,
+because a model's error is spread over a whole field and a small STRUCTURED
+change can be perfectly learnable underneath it. The second form was a round
+1.15× that the measurement then landed **0.7% under**. The third is DERIVED:
+the reference probes are `TRUTH_RAYS` = 4096, so their own σ is at most
+0.5/√4096 = 0.0078, and a gap wider than that is a gap the instrument can
+see. Measured 0.0202, which is 2.6× it.
+
+One more correction the campaign made to itself: the arms were first run
+with `rate_geom` at the default, which is exactly the handicap MARL-18's own
+control caught a few hours earlier. Fixed before any number was read.
+
+### Honest limits
+
+The effect is MODEST — the object degrades the local bake by 1.142×, not by
+a factor. Ambient occlusion in a dense grove is dominated by the grove, so a
+single mover in a corridor changes little even when it nearly seals one. The
+case that would show this properly is CONTACT — an object resting against
+geometry, where the shading points immediately around it lose a large solid
+angle — and it is untested. So is any object-local coordinate frame (§8), any
+scheduler (§10), and any second mover.
+
+    zig build test -Dtest-filter="G39"        # 11 s
+    python3 tools/marl20_predict.py
+
+`src/marl.zig` is untouched, and so is `aoAt` — `Mover`, `aoPair`,
+`DynProbes`, `dynProbesNear`, `drawNear`, `teachMoved` and
+`teachResidualInto` are pure additions, so every gate from G33 to G38 reads
+as it did.
+
 ## Where this goes, against the map the campaign measured (Tuesday 2026-09-08)
 
 Christian's list, after MARL-17: radiance fields and GI, occlusion,

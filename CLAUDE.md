@@ -68,6 +68,7 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 250000   # ... the occlusion cache on it (a tool run; not gated)
     zig build test -Dtest-filter="G37"             # MARL-18: CONSOLIDATION — distil, replace the master, resume learning. 79 s, four refutations; tools/marl18_predict.py
     zig build test -Dtest-filter="G38"             # MARL-19: the MILK ROUND — a schedule revealed in stages, NOISELESS. 65 s; tools/marl19_predict.py
+    zig build test -Dtest-filter="G39"             # MARL-20: a MOVING OCCLUDER — static bake + residual layer. 11 s; tools/marl20_predict.py
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -597,6 +598,61 @@ an EVIDENCE DIAL. Invisible on a noisy target, where what a student
 rebuilds is bounded by what its teacher got right; decisive on a noiseless
 one, where it sets the student's population directly. Pin it to the
 teacher's own evidence.
+
+MARL-20 built Christian's §7: a baked static MARL for the world plus a
+RESIDUAL layer for what moved, `F = M_static + Σ M_dyn_i`. It is MARL-16
+cashed, and MARL-16 was a refutation at the time — *zero is special because
+it is what an EMPTY MODEL ALREADY PREDICTS* — so a residual layer, which is
+zero everywhere the world did not change, is the exact shape of field this
+representation is free on.
+
+The estimator matters: `aoPair` marches ONE set of directions and returns
+both fields, because a mover only ADDS occlusion, so a ray that already hit
+the level contributes exactly zero to the difference. **A residual is
+cheaper to measure than a field.**
+
+**The layer is free and the composition is an identity.** A 4.2-unit
+occluder's residual is **283 kernels in 11.1 KiB against a full re-bake's
+2 603 in 101.7**, built from an eighth of the rays in a tenth of the time.
+On probes drawn in the object's neighbourhood: stale bake 0.16257, full
+re-bake 0.14239, **static + residual 0.14957** — within five per cent of
+re-baking the whole scene. `1 − AO_pert = (1 − AO_static) + (AO_static −
+AO_pert)` is an identity, so only the two fits can be wrong.
+
+**And the move answers MARL-7 and MARL-8.** Four moves, adapt-in-place
+against discard-and-rebuild at equal work. The accuracy is
+indistinguishable (1.013, 0.982, 1.008, 0.992 — no trend). The POPULATION
+is the answer, and it is MARL-7's shape exactly: adapting grows ~200 kernels
+a move, LINEARLY, at flat accuracy (493 → 697 → 887 → 1 086) while
+rebuilding is FLAT (296 → 285 → 278 → 284). **After four moves the adapting
+layer is 3.82× the size for the same error.**
+
+    You do not need an erosion mechanism when the thing is small enough
+    to throw away.
+
+MARL-7 spent a phase looking for erosion and found the accumulated capacity
+load-bearing with nothing to target; MARL-8 tried reuse and failed. Three
+phases of failure resolved by a fourth phase's refutation, and only because
+MARL-16 made the layer free where nothing changed.
+
+Method notes, recorded because they nearly cost the phase. TWO NULLS: a 2.0
+mover at a face centre disturbed 2% of the query set, and a 3.5 mover moved
+the truth by 0.0334 against a model error of 0.14. THE DENOMINATOR: a global
+probe set is diluted by construction — 24 of 512 probes landed where
+anything changed, and an RMS over 24 probes is sampling noise — so the
+numbers are taken over probes drawn IN the object's neighbourhood, with the
+global ones printed beside them so the dilution is visible rather than
+chosen. And a VALIDITY BAR nearly became a tuned threshold: a round 1.15×
+that the measurement landed 0.7% under, replaced by one DERIVED from
+`TRUTH_RAYS` (σ ≤ 0.5/√4096 = 0.0078; measured gap 0.0202). The arms were
+also first run with `rate_geom` at the default — exactly the handicap
+MARL-18's own control had caught hours earlier.
+
+Honest limit: the effect is MODEST (the object degrades the local bake by
+1.142×, not by a factor), because occlusion in a dense grove is dominated by
+the grove. The case that would show it properly is CONTACT — an object
+resting against geometry — and it is untested, as are object-local frames
+(§8), a scheduler (§10) and a second mover.
 
 Recorded, not built. QAT belongs in the DISTILLATION transfer step
 (Christian's, and right) — a student is already re-fitting against a free

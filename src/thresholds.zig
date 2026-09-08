@@ -2213,4 +2213,95 @@ pub const MARL19_CONTRADICT: f32 = 1.15;
 /// and buys capacity.
 pub const MARL19_REFUND2: f32 = 0.5;
 
+// ── MARL-20 (a moving occluder: does complexity follow change?) ──────
+//
+// Christian's plan §7/§8: a baked static MARL for the world, and moving
+// things as RESIDUAL layers, `F = M_static + Σ M_dynamic_i`.
+//
+// This is MARL-16 cashed, and MARL-16 was a REFUTATION at the time. A bias
+// term was built twice and lost twice, and what came out of it was: zero is
+// not special because it is zero, it is special because it is what an EMPTY
+// MODEL ALREADY PREDICTS. A residual layer is zero everywhere the world did
+// not change, so it is the exact shape of field this representation is free
+// on. `tools/marl20_predict.py` has the derivations.
+
+/// G39: K(residual layer) / K(a full re-bake). PROPOSED as a CEILING at
+/// 0.25.
+///
+/// Occlusion here is bounded by `reach`, so a mover of radius r cannot
+/// change the field beyond r + reach of its centre — exactly, and for the
+/// same structural reason `CUTOFF` gives a kernel exact locality. At r = 2
+/// and reach = 5 that ball is 4.4% of the cube. The ceiling sits well above
+/// it because the residual has boundary structure of its own: it falls to
+/// zero at the edge of the affected ball, and an edge costs kernels.
+///
+/// If it comes in near 1.0 then a residual layer is not sparse in practice
+/// and §7 is machinery for nothing.
+///
+/// **HELD, at 0.109.** A residual layer for a 4.2-unit occluder is 283
+/// kernels and 11.1 KiB against a full re-bake's 2 603 and 101.7 — and it
+/// is built from ONE EIGHTH of the rays, in 0.1 s against 1.1. MARL-16's
+/// refutation, cashed: the layer is free everywhere the world did not
+/// change, because zero is what an empty model already predicts.
+pub const MARL20_SPARSE: f32 = 0.25;
+
+/// G39: RMS(static + residual) / RMS(a full re-bake), with the residual arm
+/// given ONE EIGHTH of the re-bake's rays. PROPOSED as a CEILING at 1.15.
+///
+/// The composition is an IDENTITY —
+///
+///     1 − AO_perturbed = (1 − AO_static) + (AO_static − AO_perturbed)
+///
+/// — so it is not an approximation scheme and only the two fits can be
+/// wrong. The composed arm therefore carries two fits in quadrature where
+/// the re-bake carries one, which is why this is not pitched at parity.
+///
+/// The eighth is what makes it a test of §12's "work scales with changed
+/// regions" rather than a test of whether a second model can be fitted at
+/// all.
+///
+/// **HELD, at 1.050.** On probes drawn in the object's neighbourhood the
+/// composed field scores 0.14957 against a full re-bake's 0.14239, where
+/// the stale bake scores 0.16257. So `static + residual` recovers a change
+/// the bake got wrong, at a tenth of the kernels and an eighth of the rays,
+/// and lands within five per cent of re-baking the whole scene.
+pub const MARL20_COMPOSE: f32 = 1.15;
+
+/// G39: RMS(residual rebuilt from scratch) / RMS(residual adapted in
+/// place), at equal work after the object moves. PROPOSED as a CEILING at
+/// parity.
+///
+/// This is the case MARL-19 could not reach. It found history nearly free,
+/// and MARL-16 said why — the structure that goes obsolete sits at ZERO,
+/// which is what an empty model already predicts, so it never cost anything
+/// to hold down. A moving occluder breaks that: the residual left behind is
+/// a WRONG NON-ZERO value that must be actively pulled down, and the
+/// adapting model must be taken back over the vacated neighbourhood as well
+/// as the new one, on the same budget.
+///
+/// MARL-7 spent a phase looking for an erosion mechanism and concluded
+/// there was nothing to erode; MARL-8 tried reuse and failed. A residual
+/// layer offers a third option neither had, and it is available only
+/// because the layer is sparse: **throw it away and build another.**
+///
+/// **HELD on the last move at 0.992 — but the accuracy is not where the
+/// answer is.** Over four moves the ratio oscillates around parity (1.013,
+/// 0.982, 1.008, 0.992) with no trend: adapting and rebuilding are
+/// indistinguishable on error.
+///
+/// The POPULATION is the answer, and it is MARL-7's shape exactly:
+///
+///     move        1     2     3     4
+///     adapt     493   697   887  1086      ~200 kernels a move, LINEAR
+///     rebuild   296   285   278   284      flat
+///
+/// **After four moves the adapting layer is 3.82× the size of the rebuilt
+/// one for the same error.** MARL-7 spent a phase looking for an erosion
+/// mechanism and concluded the accumulated capacity was load-bearing with
+/// nothing to target; MARL-8 tried reuse and failed. The answer neither
+/// phase had available is that **you do not need erosion when the thing is
+/// small enough to throw away** — and it is small enough only because
+/// MARL-16 made it free where nothing changed.
+pub const MARL20_REBUILD: f32 = 1.0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
