@@ -1206,7 +1206,7 @@ fn q3Cache(gpa: std.mem.Allocator, o: Opts, path: []const u8) !void {
     try out.print("\n  the pipeline — distil to a coarser basis, then quantize\n", .{});
     try out.print("  {s:<26} {s:>8} {s:>10} {s:>9}\n", .{ "stage", "kernels", "KiB", "RMS" });
     try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5}\n", .{ "the master, f32", t.kernels(), @as(f64, @floatFromInt(t.bytes())) / 1024.0, t.rms });
-    try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5}\n", .{ "distilled, regions 3", st.kernels(), @as(f64, @floatFromInt(st.bytes())) / 1024.0, st.rms });
+    try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5}   ({d:.0} ns a lookup, against the master's {d:.0} and a texture fetch's {d:.0})\n", .{ "distilled, regions 3", st.kernels(), @as(f64, @floatFromInt(st.bytes())) / 1024.0, st.rms, st.query_ns, t.query_ns, g.query_ns });
     try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5}\n", .{ "…and quantized, 54 bits", set.kernels.len, @as(f64, @floatFromInt(q_bytes)) / 1024.0, q_rms });
     try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5}\n", .{ "dense grid, same bytes", qg.grid_res, @as(f64, @floatFromInt(qg.bytes)) / 1024.0, qg.rms });
     try out.print("  shipped/grid {d:.3}; {d:.1}× off the master for {d:.2}× the error\n", .{
