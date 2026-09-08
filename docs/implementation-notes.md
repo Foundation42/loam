@@ -6609,6 +6609,80 @@ next thing to measure.
 
 Nothing in `src/` changed.
 
+## MARL-24 — a residual layer wants a coarser basis than the bake it sits beside (Tuesday 2026-09-08)
+
+Christian: *"what are we keeping in the residuals right now, just out of
+curiosity?"*
+
+Dumping one answered it. The target is small and broad — mean 0.0502, max
+0.4297, with 52% of draws in the affected ball above 0.02 — and the layer
+holding it is 283 kernels of ten floats each, weights spanning −0.2082 to
+0.3192 at a mean |w| of 0.0643. That last figure is a quarter of the static
+model's span (MARL-15 measured −0.4982…1.3759), which matters for
+quantization, since MARL-15 uses ONE GLOBAL SPAN for the weight field and
+already had "the weights use one global span" in its recorded-not-built.
+
+But one line of the dump was not a curiosity:
+
+    σ (of the unit cube) 0.02858 … 0.02946    and    σ_max = 0.02946
+
+**Every kernel was pinned at the widest the clamp allows.** The whole
+population against the stop. σ_max = h/√CUTOFF with h = 1/regions, and the
+layer had inherited `regions = 6` from the static bake beside it — so the
+geometry descent wanted them wider and could not have it.
+
+That is MARL-23 arriving from the other direction. The edge sweep found the
+optimum kernel width is THE FEATURE'S OWN WIDTH, and a residual is a
+smoother object than the field it corrects. The static bake and the residual
+layer are fitting different things and there was never a reason to share a
+region grid.
+
+### G42, run on the harder fixture on purpose
+
+The observation came from the corridor, so confirming it there would be
+confirming an observation with itself. MARL-21's CONTACT geometry has the
+sharper residual and is the weaker case for a coarse basis:
+
+| regions | σ_max | kernels | KiB | composed | widest/σ_max |
+|---|---|---|---|---|---|
+| 6 | 0.02946 | 206 | 8.0 | 0.14689 | 1.0000 |
+| 4 | 0.04419 | 96 | 3.8 | 0.14625 | 1.0000 |
+| 3 | 0.05893 | 51 | 2.0 | 0.14490 | 0.9994 |
+| 2 | 0.08839 | **25** | **1.0** | **0.14347** | 0.9991 |
+
+**`MARL24_SHRINK` HELD at 0.466 and `MARL24_FREE` at 0.996** — not merely
+free, better. And the unregistered part goes further: **coarsening is
+monotone all the way down. 25 kernels in 1.0 KiB beats 206 in 8.0.**
+
+The last column is the mechanism confirming itself. The population is hard
+against the stop at regions 6 and 4 (1.0000) and only comes off it at 3 and
+2 — which is exactly where the improvement stops accelerating.
+
+### What it does to MARL-20's headline
+
+That phase measured a full re-bake at 2 603 kernels and 101.7 KiB against a
+residual layer's 283 and 11.1, and called it a tenth. With the region grid
+chosen for the layer's own target rather than inherited:
+
+    a full re-bake        2 603 kernels    101.7 KiB
+    a residual layer         25 kernels      1.0 KiB
+
+**104× fewer kernels and 100× less memory**, at better accuracy than the
+layer it replaces. No new mechanism — the layer had simply been carrying
+about eight times the capacity it needed because it borrowed a number from a
+neighbour with a different job.
+
+### Method note
+
+The numbers on the corridor came out of an INSPECTION, before any threshold
+was written, which is the order this campaign does not accept. They are
+recorded above as an observation and the gate was pre-registered for a
+different fixture. That is the only honest way to promote something noticed
+by accident into something measured.
+
+    zig build test -Dtest-filter="G42"        # 11 s
+    python3 tools/marl24_predict.py
+
 ## Where this goes, against the map the campaign measured (Tuesday 2026-09-08)
 
 Christian's list, after MARL-17: radiance fields and GI, occlusion,

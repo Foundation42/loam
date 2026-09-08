@@ -2749,3 +2749,86 @@ test "G41 the error is REPRESENTATION, and a third of it is a query nobody makes
     try testing.expect(f.rms > b.rms);
     try testing.expect(f.kernels() > 4 * b.kernels());
 }
+
+test "G42 a residual layer wants a coarser basis than the bake it sits beside" {
+    // Christian asked what is in a residual layer. Dumping one answered it
+    // and turned up a line that was not a curiosity: **every kernel was
+    // pinned at σ_max**, the widest the clamp allows. The descent wants
+    // them wider and cannot, because σ_max = h/√CUTOFF with h = 1/regions
+    // and the layer inherited `regions = 6` from the static bake beside it.
+    //
+    // MARL-23 arriving from the other direction: the optimum kernel width
+    // is the FEATURE'S OWN width, and a residual is smoother than the field
+    // it corrects. Its target on the corridor fixture measured a mean of
+    // 0.0502 against a max of 0.4297.
+    //
+    // Run on MARL-21's CONTACT geometry, deliberately: the corridor is
+    // where this was SEEN, so confirming it there would be confirming an
+    // observation with itself. Contact has the sharper residual and is the
+    // harder case for a coarse basis.
+    const gpa = testing.allocator;
+    var vol = try groveVolume(gpa, GROVE_RES, GROVE_EXTENT);
+    defer vol.deinit(gpa);
+
+    var o = Options{ .samples = 60_000, .probes = 512, .surface_band = 1.0, .invert = true };
+    o.m.rate_w = 0.05;
+    o.m.rate_geom = 0.02;
+    const R: f32 = 3.5;
+    const cs = groveCentres(GROVE_EXTENT);
+    const host = cs[13];
+    const body = GROVE_EXTENT / @as(f32, @floatFromInt(GROVE_N));
+    var d = [3]f32{ body - host[0], body - host[1], body - host[2] };
+    const dl = @sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    inline for (0..3) |i| d[i] /= dl;
+    const reach = (GROVE_R + R) * 0.97;
+    const A = Mover{ .c = .{ host[0] + d[0] * reach, host[1] + d[1] * reach, host[2] + d[2] * reach }, .r = R };
+
+    var lpr = try dynProbesNear(gpa, &vol, o.ao, A, o.probes, o.seed, o.surface_band);
+    defer lpr.deinit(gpa);
+    var stat = try teach(gpa, &vol, o, .{ .x = lpr.x, .y = lpr.base });
+    defer stat.deinit();
+
+    std.debug.print("\n  G42: the CONTACT fixture, a {d:.1}-unit mover resting on a sphere ({s})\n", .{ R, @tagName(builtin.mode) });
+    std.debug.print("  G42: {s:>8} {s:>9} {s:>8} {s:>9} {s:>10} {s:>26}\n", .{ "regions", "σ_max", "kernels", "KiB", "composed", "widest kernel / σ_max" });
+    var k6: usize = 0;
+    var r6: f32 = 0;
+    var k4: usize = 0;
+    var r4: f32 = 0;
+    for ([_]u32{ 6, 4, 3, 2 }) |rg| {
+        var ro = o;
+        ro.m.regions = rg;
+        var m = try marl.Model.init(gpa, ro.m);
+        defer m.deinit();
+        var st = rng.Stream.region(o.seed, 0x5245_5344, 0);
+        try teachResidualInto(&m, &vol, ro, A, &.{A}, 60_000 / 8, &st);
+        var widest: f64 = 0;
+        for (m.kernels.items) |*k| {
+            const l = k.shape().l;
+            widest = @max(widest, (1.0 / @as(f64, l[0]) + 1.0 / @as(f64, l[2]) + 1.0 / @as(f64, l[5])) / 3.0);
+        }
+        const c = rmsComposed(&stat.model, &m, lpr.x, lpr.moved, vol.extent);
+        std.debug.print("  G42: {d:>8} {d:>9.5} {d:>8} {d:>9.1} {d:>10.5} {d:>26.4}\n", .{
+            rg, m.sigma_max, m.kernels.items.len,
+            @as(f64, @floatFromInt(m.kernels.items.len * marl.PARAMS * 4)) / 1024.0, c,
+            widest / @as(f64, m.sigma_max),
+        });
+        if (rg == 6) {
+            k6 = m.kernels.items.len;
+            r6 = c;
+            // THE MECHANISM, asserted rather than assumed: if the widest
+            // kernel is not against the stop then the clamp is not what is
+            // limiting the layer and this phase is about something else.
+            try testing.expect(widest / @as(f64, m.sigma_max) > 0.99);
+        }
+        if (rg == 4) {
+            k4 = m.kernels.items.len;
+            r4 = c;
+        }
+    }
+    const shrink = @as(f64, @floatFromInt(k4)) / @as(f64, @floatFromInt(k6));
+    std.debug.print("  G42: SHRINK {d:.3}× the kernels (≤ {d:.1} predicted) for {d:.3}× the composed error (≤ {d:.2}) — the layer had inherited a region grid from a neighbour with a different job\n", .{
+        shrink, thresholds.MARL24_SHRINK, r4 / r6, thresholds.MARL24_FREE,
+    });
+    try testing.expect(shrink <= thresholds.MARL24_SHRINK);
+    try testing.expect(r4 / r6 <= thresholds.MARL24_FREE);
+}

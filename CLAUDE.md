@@ -73,6 +73,7 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G41"             # MARL-22: it was never a noise floor — and the shell asks a question nobody makes. 25 s
     zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 120000 --exterior   # ... and on a real level it makes MARL/grid 0.619 → 0.398
     python3 tools/edge_rbf.py                      # MARL-23: Bresenham's question — how tightly can Gaussians hold an edge? No learner, least squares, outside MARL
+    zig build test -Dtest-filter="G42"             # MARL-24: a residual layer wants a COARSER basis than the bake — 25 kernels in 1.0 KiB
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -799,6 +800,43 @@ expressible in MARL's kernel. **The open question is not whether the basis
 can hold an edge tightly (it can, one kernel per 0.32·√(2Rσ) of arc) but
 whether the NLMS geometry step ever FINDS that orientation.** That is a
 learner question and it is the next thing to measure.
+
+MARL-24 came out of Christian asking what a residual layer actually holds.
+The target is small and broad (mean 0.0502, max 0.4297) and the weights span
+−0.2082…0.3192 at mean |w| 0.0643 — a QUARTER of the static model's span,
+which matters because MARL-15 quantizes weights over one global span.
+
+But one line was not a curiosity: **σ spanned 0.02858…0.02946 against a
+σ_max of 0.02946 — every kernel pinned at the widest the clamp allows.** The
+descent wanted them wider and could not, because σ_max = h/√CUTOFF and the
+layer had inherited `regions = 6` from the static bake beside it. MARL-23
+from the other direction: the optimum width is the FEATURE'S own, and a
+residual is smoother than the field it corrects.
+
+G42 confirmed it on MARL-21's CONTACT fixture — deliberately the harder
+case, since the observation came from the corridor:
+
+| regions | kernels | KiB | composed | widest/σ_max |
+|---|---|---|---|---|
+| 6 | 206 | 8.0 | 0.14689 | 1.0000 |
+| 4 | 96 | 3.8 | 0.14625 | 1.0000 |
+| 2 | **25** | **1.0** | **0.14347** | 0.9991 |
+
+Both numbers held (0.466 and 0.996) and coarsening is MONOTONE all the way
+down — 25 kernels in 1.0 KiB beats 206 in 8.0. The last column is the
+mechanism confirming itself: hard against the stop at 6 and 4, coming off it
+at 2.
+
+**So MARL-20's headline improves with no new mechanism.** Against its full
+re-bake of 2 603 kernels in 101.7 KiB, a residual layer is **104× fewer
+kernels and 100× less memory** at better accuracy than the layer it
+replaces. It had been carrying eight times the capacity it needed because it
+borrowed a number from a neighbour with a different job.
+
+Method note: the corridor numbers came from an INSPECTION, before any
+threshold was written. They are recorded as an observation and the gate was
+pre-registered for a different fixture, which is the only honest way to
+promote something noticed by accident.
 
 Recorded, not built. QAT belongs in the DISTILLATION transfer step
 (Christian's, and right) — a student is already re-fitting against a free

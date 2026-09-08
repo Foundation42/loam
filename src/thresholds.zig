@@ -2530,4 +2530,78 @@ pub const MARL22_INVERT: f32 = 1.15;
 /// struggling to represent, and the answer is not a finer basis.
 pub const MARL22_CAPACITY: f32 = 0.85;
 
+// ── MARL-24 (a residual layer wants a coarser basis than the bake) ───
+//
+// Christian: "what are we keeping in the residuals right now, just out of
+// curiosity?" Dumping one answered it, and one line was not a curiosity:
+//
+//     σ (of the unit cube) 0.02858 … 0.02946   and   σ_max = 0.02946
+//
+// **Every kernel in the residual layer is pinned at the widest the clamp
+// allows.** The descent wants them wider and cannot have it, because
+// σ_max = h/√CUTOFF with h = 1/regions, and the layer inherited `regions =
+// 6` from the static bake it sits beside.
+//
+// That is MARL-23 arriving from the other direction: the edge sweep found
+// the optimum kernel width is THE FEATURE'S OWN WIDTH. A residual is a
+// smoother object than the field it corrects — the dump measured its target
+// at a mean of 0.0502 against a max of 0.4297 — so its natural σ is larger.
+//
+// Seen on the corridor fixture BEFORE these numbers were written, which is
+// why they are pre-registered for a CONFIRMING run on MARL-21's CONTACT
+// geometry, where the residual is sharper and the case is weaker:
+//
+//     regions   σ_max     kernels   KiB    composed
+//           6   0.02946       283  11.1     0.14957
+//           4   0.04419       115   4.5     0.14830
+//           3   0.05893        62   2.4     0.15193
+//           2   0.08839        30   1.2     0.15216
+
+/// G42: K(residual at regions 4) / K(residual at regions 6) on the contact
+/// fixture. PROPOSED as a CEILING at 0.5.
+///
+/// The static bake and the residual layer fit different objects and there is
+/// no reason they should share a region grid. MARL-14 established `regions`
+/// as the dial (6 → 3 gave 4.32× fewer kernels for a quarter more error) —
+/// but that was a DISTILLATION trade, paying accuracy for size. The claim
+/// here is stronger: it should be FREE, because the layer is currently
+/// forced finer than its target.
+///
+/// The corridor gave 0.41; the ceiling is set looser than what was seen
+/// rather than at it, because contact has a sharper residual.
+///
+/// **HELD, at 0.466** — 96 kernels against 206 on the contact fixture.
+pub const MARL24_SHRINK: f32 = 0.5;
+
+/// G42: RMS(composed, regions 4) / RMS(composed, regions 6). PROPOSED as a
+/// CEILING at 1.02 — the campaign's usual noise on a composed figure.
+///
+/// The corridor measured 0.991, BETTER, and pitching this at parity would be
+/// claiming the improvement rather than testing the trade.
+///
+/// If both numbers hold, MARL-20's headline improves with no new mechanism:
+/// its residual layer was carrying a region grid inherited from a neighbour
+/// with a different job.
+///
+/// **HELD, at 0.996 — it is not merely free, it is better.** And the
+/// unregistered part goes further: coarsening is monotone all the way down
+/// on the contact fixture.
+///
+///     regions   σ_max     kernels   KiB    composed   widest/σ_max
+///           6   0.02946       206   8.0     0.14689         1.0000
+///           4   0.04419        96   3.8     0.14625         1.0000
+///           3   0.05893        51   2.0     0.14490         0.9994
+///           2   0.08839        25   1.0     0.14347         0.9991
+///
+/// **25 kernels in 1.0 KiB beats 206 in 8.0** — eight times less memory and
+/// a better fit. The last column is the mechanism confirming itself: the
+/// population is hard against the stop at 6 and 4, and only comes off it at
+/// 3 and 2, which is where the improvement stops accelerating.
+///
+/// So MARL-20's residual layer was carrying about eight times the capacity
+/// it needed, purely because it inherited `regions` from the static bake
+/// beside it. Against that phase's full re-bake — 2 603 kernels in 101.7
+/// KiB — a residual layer is **104× fewer kernels and 100× less memory**.
+pub const MARL24_FREE: f32 = 1.02;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
