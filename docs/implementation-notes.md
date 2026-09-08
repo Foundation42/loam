@@ -5737,6 +5737,67 @@ geometry nobody designed for it. Reproduce with:
 `src/marl.zig` is untouched by this phase; the additions are
 `cache.readVolume`, `cache.scaledAo` and a `marl-run --q3` mode.
 
+## Where this goes, against the map the campaign measured (Tuesday 2026-09-08)
+
+Christian's list, after MARL-17: radiance fields and GI, occlusion,
+importance sampling for rays, procedural materials, and proxy meshes for
+physics. Put against what was actually measured, four of the five sit in
+the win case and two carry concrete gotchas that are worth writing down
+before anyone builds on them.
+
+**Occlusion** — measured. 0.418 of a same-sized dense grid's error at the
+shipped size (MARL-17).
+
+**Procedural materials** — measured (MARL-11, MARL-12). Nine channels cost
+no extra kernels and the blend got slightly BETTER for having eight
+passengers. Bounded by the sparsity rule: the marble's veins are 9–28% of
+the cube, which is why it works.
+
+**Radiance / GI** — a strong fit, and MARL-12 is why: RGB is C = 3, SH is
+C = 9 or 27, and nine channels were free. Two things transfer with it —
+`rate_geom` must be divided by **√C** or it diverges in MARL-1's shape, and
+SH bands have wildly different magnitudes so the per-channel normalisation
+is not optional. The caution is MARL-13's: GI in a large open room is
+smooth and volume-filling, which is the LOSING case. The win is where
+geometry is dense.
+
+**Importance sampling** — needs no D > 3, which is the standing debt it
+looks like it would need. A distribution over directions per position is
+5-D, but its SH or wavelet coefficients are CHANNELS on a 3-D field, and
+the C-channel machinery already does that. One read-time detail: a sum of
+gaussians with signed weights is neither non-negative nor normalised, so it
+wants clamping and renormalising on read — which is what `rbf.compose`
+already does to the blend.
+
+### Proxy meshes: the trap, and it is MARL-16's finding wearing a hat
+
+Best fit of the five on paper — a surface is a 2-D set in 3-D, which is
+maximally sparse in the domain; distillation gives LOD proxies at any
+budget; and C∞ means normals are free and continuous, which is what
+collision response wants.
+
+**But zero means "on the surface", and zero is exactly what this model
+returns where it has learned nothing.** The hard cutoff makes the field
+EXACTLY zero away from kernels — that is the property MARL-16 turned on,
+and it is why a bias term made things worse. A naively learned SDF proxy
+therefore reports CONTACT EVERYWHERE IT HAS NOT SEEN, which is the worst
+possible failure direction for physics.
+
+The fix falls out of the same finding: do not learn the SDF, learn a
+NARROW BAND — something of the shape `max(0, band − |sdf|)`, which is zero
+far away (free, and correct: "no surface here") and positive near the
+surface (sparse, and the win case). Recover the surface from the band's
+crest rather than from a zero crossing.
+
+**And physics cares about MAX error, where everything here is RMS.**
+`Model.rms` already takes a `max_abs` out-param and the cache has never
+printed it. An RMS of 0.15 with a worst case of 0.6 is a proxy that lets
+things fall through floors. That number belongs on the table before anyone
+builds on this, and getting it is a print statement.
+
+Neither is built. Both are consequences of measurements already in this
+ledger rather than new speculation, which is why they are written here.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:
