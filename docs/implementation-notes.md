@@ -6751,9 +6751,14 @@ which is the honest boundary — the free step is one, not three.
 | MARL-22 | exterior | 6 | 0.398 |
 | **MARL-25** | **exterior** | **4** | **0.329** |
 
-And the shipped artefact, distilled then quantized at 54 bits: **249 kernels
-in 1.7 KiB at 0.343× a constant predictor**, where MARL-17's was 340 kernels
-in 2.3 KiB at 0.598×. Against a dense grid of the same bytes, 0.322.
+The headline is the f32 MASTER, per Christian's ruling that quantization is
+a production step and not a measurement: **504 kernels in 19.7 KiB at
+0.05968 — 0.289× a constant predictor** — where MARL-17's master was 1 479
+kernels in 57.8 KiB at 0.491×.
+
+*(Production, reported apart: distilled to regions 3 and quantized at 54
+bits gives 249 kernels in 1.7 KiB at 0.07063, which is 0.322 of a same-sized
+grid. Not part of the comparison above.)*
 
 Two lines. Neither is a mechanism, neither is new maths, and between them
 they nearly halve the error relative to the field's own scale.
@@ -6772,6 +6777,76 @@ to sell.
 
 `cache.pinnedFraction` is the diagnostic, promoted out of MARL-24's
 inspection because it reads off any model.
+
+## The state of things, and the plan for next session (Tuesday 2026-09-08, end of day)
+
+Six phases today — MARL-20 through MARL-25 — plus MARL-18 and MARL-19 in the
+morning. Eight in a day, and the shape of it is worth stating: **almost
+every one was refuted, and the campaign got materially better anyway.**
+
+### What actually moved
+
+| | query set | regions | MARL/grid on `oa_spirit3` |
+|---|---|---|---|
+| MARL-17 (yesterday) | straddling | 6 | 0.589 |
+| MARL-22 | exterior | 6 | 0.398 |
+| MARL-25 | exterior | 4 | **0.329** |
+
+Two one-line changes, neither a mechanism. And a residual layer for a moving
+object went from "not built" to **25 kernels in 1.0 KiB**, with a flat
+population under motion where adapting grows two hundred kernels a move.
+
+### What was learned that is not a number
+
+- **It was never a noise floor.** 77% of the occlusion error is
+  representation. Every phase from MARL-13 to MARL-21 said otherwise in
+  prose.
+- **A layered decomposition is cheaper to UPDATE, not to REPRESENT.**
+  Confirmed twice — once inside MARL (MARL-21) and once outside it with no
+  learner at all (MARL-23).
+- **Bresenham's law for RBFs**: one kernel per `0.32·√(2Rσ)` of arc, linear
+  in aspect up to a hard cliff.
+- **Two mechanisms for "finer is worse"**, where the campaign had one:
+  MARL-1's evidence limit, and MARL-23's near-rank-deficiency. Only the
+  first is fixed by more data.
+- **The clamp is a diagnostic.** The share of a population pinned at σ_max
+  says whether `regions` is finer than the target needs, and it reads off
+  any model.
+
+### The plan for next session, in order
+
+**1. The configuration audit, and it comes first because it protects
+everything after.** `cache.Options.best()` now exists and nothing uses it
+yet. Migrate the gates that SHOULD move to it, leave the historical ones
+alone deliberately, and make the difference explicit in each. Then re-read
+the campaign's grove chain — G33's 0.912, G34's 0.878, G35's 0.804 — at the
+corrected configuration, because their RATIOS stand but nobody knows what
+the picture looks like now. Cheap, and it stops the next finding landing on
+sand.
+
+**2. Does the learner ever FIND the orientation?** MARL-23 established what
+the BASIS can do with an edge — one kernel per `0.32·√(2Rσ)` of arc, with
+kernels placed analytically and oriented by hand. Whether the NLMS geometry
+step discovers surface-aligned anisotropy on its own is untested and is the
+highest-value open question in the campaign: if it does not, there is a
+large win sitting in the geometry step, and MARL-1's "deformation buys
+2.15×" was measuring something much weaker than what is available. The
+instrument already exists — `tools/edge_rbf.py` grows an arm that DESCENDS
+the shapes instead of placing them, and the comparison is against the
+oracle-aligned frontier it already measured.
+
+**3. The narrow-band SDF proxy**, still parked from Monday and never
+started. Learn `max(0, band − |sdf|)` rather than the SDF, because zero is
+the model's default and a directly-learned SDF would report contact
+everywhere it has not looked. Physics cares about MAX error and everything
+this campaign has measured is RMS — `Model.rms` already takes a `max_abs`
+out-param that nothing has ever printed.
+
+**Recorded, not built**, and unchanged: QAT inside the distillation transfer
+step, a noise-aware birth test, per-region weight spans (MARL-24 found a
+residual layer's weights span a quarter of a static model's, and MARL-15
+quantizes over one global span), object-local coordinate frames, a per-frame
+scheduler, and D > 3.
 
 ## Where this goes, against the map the campaign measured (Tuesday 2026-09-08)
 

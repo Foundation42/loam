@@ -872,10 +872,15 @@ So two one-line changes compound through the whole chain:
 | MARL-22 | exterior | 6 | 0.398 |
 | **MARL-25** | **exterior** | **4** | **0.329** |
 
-The shipped artefact — distilled then quantized at 54 bits — is **249
-kernels in 1.7 KiB at 0.343× a constant predictor**, where MARL-17's was 340
-in 2.3 KiB at 0.598×. Neither change is a mechanism or new maths, and
-between them they nearly halve the error relative to the field's own scale.
+The headline is the f32 MASTER against its opponent, per Christian's ruling
+above: **504 kernels in 19.7 KiB at 0.05968, which is 0.289× a constant
+predictor**, where MARL-17's master was 1 479 in 57.8 KiB at 0.491×. Neither
+change is a mechanism or new maths, and between them they nearly halve the
+error relative to the field's own scale.
+
+*(Production, reported apart and not part of the measurement: distilled to
+regions 3 and quantized at 54 bits gives 249 kernels in 1.7 KiB at 0.07063,
+0.322 of a same-sized grid.)*
 
 One consequence: the distillation dial has less room once the master is
 already coarse. From a regions-4 master, 4 → 3 is a 2× population cut for
@@ -1129,6 +1134,29 @@ step 160 when it did). The check is `loam-run --trace` on both sides of
 a change and `tools/diff_traces.py` between them: every read that kept
 its meaning agrees to a thousandth of a unit, and the one that did not
 names itself by the first step it moved.
+
+## Two rulings from the day MARL-20 through MARL-25 ran
+
+**Hyperparameters must not spill.** Christian: "we need to be really careful
+with these hyper parameters or experiments spilling over into later things."
+No DEFAULT has ever drifted — every gate sets its own — but that is the risk
+in its real form, not a defence against it: by MARL-25 eight gates each wrote
+`rate_geom = 0.02` as a literal while four older ones did not, so what the
+campaign currently believes was recoverable only by reading every gate in
+order. `cache.Options.best()` now holds it in ONE place, each element naming
+the phase that established it. A phase that supersedes one changes it there
+and says so. Gates written before a finding keep their own literals and are
+historical ON PURPOSE — G33's headline must stay reproducible at the
+configuration it was measured at, or its numbers stop meaning what the
+ledger says they mean.
+
+**Quantization is not a measurement, it is a production step.** Christian:
+"not measure on quantized stuff in the main tests, since that's an ancillary
+optimization step for production." So a phase's headline is the f32 master
+against its opponent, and the packed artefact is reported separately and
+labelled as such. G35 is the exception and is allowed to be, because
+measuring quantization IS its subject. MARL-25's entry led with the shipped
+1.7 KiB figure and has been corrected to lead with the master.
 
 ## Thresholds are Christian's
 

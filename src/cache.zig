@@ -483,6 +483,35 @@ pub const Options = struct {
     /// (MARL-22). Default false so every arm from G31 to G40 is untouched.
     exterior: bool = false,
     m: marl.Options = .{ .responsibility = 3 },
+
+    /// THE CURRENT BEST-KNOWN CONFIGURATION, in one place.
+    ///
+    /// Christian's ruling, at the end of the day MARL-20 through MARL-25
+    /// ran: "we need to be really careful with these hyper parameters or
+    /// experiments spilling over into later things."
+    ///
+    /// No DEFAULT ever drifted — every gate sets its own — but that is the
+    /// spillover risk in its real form rather than a defence against it:
+    /// eight gates each wrote `rate_geom = 0.02` as a literal and the four
+    /// older ones did not, so what the campaign currently believes was
+    /// recoverable only by reading every gate in order. Each element below
+    /// names the phase that established it, and a phase that supersedes one
+    /// changes it HERE and says so.
+    ///
+    /// Gates written before a finding keep their own literals and are
+    /// historical on purpose: G33's headline must stay reproducible at the
+    /// configuration it was measured at, or its numbers stop meaning what
+    /// the ledger says they mean. New work starts from this.
+    pub fn best() Options {
+        var o = Options{};
+        o.invert = true; // MARL-13 (d): a zero background is the free one
+        o.exterior = true; // MARL-22: a renderer never shades inside a wall
+        o.m.responsibility = 3; // MARL-6R (G24): 0.980× the RMS for 0.184× the work
+        o.m.rate_w = 0.05; // MARL-13 (b): derived from μ/(2−μ), not tuned
+        o.m.rate_geom = 0.02; // MARL-13 (c), and MARL-18's control had to find it twice
+        o.m.regions = 4; // MARL-25: the free step, and it is one step not three
+        return o;
+    }
 };
 
 /// A MARL arm: `budget / rays` samples, each an `rays`-direction estimate,
