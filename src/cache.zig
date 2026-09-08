@@ -2832,3 +2832,109 @@ test "G42 a residual layer wants a coarser basis than the bake it sits beside" {
     try testing.expect(shrink <= thresholds.MARL24_SHRINK);
     try testing.expect(r4 / r6 <= thresholds.MARL24_FREE);
 }
+
+/// The share of a population sitting within 1% of σ_max — MARL-24's
+/// diagnostic, promoted to a function because it reads off any model.
+///
+/// σ_max = h/√CUTOFF exists to keep the 27-region gather exact. A population
+/// hard against it is one the geometry descent wanted WIDER and could not
+/// have, which means `regions` is finer than the target needs and those
+/// kernels are capacity spent on resolution nobody asked for.
+pub fn pinnedFraction(m: *const marl.Model) f64 {
+    if (m.kernels.items.len == 0) return 0;
+    var n: usize = 0;
+    for (m.kernels.items) |*k| {
+        const l = k.shape().l;
+        const s = (1.0 / @as(f64, l[0]) + 1.0 / @as(f64, l[2]) + 1.0 / @as(f64, l[5])) / 3.0;
+        if (s > 0.99 * @as(f64, m.sigma_max)) n += 1;
+    }
+    return @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(m.kernels.items.len));
+}
+
+test "G43 was `regions` wrong everywhere? the clamp, read as a diagnostic" {
+    // Christian: "we should try it on some of our previous stuff maybe."
+    //
+    // The sharper version is the diagnostic rather than the arms. MARL-24's
+    // residual layer was 100% pinned at σ_max; G37 (c) had already printed
+    // the STATIC bake at a mean σ of 0.0278 against a σ_max of 0.02946, and
+    // nobody read it back. So: is the arm every occlusion phase has used
+    // also pressed against the clamp, and if so does coarsening it pay?
+    //
+    // MARL-14 says not automatically — it swept `regions` on this bake and
+    // got a trade, 4.32× fewer kernels for 1.23× the error. But it swept on
+    // the STRADDLING shell, a third of which is inside solid where the
+    // target has a STEP. MARL-22 showed a renderer never asks there.
+    const gpa = testing.allocator;
+    var vol = try groveVolume(gpa, GROVE_RES, GROVE_EXTENT);
+    defer vol.deinit(gpa);
+
+    var o = Options{ .samples = 60_000, .probes = 1024, .surface_band = 1.0, .invert = true };
+    o.m.rate_w = 0.05;
+    o.m.rate_geom = 0.02;
+
+    var pinned: f64 = 0;
+    var pinned_ext: f64 = 0;
+    var cost: [2]f64 = undefined;
+    for ([_]bool{ false, true }, 0..) |ext, si| {
+        var eo = o;
+        eo.exterior = ext;
+        var pr = try probesOfEx(gpa, &vol, eo.ao, eo.probes, eo.seed, eo.surface_band, ext);
+        defer pr.deinit(gpa);
+        var anc: f64 = 0;
+        {
+            var m: f64 = 0;
+            for (pr.y) |y| m += y;
+            m /= @as(f64, @floatFromInt(pr.y.len));
+            for (pr.y) |y| anc += (y - m) * (y - m);
+            anc = @sqrt(anc / @as(f64, @floatFromInt(pr.y.len)));
+        }
+        std.debug.print("\n  G43: the {s} shell (a constant predictor scores {d:.5}) ({s})\n", .{
+            if (ext) "EXTERIOR" else "straddling", anc, @tagName(builtin.mode),
+        });
+        std.debug.print("  G43: {s:>8} {s:>9} {s:>8} {s:>9} {s:>9} {s:>12} {s:>10}\n", .{ "regions", "σ_max", "kernels", "KiB", "RMS", "× constant", "pinned" });
+        var base: f32 = 0;
+        var four: f32 = 0;
+        for ([_]u32{ 6, 4, 3 }) |rg| {
+            var ro = eo;
+            ro.m.regions = rg;
+            var t = try teach(gpa, &vol, ro, pr);
+            defer t.deinit();
+            const pf = pinnedFraction(&t.model);
+            if (rg == 6) {
+                base = t.rms;
+                if (ext) pinned_ext = pf else pinned = pf;
+            }
+            if (rg == 4) four = t.rms;
+            std.debug.print("  G43: {d:>8} {d:>9.5} {d:>8} {d:>9.1} {d:>9.5} {d:>12.3} {d:>9.0}%\n", .{
+                rg, t.model.sigma_max, t.kernels(), @as(f64, @floatFromInt(t.bytes())) / 1024.0,
+                t.rms, t.rms / anc, 100 * pf,
+            });
+        }
+        cost[si] = @as(f64, four / base) - 1.0;
+        std.debug.print("  G43: coarsening 6 → 4 costs {d:.4} of RMS here\n", .{cost[si]});
+    }
+
+    std.debug.print("  G43: PINNED {d:.0}% of the static bake at σ_max on the straddling shell (≥ {d:.0}% predicted — REFUTED) and {d:.0}% on the exterior; coarsening costs {d:.4} there against {d:.4} on the straddling one, so the STEP was paying for the fine grid AND THEN SOME; regions 4 is {d:.3}× regions 6 on the exterior (≤ {d:.2})\n", .{
+        100 * pinned, 100 * thresholds.MARL25_PINNED, 100 * pinned_ext,
+        cost[1], cost[0],
+        1.0 + cost[1], thresholds.MARL25_FREE,
+    });
+
+    // MARL25_PINNED is REFUTED at 43% and is not asserted. What is asserted
+    // is the relationship the number was reaching for, which came out
+    // cleaner than the threshold: **the more pinned population is the one
+    // where coarsening pays.** The straddling arm is 43% pinned and
+    // coarsening COSTS it 7.1%; the exterior arm is 64% pinned and
+    // coarsening GAINS it 5.7%. The diagnostic works directionally, which
+    // is what it is for.
+    try testing.expect(pinned_ext > pinned);
+    try testing.expect(cost[0] > 0 and cost[1] < 0);
+
+    // MARL25_STEP_PAYS was a ceiling on a ratio of two positive costs and
+    // the exterior cost came out NEGATIVE, which makes the ratio degenerate
+    // — it passes arithmetically and means nothing. Not asserted. The claim
+    // it was reaching for is asserted above in its stronger form: the step
+    // did not merely pay part of the fine grid's price, it paid all of it,
+    // and without it coarsening is an improvement.
+    try testing.expect(1.0 + cost[1] <= thresholds.MARL25_FREE);
+}

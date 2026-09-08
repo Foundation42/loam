@@ -6683,6 +6683,96 @@ by accident into something measured.
     zig build test -Dtest-filter="G42"        # 11 s
     python3 tools/marl24_predict.py
 
+## MARL-25 — was `regions` wrong everywhere? (Tuesday 2026-09-08)
+
+Christian, after MARL-24: *"so what, it works now? ... we should try it on
+some of our previous stuff maybe."*
+
+The sharper version of that is not re-running old arms but taking the
+DIAGNOSTIC that made MARL-24 findable and pointing it at everything:
+
+    the share of a population sitting within 1% of σ_max
+
+σ_max = h/√CUTOFF exists to keep the 27-region gather exact. A population
+hard against it is one the geometry descent wanted WIDER and could not have,
+so `regions` is finer than the target needs. One reading was already on the
+record unnoticed — G37 (c) printed the static bake's mean σ as 0.0278
+against a σ_max of 0.02946.
+
+### G43 — the clamp, read on the arm every occlusion phase has used
+
+| shell | regions | kernels | KiB | RMS | × constant | pinned |
+|---|---|---|---|---|---|---|
+| straddling | 6 | 2 638 | 103.0 | 0.15213 | 0.446 | 43% |
+| straddling | 4 | 1 072 | 41.9 | 0.16299 | 0.478 | 29% |
+| straddling | 3 | 597 | 23.3 | 0.16431 | 0.482 | 19% |
+| **exterior** | 6 | 1 989 | 77.7 | 0.06651 | 0.968 | **64%** |
+| **exterior** | 4 | 864 | 33.8 | 0.06274 | 0.913 | 48% |
+| **exterior** | 3 | 485 | 18.9 | **0.06048** | 0.880 | 37% |
+
+`MARL25_PINNED` REFUTED at 43%, and the relationship it was reaching for is
+cleaner than the threshold: **the more pinned population is the one where
+coarsening pays.** 43% pinned, coarsening costs 7.1%; 64% pinned, coarsening
+gains 5.7%.
+
+`MARL25_STEP_PAYS` is DEGENERATE — a ceiling on a ratio of two positive
+costs where one came out negative. Not asserted. Its claim holds in a
+stronger form: **the step was not paying part of the fine grid's price, it
+was paying all of it.** MARL-14 measured coarsening as a trade (6 → 3 for
+4.32× fewer kernels at 1.23× the error) and it measured honestly — on a
+query set with a step in it, which is the finest structure in the target and
+the thing a fine grid is bought for. MARL-22 showed a renderer never asks
+there.
+
+`MARL25_FREE` HELD at 0.943 — better than free — and on the grove it keeps
+going: **four times less memory and nine per cent better** at regions 3.
+
+### …and on a real level, where the field actually varies
+
+The grove's exterior shell is nearly flat (0.968× a constant at best), so it
+cannot show what this is worth. `oa_spirit3` can:
+
+| regions | kernels | KiB | RMS |
+|---|---|---|---|
+| 6 | 1 207 | 47.1 | 0.06021 |
+| **4** | **504** | **19.7** | **0.05968** |
+| 3 | 280 | 10.9 | 0.06889 |
+| 2 | 138 | 5.4 | 0.07617 |
+
+**Regions 4 is strictly better than 6: 2.4× fewer kernels, 2.4× less memory,
+and a slightly lower error.** Past that it becomes MARL-14's trade again,
+which is the honest boundary — the free step is one, not three.
+
+### What the two one-line changes do to the campaign's headline
+
+| | query set | regions | MARL/grid |
+|---|---|---|---|
+| MARL-17 | straddling | 6 | 0.589 |
+| MARL-22 | exterior | 6 | 0.398 |
+| **MARL-25** | **exterior** | **4** | **0.329** |
+
+And the shipped artefact, distilled then quantized at 54 bits: **249 kernels
+in 1.7 KiB at 0.343× a constant predictor**, where MARL-17's was 340 kernels
+in 2.3 KiB at 0.598×. Against a dense grid of the same bytes, 0.322.
+
+Two lines. Neither is a mechanism, neither is new maths, and between them
+they nearly halve the error relative to the field's own scale.
+
+### One consequence worth flagging
+
+The distillation dial has less room once the master is already coarse. At a
+regions-6 master, MARL-14's 6 → 3 was a 4.32× population cut; from a
+regions-4 master, 4 → 3 is 504 → 249, a 2× cut for 1.13× the error. The two
+levers overlap, and taking the free one first leaves the paid one with less
+to sell.
+
+    zig build test -Dtest-filter="G43"        # 40 s
+    zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 120000 --exterior --regions 4
+    python3 tools/marl25_predict.py
+
+`cache.pinnedFraction` is the diagnostic, promoted out of MARL-24's
+inspection because it reads off any model.
+
 ## Where this goes, against the map the campaign measured (Tuesday 2026-09-08)
 
 Christian's list, after MARL-17: radiance fields and GI, occlusion,

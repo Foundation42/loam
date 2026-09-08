@@ -74,6 +74,8 @@ run per edit makes the harness the activity rather than the work.
     zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 120000 --exterior   # ... and on a real level it makes MARL/grid 0.619 → 0.398
     python3 tools/edge_rbf.py                      # MARL-23: Bresenham's question — how tightly can Gaussians hold an edge? No learner, least squares, outside MARL
     zig build test -Dtest-filter="G42"             # MARL-24: a residual layer wants a COARSER basis than the bake — 25 kernels in 1.0 KiB
+    zig build test -Dtest-filter="G43"             # MARL-25: was `regions` wrong everywhere? the clamp read as a diagnostic. 40 s
+    zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 120000 --exterior --regions 4   # the corrected headline: MARL/grid 0.329
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -837,6 +839,48 @@ Method note: the corridor numbers came from an INSPECTION, before any
 threshold was written. They are recorded as an observation and the gate was
 pre-registered for a different fixture, which is the only honest way to
 promote something noticed by accident.
+
+MARL-25 took MARL-24's diagnostic — **the share of a population within 1% of
+σ_max** — and pointed it at the arm every occlusion phase has used. A
+population hard against the clamp is one the descent wanted WIDER and could
+not have, so `regions` is finer than the target needs. G37 (c) had printed
+the static bake's mean σ at 0.0278 against a σ_max of 0.02946 and nobody
+read it back.
+
+**The more pinned population is the one where coarsening pays.** On the
+grove: the straddling shell is 43% pinned and coarsening COSTS it 7.1%; the
+exterior shell is 64% pinned and coarsening GAINS it 5.7%, reaching **four
+times less memory and nine per cent better** at regions 3.
+
+**MARL-14 was not wrong, it was measuring a query set with a step in it.**
+That phase priced coarsening as a trade (6 → 3 for 4.32× fewer kernels at
+1.23× the error) on the STRADDLING shell — and a step is the finest
+structure in the target, which is exactly what a fine grid is bought for.
+MARL-22 showed a renderer never asks there. The step was not paying part of
+the fine grid's price, it was paying all of it.
+
+**On `oa_spirit3`, where the field actually varies**, regions 4 is strictly
+better than 6 — 504 kernels in 19.7 KiB at RMS 0.05968 against 1 207 in 47.1
+at 0.06021. Past that it becomes MARL-14's trade again (280 at 0.06889, 138
+at 0.07617), which is the honest boundary: the free step is one, not three.
+
+So two one-line changes compound through the whole chain:
+
+| | query set | regions | MARL/grid |
+|---|---|---|---|
+| MARL-17 | straddling | 6 | 0.589 |
+| MARL-22 | exterior | 6 | 0.398 |
+| **MARL-25** | **exterior** | **4** | **0.329** |
+
+The shipped artefact — distilled then quantized at 54 bits — is **249
+kernels in 1.7 KiB at 0.343× a constant predictor**, where MARL-17's was 340
+in 2.3 KiB at 0.598×. Neither change is a mechanism or new maths, and
+between them they nearly halve the error relative to the field's own scale.
+
+One consequence: the distillation dial has less room once the master is
+already coarse. From a regions-4 master, 4 → 3 is a 2× population cut for
+1.13× the error, where MARL-14's 6 → 3 was 4.32×. The two levers overlap,
+and taking the free one first leaves the paid one with less to sell.
 
 Recorded, not built. QAT belongs in the DISTILLATION transfer step
 (Christian's, and right) — a student is already re-fitting against a free

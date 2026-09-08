@@ -2604,4 +2604,94 @@ pub const MARL24_SHRINK: f32 = 0.5;
 /// KiB — a residual layer is **104× fewer kernels and 100× less memory**.
 pub const MARL24_FREE: f32 = 1.02;
 
+// ── MARL-25 (was `regions` wrong everywhere?) ────────────────────────
+//
+// Christian, after MARL-24: "we should try it on some of our previous stuff
+// maybe." The sharper version of that is not re-running old arms, it is the
+// DIAGNOSTIC that made MARL-24 findable —
+//
+//     the share of a population sitting within 1% of σ_max
+//
+// — which can be read off any model this campaign has ever built. A
+// population hard against the clamp is one the geometry descent wanted
+// WIDER and could not have, so `regions` is finer than the target needs and
+// those kernels are capacity spent on resolution nobody asked for.
+//
+// One reading is already on the record unnoticed: G37 (c) printed the
+// static occlusion bake's mean σ as 0.0278 against a σ_max of 0.02946 — 94%
+// of the way to the stop, on the arm MARL-13 through MARL-21 all used.
+
+/// G43: the share of the static bake's kernels within 1% of σ_max.
+/// PROPOSED as a FLOOR at 0.5.
+///
+/// If it comes in low, the mean was being dragged up by a tail, the clamp is
+/// not shaping this population, and MARL-24's finding is specific to
+/// residual layers and should stay there.
+///
+/// **REFUTED, at 43%** on the straddling shell — and 64% on the exterior
+/// one. The relationship the number was reaching for came out cleaner than
+/// the threshold: **the more pinned population is the one where coarsening
+/// pays.** 43% pinned and coarsening COSTS 7.1%; 64% pinned and coarsening
+/// GAINS 5.7%. The diagnostic works directionally, which is what it is for.
+pub const MARL25_PINNED: f32 = 0.5;
+
+/// G43: `(the RMS cost of coarsening on the EXTERIOR shell − 1) ÷ (the same
+/// cost on the STRADDLING shell − 1)`. PROPOSED as a CEILING at 0.6.
+///
+/// MARL-14 swept `regions` on the static bake and got a TRADE, not a free
+/// win: 6 → 3 for 4.32× fewer kernels at 1.23× the error. So a pinned
+/// population is NOT automatically over-fine — a model can be against the
+/// clamp and still be using every kernel.
+///
+/// What changed is MARL-22. That sweep ran on the STRADDLING shell, a third
+/// of which is inside solid where AO is exactly 0 — a STEP, and the finest
+/// structure in the whole target. Delete it, as a renderer already does, and
+/// the sharpest thing the basis is being asked to resolve goes with it.
+///
+/// Stated as a RATIO of the two shells rather than an absolute, because
+/// their targets and anchors differ and their RMS values are not comparable
+/// — the mistake MARL-22 nearly made and MARL-17 wrote the anchor rule to
+/// prevent.
+///
+/// **DEGENERATE, and not asserted.** A ceiling on a ratio of two positive
+/// costs, where the exterior cost came out NEGATIVE (−0.0567 against
+/// +0.0714): it passes arithmetically and means nothing. The claim it was
+/// reaching for holds in a stronger form — the step did not merely pay part
+/// of the fine grid's price, it paid ALL of it, and without it coarsening
+/// is an improvement rather than a trade.
+pub const MARL25_STEP_PAYS: f32 = 0.6;
+
+/// G43: RMS(regions 4)/RMS(regions 6) on the exterior shell. PROPOSED as a
+/// CEILING at 1.05 — one step of coarsening for five per cent.
+///
+/// MARL-24 got 0.996 for the same step on a RESIDUAL, which is a smoother
+/// target than a field; five per cent is the slack for that difference. If
+/// it holds, every occlusion arm in the campaign has been paying for
+/// resolution the query set did not need, and the fix is one number.
+///
+/// **HELD, at 0.943 — better than free**, and it keeps going: on the grove's
+/// exterior shell regions 6/4/3 give 1 989/864/485 kernels at 77.7/33.8/18.9
+/// KiB for RMS 0.06651/0.06274/0.06048. **Four times less memory and nine
+/// per cent better.**
+///
+/// On `oa_spirit3`, where the field actually varies, the free step stops at
+/// regions 4 and becomes MARL-14's trade after it:
+///
+///     regions   kernels    KiB      RMS
+///           6      1207   47.1  0.06021
+///           4       504   19.7  0.05968   ← 2.4× less memory, better
+///           3       280   10.9  0.06889
+///           2       138    5.4  0.07617
+///
+/// And the two one-line changes compound through the whole chain:
+///
+///     MARL-17  straddling shell, regions 6   MARL/grid 0.589
+///     MARL-22  exterior shell,   regions 6             0.398
+///     MARL-25  exterior shell,   regions 4             **0.329**
+///
+/// The shipped artefact — distilled then quantized at 54 bits — is **249
+/// kernels in 1.7 KiB at 0.343× a constant predictor**, where MARL-17's was
+/// 340 in 2.3 KiB at 0.598×.
+pub const MARL25_FREE: f32 = 1.05;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
