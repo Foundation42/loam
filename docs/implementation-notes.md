@@ -5952,6 +5952,157 @@ of a drifting-world result that does not exist yet.
 `cache.wakeSleep`, `cache.overlapOf` and `cache.meanWidth`. G34, G35 and
 G36 were re-run against the refactor and read identically, line for line.
 
+## MARL-19 — the milk round, and the second currency that turned out not to exist (Tuesday 2026-09-08)
+
+Christian's clarification of the consolidation idea, in his words:
+
+> "You are told to deliver the milk on Mondays so you buy a kernel. Then
+>  you are told to deliver the milk on Wednesday as well .. surprise, and
+>  you buy another kernel. Then you are told to deliver milk on Tuesday and
+>  Thursday and Friday as well, but you already have two kernels refining
+>  the parent Milk delivery schedule kernel. Now you have three, potentially
+>  four kernels whose sum is.. Deliver milk Monday to Friday. The distilled
+>  student samples and never sees all the patches.. it sees a continuous
+>  function Saturday and Sunday, no milk, Monday through Friday, deliver
+>  the milk."
+
+That is a different mechanism from the one MARL-18 measured, and MARL-18's
+fixture could not have seen it. MARL-18 concluded "a sleep is worth exactly
+as much as there is VARIANCE to remove" — and one stationary field learned
+from a noisy estimator leaves noise as the only thing a teacher can carry
+that a student would not rebuild. The milk round names a second currency:
+**HISTORY**.
+
+So `src/milk.zig`'s target is ANALYTIC AND EXACT. Seven days along x, a
+fixed smooth amplitude in (y, z) so the field is not degenerate off the
+axis, and the schedule revealed in three stages. If a sleep collapses the
+population *here*, MARL-18's sentence is incomplete.
+
+### G38 (a) — the premium is not there, and the reason is two prior phases
+
+    a constant predictor scores 0.26922
+
+| arm | kernels | RMS |
+|---|---|---|
+| A  incremental, 3 stages | 6 094 | 0.05791 |
+| B  scratch, same TOTAL evidence | 6 709 | 0.04351 |
+| B3 scratch, same FINAL-schedule evidence | 5 526 | 0.07418 |
+| C  A, then one sleep | 7 110 | 0.06826 |
+
+**`MARL19_HISTORY` REFUTED at 1.103**, and **`MARL19_REFUND` at −1.789** —
+the sleep RAISED the population.
+
+At equal total evidence the incremental arm carries FEWER kernels than the
+from-scratch one and is behind on accuracy. It is not paying a premium; it
+is further back, having spent two thirds of its budget on schedules with
+less structure in them. **Nothing it learned became wrong.** Monday is
+delivered at every stage, so the reveal is NESTED and MARL-9's law applies
+in its cheap direction: capacity is paid per THING LEARNED, and everything
+learned is still true. And MARL-16 covers the only obsolete structure there
+was — the Tuesday hole sat at ZERO, which is exactly what an empty model
+already predicts, **so holding the hole down never cost a kernel and there
+was nothing there to cancel.**
+
+**`MARL19_COPY` HELD at 1.179**, and it is the number that separates the
+two currencies: a copy of an exactly noiseless teacher is a pure loss,
+which says MARL-18's 0.960 belonged to the teacher's noise and not to the
+act of copying.
+
+### G38 (b) — "smoother ground" holds, and the kernel column says why not to celebrate
+
+| arm, + one more period of Mon–Fri | kernels | RMS | vs A |
+|---|---|---|---|
+| A  straight through | 6 620 | 0.04576 | 1.000 |
+| D  one sleep, then learn | 7 357 | 0.04465 | **0.976** |
+| E  a sleep after every stage | 7 412 | 0.04394 | **0.960** |
+
+**`MARL19_GROUND` HELD.** Consolidating and then learning does beat
+learning straight through — on a noiseless field, which is where MARL-18
+could not have told the currencies apart. But the slept arms end with
+**eleven per cent more capacity**, and this campaign has found four times
+over that RMS tracks capacity. A 2–4% win carrying an 11% larger population
+is not a clean result.
+
+### G38 (c) — it is not addition that costs; and contradiction barely costs either
+
+Two paths, same three stages, same 120 000 exemplars, same destination,
+differing only in whether the path contradicted itself — and the dream
+PINNED to the teacher's own evidence, which is the confound (a) tripped
+over:
+
+    nested         {Mon}          {Mon,Wed}      {Mon..Fri}
+    contradictory  {Mon,Tue,Wed}  {Wed,Thu,Fri}  {Mon..Fri}
+
+| path | kernels | RMS |
+|---|---|---|
+| nested | 6 094 | 0.05791 |
+| … slept | 6 976 | 0.07168 |
+| contradictory | 6 654 | 0.05115 |
+| … slept | 6 929 | 0.06478 |
+
+**`MARL19_CONTRADICT` REFUTED at 1.092.** A round that stops delivering
+Monday and Tuesday and then starts again costs nine per cent more capacity
+than one that only ever adds — and is MORE accurate for it, having seen
+more of the destination's structure earlier. **History is nearly free in
+MARL whatever shape it has**: 1.103 nested, 1.092 contradicting. Pulling a
+weight to zero is cheap, and the kernels left behind are few against a
+population set by tiling the support.
+
+**`MARL19_REFUND2` REFUTED at −0.491.** With the dream pinned, a sleep
+still raises the population on both paths. The θ frontier makes that
+precise rather than anecdotal — a student chases its teacher at θ, and a
+teacher's field is a sum of gaussians with ripple at kernel scale, so a low
+θ buys kernels for the ripple:
+
+| θ | kernels | RMS |
+|---|---|---|
+| 0.02 | 1.041× | 1.266× |
+| 0.05 | 0.890× | 1.268× |
+| 0.10 | 0.736× | 1.327× |
+| 0.20 | 0.528× | 1.636× |
+
+**No student is better than its teacher on both axes.** Set against
+MARL-14's noisy-field trade — 0.937× the kernels for 1.058× the RMS at
+matched options — that is a different regime entirely, and the difference
+is the noise.
+
+### What the two phases together say
+
+    A sleep is worth exactly as much as there is VARIANCE to remove.
+
+MARL-18 measured it on a noisy field and found the saving tracks the noise
+(gradient 1.432, and 0.940 surviving the best available rates). MARL-19
+took the noise away and the saving inverted: a sleep costs accuracy and
+BUYS capacity, on both path shapes, with the dream pinned. **What a student
+declines to rebuild is its teacher's noise.**
+
+Christian's picture of the representation is right — the sum IS simpler
+than the patches, and a student handed the sum has an easier job. What is
+wrong is the assumption that MARL *paid* for the patches. It mostly did
+not: the patches are still-valid structure (MARL-9), and the ones that are
+not sit at zero, where the model's default already is (MARL-16). The
+campaign's own two earlier findings had already closed the door this phase
+went looking through, which is the best argument yet for the ledger being
+worth its length.
+
+### The methodological note, and it is mine
+
+The dream sample count is an EVIDENCE DIAL. On a noisy target it is
+invisible, because what a student rebuilds is bounded by what the teacher
+got right. On a noiseless one it sets the student's population directly,
+and G38 (a) ran it at 150 000 against a teacher trained on 120 000 — so the
+student was handed a larger budget and spent it. G38 (c) pins it. The sign
+did not change, but the number did, and "the sleep got bigger" was not a
+claim until the θ frontier turned it into one.
+
+    zig build test -Dtest-filter="G38"        # 65 s; (a) the milk round, (b) smoother ground, (c) addition against contradiction
+    python3 tools/marl19_predict.py           # where the numbers came from, extension included
+
+`src/marl.zig` is untouched. The additions are `src/milk.zig` — the
+fixture, its two path shapes, `learn`, `sleep` and the gates — registered
+in `loam.zig`'s import list AND its `test` block, which is what actually
+makes a file's gates run.
+
 ## Where this goes, against the map the campaign measured (Tuesday 2026-09-08)
 
 Christian's list, after MARL-17: radiance fields and GI, occlusion,

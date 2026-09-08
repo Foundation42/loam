@@ -2023,4 +2023,194 @@ pub const MARL18_UNTANGLE: f32 = 1.0;
 /// locality, which G17 (c)/(d) already check bitwise.
 pub const MARL18_RATE_FIRST: f32 = 1.0;
 
+// ── MARL-19 (the milk round: does a consolidation refund the capacity
+//    that HISTORY bought?) ────────────────────────────────────────────
+//
+// Christian's clarification of the consolidation idea. You are told to
+// deliver the milk on Mondays, so you buy a kernel. Then on Wednesday as
+// well — surprise, another kernel. Then Tuesday, Thursday and Friday, and
+// you already have kernels refining the parent schedule. Now three or four
+// kernels have a sum, and the sum is "deliver the milk Monday to Friday".
+// The student never sees the patches. It sees the sum.
+//
+// MARL-18 concluded "a sleep is worth exactly as much as there is VARIANCE
+// to remove" — and its fixture gave it no alternative, because one
+// stationary field learned from a noisy estimator leaves noise as the only
+// thing a teacher can carry that a student would not rebuild. The milk
+// round names a second currency: HISTORY. So `src/milk.zig`'s target is
+// ANALYTIC AND EXACT, and if a sleep still collapses the population there,
+// MARL-18's sentence is incomplete.
+
+/// G38 (a): K(incremental) / K(from scratch at EQUAL evidence on the final
+/// schedule). PROPOSED as a FLOOR at 1.3.
+///
+/// Five distinct edge positions are presented over the three stages and the
+/// final schedule has two, so the path presented 2.5× the destination's
+/// structure. The floor sits well under that because capacity does not
+/// track edges alone — kernels also tile the interior, where the amplitude
+/// has its own structure — so the edge ratio is an upper bound and not an
+/// estimate.
+///
+/// Checked FIRST: if the incremental model carries no premium then this
+/// fixture does not reproduce MARL-7's accumulation and nothing downstream
+/// of it means anything.
+///
+/// **REFUTED, at 1.103** — and the reason is worth more than the number
+/// would have been. At EQUAL TOTAL evidence the incremental arm carries
+/// FEWER kernels than the from-scratch one (6 094 against 6 709) and is
+/// behind on accuracy (0.05791 against 0.04351). It is not paying a
+/// premium; it is further back, having spent two thirds of its budget on
+/// schedules with less structure in them.
+///
+/// **Nothing it learned became WRONG.** Monday is delivered at every
+/// stage, so the reveal is NESTED and MARL-9's law applies in its cheap
+/// direction: capacity is paid per THING LEARNED. And MARL-16 covers the
+/// only obsolete structure there was — the Tuesday hole sat at ZERO, which
+/// is what an empty model already predicts, so holding it down never cost
+/// a kernel and there was nothing there to cancel.
+pub const MARL19_HISTORY: f32 = 1.3;
+
+/// G38 (a), THE REFUND and Christian's claim: the fraction of the history
+/// premium a single sleep gives back,
+///
+///     (K_incremental − K_distilled) / (K_incremental − K_scratch)
+///
+/// PROPOSED as a FLOOR at 0.5. Stated against what is ACHIEVABLE rather
+/// than as a raw ratio, because a raw ratio cannot tell a good refund on a
+/// small premium from a poor one on a large.
+///
+/// The argument for is Christian's and it is clean: the student is handed
+/// the sum and never sees the Tuesday hole being dug and filled in. The
+/// argument against is MARL-18's own G37 (c), where a sleep on a clean
+/// stationary field moved the population by 0.961× — almost nothing. The
+/// difference this fixture introduces is that MARL-18's teacher HAD NO
+/// HISTORY, which is what makes the two a test rather than a re-run.
+///
+/// **REFUTED, at −1.789**: the sleep RAISED the population, 6 094 → 7 110.
+/// Partly a harness fault — the dream was 150 000 against a teacher trained
+/// on 120 000, and on a noiseless target the dream count is an evidence
+/// dial that sets the student's population directly. G38 (c) pins it, and
+/// the sign does not change: 6 654 → 6 929 with the dream pinned.
+pub const MARL19_REFUND: f32 = 0.5;
+
+/// G38 (a): RMS(distilled)/RMS(incremental). PROPOSED as a FLOOR at parity.
+///
+/// MARL-18 G37 (a) measured 1.043 for a copy of a sixteen-ray teacher and
+/// MARL-14 measured 1.058; both teachers were nearly noiseless. This one is
+/// EXACTLY noiseless, so there is no wiggle to filter and a copy should be
+/// a pure loss on the metric.
+///
+/// This is what separates the two currencies cleanly. A large refund with
+/// the accuracy unharmed would mean a sleep buys memory for nothing on a
+/// field with no noise in it at all — the strongest form of Christian's
+/// claim, and it has to refute this number to get there.
+///
+/// **HELD, at 1.179**, and it is the number that separates the two
+/// currencies. A copy of an EXACTLY noiseless teacher is a pure loss —
+/// which is what says MARL-18's 0.960 belonged to the teacher's noise and
+/// not to the act of copying.
+pub const MARL19_COPY: f32 = 1.0;
+
+/// G38 (b), SMOOTHER GROUND: RMS(consolidated then learned) over
+/// RMS(learned straight through) at equal further reality. PROPOSED as a
+/// CEILING at parity.
+///
+/// Christian's second half — "the Student can also learn away from the
+/// Teacher from the source of truth that the teacher learned from, but now
+/// it is learning on smoother ground". The mechanism is the COVERAGE GATE
+/// and this fixture maximises it: a birth needs surprise above θ AND no
+/// kernel reading above `coverage` within the responsibility radius, so the
+/// Tuesday the model must now fill in is exactly where it is LEAST able to
+/// buy capacity — locked by its own history. A distilled model arrives at
+/// the same place with fewer kernels and the room to birth.
+///
+/// **HELD, at 0.976 for one sleep and 0.960 for a sleep after every
+/// stage** — and the kernel column is the caveat that keeps it from being
+/// worth much. The slept arms end with ELEVEN PER CENT MORE capacity
+/// (7 357 and 7 412 against 6 620), and this campaign has found four times
+/// over that RMS tracks capacity. A 2–4% win carrying an 11% larger
+/// population is not a clean result, and G38 (c)'s θ frontier says why: on
+/// a noiseless field no student is better than its teacher on both axes,
+/// so a slept arm that is ahead is an arm that is bigger.
+pub const MARL19_GROUND: f32 = 1.0;
+
+/// G38 (c): K(contradictory path) / K(nested path), at equal evidence and
+/// the same final schedule. PROPOSED as a FLOOR at 1.15, and written AFTER
+/// G38 (a) and (b) ran.
+///
+/// `MARL19_HISTORY` was refuted at 1.103 and `MARL19_REFUND` at −1.789 (the
+/// sleep RAISED the population). Two reasons, and only one is the
+/// harness's fault.
+///
+/// The confound: the dream count is an EVIDENCE dial that sets the
+/// student's population directly, and it was 150 000 against a teacher
+/// trained on 120 000. On a noiseless target more evidence buys more
+/// kernels. In MARL-14 and MARL-18 noise hid that; here it was the whole
+/// effect. This gate pins the dream to the teacher's own evidence.
+///
+/// The real reason, and it is the finding: at equal total evidence the
+/// incremental arm bought FEWER kernels than a from-scratch one (6 094
+/// against 6 709) and was simply behind. **Nothing it learned became
+/// wrong.** Monday is delivered at every stage, so the reveal is NESTED,
+/// and MARL-9's law applies in its cheap direction. The only obsolete
+/// structure is two interior edges, and MARL-16 says even those were free:
+/// the Tuesday hole was ZERO, which is what an empty model already
+/// predicts, so holding it down never cost a kernel.
+///
+/// **Incremental addition is nested and cheap; it is CONTRADICTION that
+/// costs.** So the two paths run side by side —
+///
+///     nested         {Mon}          {Mon,Wed}      {Mon..Fri}
+///     contradictory  {Mon,Tue,Wed}  {Wed,Thu,Fri}  {Mon..Fri}
+///
+/// — where the contradictory path delivers Monday and Tuesday, stops, and
+/// starts again. Kernels pulled to zero stay in the population, which is
+/// MARL-7's "the capacity a moved world leaves behind" produced on demand
+/// in a noiseless three-stage fixture instead of a six-move drift.
+///
+/// If the two paths cost the same then history is free in MARL whatever
+/// shape it has, MARL-7's accumulation is about something else, and
+/// consolidation has nothing structural to collect.
+///
+/// **REFUTED, at 1.092.** A path that stops delivering Monday and Tuesday
+/// and then starts again costs nine per cent more capacity than one that
+/// only ever adds — and it is MORE accurate for it (0.05115 against
+/// 0.05791), having seen more of the destination's structure earlier.
+///
+/// So history is nearly free in MARL whatever shape it has: 1.103 nested,
+/// 1.092 contradicting. Pulling a weight to zero is cheap, and the kernels
+/// left behind are few against a population set by tiling the support.
+pub const MARL19_CONTRADICT: f32 = 1.15;
+
+/// G38 (c): the fraction of the CONTRADICTION premium a single sleep
+/// returns, `(K_contra − K_contra_slept) / (K_contra − K_nested)`.
+/// PROPOSED as a FLOOR at 0.5, with the dream pinned to the teacher's own
+/// evidence so the student is not simply handed a larger budget.
+///
+/// This is the number Christian's claim actually rests on, on the only
+/// path shape that can carry it.
+///
+/// **REFUTED, at −0.491.** With the dream pinned to the teacher's own
+/// evidence a sleep still RAISES the population on both paths.
+///
+/// The θ frontier makes it precise rather than anecdotal. A student chases
+/// its teacher at θ, and a teacher's field is a sum of gaussians with
+/// ripple at kernel scale, so a low θ buys kernels for the ripple:
+///
+///     θ = 0.02   1.041× kernels   1.266× RMS
+///     θ = 0.05   0.890×           1.268×
+///     θ = 0.10   0.736×           1.327×
+///     θ = 0.20   0.528×           1.636×
+///
+/// **No student is better than its teacher on both axes.** Against
+/// MARL-14's noisy-field trade — 0.937× kernels for 1.058× RMS at matched
+/// options — that is a different regime entirely, and the difference is
+/// the noise.
+///
+/// So two independent fixtures now agree: **a sleep is worth exactly as
+/// much as there is VARIANCE to remove.** What a student declines to
+/// rebuild is its teacher's noise. Where there is none it costs accuracy
+/// and buys capacity.
+pub const MARL19_REFUND2: f32 = 0.5;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

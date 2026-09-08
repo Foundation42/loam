@@ -51,6 +51,10 @@ pub const rbf = @import("rbf.zig");
 pub const marl = @import("marl.zig");
 pub const marble = @import("marble.zig");
 pub const cache = @import("cache.zig");
+/// MARL-19: the milk round — a schedule revealed in STAGES, and whether a
+/// consolidation refunds the capacity that history bought. Noiseless by
+/// design, so it cannot borrow MARL-18's variance explanation.
+pub const milk = @import("milk.zig");
 
 // The working surface, re-exported flat.
 pub const Domain = lattice.Domain;
@@ -89,5 +93,6 @@ test {
     _ = marl;
     _ = marble;
     _ = cache;
+    _ = milk;
     _ = @import("tests.zig");
 }

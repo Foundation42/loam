@@ -67,6 +67,7 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/q3_volume.py --res 160 --out out/oa_spirit3.vol          # MARL-17: a Quake 3 level as a bark.Volume (reads ~/dev/tessera's BSP loader)
     zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 250000   # ... the occlusion cache on it (a tool run; not gated)
     zig build test -Dtest-filter="G37"             # MARL-18: CONSOLIDATION — distil, replace the master, resume learning. 79 s, four refutations; tools/marl18_predict.py
+    zig build test -Dtest-filter="G38"             # MARL-19: the MILK ROUND — a schedule revealed in stages, NOISELESS. 65 s; tools/marl19_predict.py
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -525,6 +526,56 @@ four overlapping kernels whose sum is smooth are all individually
 load-bearing and collectively replaceable. **A consolidation never chooses
 a victim — it declines to rebuild one**, which moves the unit of removal
 from the kernel to the local function. That is the next experiment.
+
+MARL-19 is Christian's clarification of the same idea — the milk round.
+Told Monday, you buy a kernel; told Wednesday too, another; told Tuesday,
+Thursday and Friday, and you already have kernels refining the parent. The
+sum is "deliver Monday to Friday", and the student is handed the sum, never
+the patches. That names a SECOND CURRENCY — history — which MARL-18's
+fixture could not have seen, because one stationary field learned from a
+noisy estimator leaves noise as the only thing a teacher can carry. So
+`src/milk.zig`'s target is ANALYTIC AND EXACT.
+
+**The premium is not there.** At equal total evidence the incremental arm
+carries FEWER kernels than a from-scratch one (6 094 against 6 709) and is
+simply behind (0.05791 against 0.04351) — it spent two thirds of its budget
+on schedules with less structure in them. **Nothing it learned became
+wrong**: Monday is delivered at every stage, so the reveal is NESTED and
+MARL-9's law applies in its cheap direction. And MARL-16 covers the only
+obsolete structure there was — the Tuesday hole sat at ZERO, which is what
+an empty model already predicts, **so holding the hole down never cost a
+kernel and there was nothing to cancel.**
+
+**Nor does contradiction help.** A path that delivers Monday and Tuesday,
+STOPS, and starts again costs 1.092× a path that only ever adds — and is
+more accurate for it. History is nearly free in MARL whatever shape it has;
+pulling a weight to zero is cheap, and the kernels left behind are few
+against a population set by tiling the support.
+
+**And a sleep on a noiseless field is a pure loss.** A copy costs 1.179×,
+and with the dream PINNED to the teacher's own evidence it RAISES the
+population on both paths. The θ frontier makes it precise: 1.041× kernels
+at 1.266× RMS, 0.890× at 1.268×, 0.736× at 1.327×, 0.528× at 1.636× —
+**no student is better than its teacher on both axes**, where MARL-14's
+noisy field gave 0.937× the kernels for 1.058× the RMS. "Smoother ground"
+does hold (0.976 for one sleep, 0.960 for a sleep every stage) but the
+slept arms end 11% LARGER, and RMS tracks capacity.
+
+So the two phases close on one sentence:
+
+    A sleep is worth exactly as much as there is VARIANCE to remove.
+    What a student declines to rebuild is its teacher's NOISE.
+
+Christian's picture of the representation is right — the sum is simpler
+than the patches. What is wrong is the assumption that MARL *paid* for the
+patches. It mostly did not, and the campaign's own MARL-9 and MARL-16 had
+already closed the door this phase went looking through.
+
+One method note, and it is the harness's fault: the dream sample count is
+an EVIDENCE DIAL. Invisible on a noisy target, where what a student
+rebuilds is bounded by what its teacher got right; decisive on a noiseless
+one, where it sets the student's population directly. Pin it to the
+teacher's own evidence.
 
 Recorded, not built. QAT belongs in the DISTILLATION transfer step
 (Christian's, and right) — a student is already re-fitting against a free
