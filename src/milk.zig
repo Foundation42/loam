@@ -532,3 +532,89 @@ test "G38 (c) it is not addition that costs, it is CONTRADICTION" {
     try testing.expect(k_xs > k_x);
     try testing.expect(dominated);
 }
+
+test "G38 (d) the guitar: step away at the plateau, come back, and play better" {
+    // Christian's own framing, and the one this phase kept talking past:
+    //
+    // > "when I play my guitar, eventually I hit a wall of improvement, but
+    // >  if I step away and I leave it for a few days then return, I can
+    // >  improve again on the smooth consolidated memory."
+    //
+    // That is not a claim about compression, and it is not the milk round.
+    // It is: a learner AT A PLATEAU, given a rest, resumes improving. So
+    // the target never changes here — the schedule is the final one from
+    // the first exemplar — and the only variable is whether a sleep happens
+    // partway.
+    //
+    // Two things this gate fixes about the earlier ones. The dream is
+    // PINNED to the teacher's own evidence, so the slept arm is never
+    // simply handed a larger budget. And the plateau is MEASURED rather
+    // than assumed: the straight arm's RMS is printed every period, so the
+    // wall is visible before the rest is placed at it.
+    const gpa = testing.allocator;
+    const FINAL = STAGES[STAGES.len - 1];
+    const PER: u64 = 100_000;
+    const PERIODS: u32 = 4;
+    const REST_AFTER: u32 = 2;
+    const opts = marl.Options{ .responsibility = 3 };
+    const SEED: u64 = 19;
+
+    var pr = try probesOf(gpa, FINAL, 4096, SEED);
+    defer pr.deinit(gpa);
+
+    std.debug.print("\n  G38 (d): the guitar — {d} exemplars a period, the rest after period {d}, dream PINNED to evidence so far ({s})\n", .{
+        PER, REST_AFTER, @tagName(builtin.mode),
+    });
+    std.debug.print("  G38 (d): {s:>7} {s:>10} {s:>18} {s:>10} {s:>18}\n", .{ "period", "kernels", "straight through", "kernels", "with a rest" });
+
+    var m_a = try marl.Model.init(gpa, opts);
+    defer m_a.deinit();
+    var s_a = rng.Stream.region(SEED, 0x47545221, 0); // "GTR!"
+
+    var m_d = try marl.Model.init(gpa, opts);
+    var s_d = rng.Stream.region(SEED, 0x47545221, 0);
+    var dream = rng.Stream.region(SEED ^ 0x51, 0x52455354, 0); // "REST"
+
+    var p: u32 = 0;
+    var a_prev: f32 = 0;
+    var wall: f32 = 0;
+    while (p < PERIODS) : (p += 1) {
+        try learn(&m_a, FINAL, PER, &s_a);
+        try learn(&m_d, FINAL, PER, &s_d);
+        if (p + 1 == REST_AFTER) {
+            // The rest. Everything it knows, re-learned from its own
+            // continuous field — never the exemplars, which are gone.
+            const slept = try sleep(gpa, &m_d, opts, PER * (p + 1), &dream);
+            m_d.deinit();
+            m_d = slept;
+        }
+        const a_rms = rmsOf(&m_a, pr);
+        const d_rms = rmsOf(&m_d, pr);
+        // The wall: how much the straight arm gained in THIS period, as a
+        // fraction of what it gained in the first. A plateau is this
+        // number going to zero.
+        if (p == 0) wall = a_rms else wall = a_prev - a_rms;
+        std.debug.print("  G38 (d): {d:>7} {d:>10} {d:>18.5} {d:>10} {d:>18.5}{s}\n", .{
+            p + 1, m_a.kernels.items.len, a_rms, m_d.kernels.items.len, d_rms,
+            if (p + 1 == REST_AFTER) "   ← rested here" else "",
+        });
+        a_prev = a_rms;
+    }
+    defer m_d.deinit();
+
+    const a_rms = rmsOf(&m_a, pr);
+    const d_rms = rmsOf(&m_d, pr);
+    std.debug.print("  G38 (d): the last period bought the straight arm {d:.5} of RMS; the rested arm ends {d:.5} against {d:.5} — {d:.3}×, at {d} kernels against {d}\n", .{
+        wall, d_rms, a_rms, d_rms / a_rms, m_d.kernels.items.len, m_a.kernels.items.len,
+    });
+
+    // The capacity objection, settled inside the gate rather than argued:
+    // if the rested arm wins while carrying NO MORE capacity, the win is
+    // not capacity. This campaign has found four times over that RMS
+    // tracks kernels, so the comparison is only worth reading with this
+    // beside it.
+    std.debug.print("  G38 (d): capacity ratio {d:.3}× — {s}\n", .{
+        @as(f64, @floatFromInt(m_d.kernels.items.len)) / @as(f64, @floatFromInt(m_a.kernels.items.len)),
+        if (m_d.kernels.items.len <= m_a.kernels.items.len) "the rested arm is NOT bigger, so a win here is not a capacity win" else "the rested arm IS bigger, so any win is confounded and this gate cannot settle it",
+    });
+}

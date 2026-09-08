@@ -561,15 +561,36 @@ noisy field gave 0.937× the kernels for 1.058× the RMS. "Smoother ground"
 does hold (0.976 for one sleep, 0.960 for a sleep every stage) but the
 slept arms end 11% LARGER, and RMS tracks capacity.
 
-So the two phases close on one sentence:
+**And then G38 (d) found the precondition the whole phase had been missing.**
+Christian's actual framing is the guitar: hit a wall of improvement, step
+away, come back and improve again on consolidated memory. Run with the
+target fixed, the dream pinned, and the straight arm's RMS printed every
+period so the wall would be visible — **there is no wall.** It gains 0.0039
+in its last period and is still climbing, so the rested arm's 1.023× is not
+a result, it is a test whose precondition failed.
 
-    A sleep is worth exactly as much as there is VARIANCE to remove.
-    What a student declines to rebuild is its teacher's NOISE.
+Which reframes everything. **Where does MARL plateau?** MARL-13 (b) had
+already answered it: on a NOISY field NLMS hovers at `μ/(2−μ)·V` however
+much data arrives. That is the only wall in this system; on a noiseless
+field MARL-10's logarithmic law keeps paying out and there is nothing to
+step away from. So:
+
+    MARL's plateau is made of VARIANCE.
+
+"A sleep is worth as much as there is variance to remove" and "a rest helps
+once you have hit the wall" are the SAME SENTENCE — and MARL-18's one-ray
+arm was already the guitar, run at a real wall (its trace goes backwards
+mid-run, 0.22455 → 0.23232, which is hovering) with three rests ratcheting
+it to 0.940× after the best available rates. MARL-19's negatives are not
+evidence against consolidation; they are the BOUNDARY of where it applies,
+and the boundary is the wall.
 
 Christian's picture of the representation is right — the sum is simpler
 than the patches. What is wrong is the assumption that MARL *paid* for the
-patches. It mostly did not, and the campaign's own MARL-9 and MARL-16 had
-already closed the door this phase went looking through.
+patches; it mostly did not, and MARL-9 and MARL-16 had already closed that
+door. The analogy was never a spec for a fixture, and building it as one
+was a category error worth recording: a refuted instantiation is not a
+refuted principle.
 
 One method note, and it is the harness's fault: the dream sample count is
 an EVIDENCE DIAL. Invisible on a noisy target, where what a student

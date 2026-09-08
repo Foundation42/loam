@@ -6066,7 +6066,57 @@ MARL-14's noisy-field trade — 0.937× the kernels for 1.058× the RMS at
 matched options — that is a different regime entirely, and the difference
 is the noise.
 
+### G38 (d) — the guitar, and the precondition the whole phase was missing
+
+Christian, on what he actually meant, after (a)–(c) had gone looking for
+the wrong thing:
+
+> "when I play my guitar, eventually I hit a wall of improvement, but if I
+>  step away and I leave it for a few days then return, I can improve again
+>  on the smooth consolidated memory."
+
+Not compression, and not the milk round. A learner AT A PLATEAU, rested,
+resumes improving. So: the schedule never changes, the dream is pinned to
+the teacher's own evidence, and the straight arm's RMS is printed every
+period so the wall is VISIBLE before the rest is placed at it.
+
+| period | straight | rested |
+|---|---|---|
+| 1 | 0.04976 | 0.04976 |
+| 2 | 0.03689 | 0.04854 ← rested here |
+| 3 | 0.03214 | 0.03352 |
+| 4 | 0.02827 | 0.02892 |
+
+**There is no wall.** The straight arm gains 0.00387 in its last period and
+is still climbing. The rested arm ends 1.023× and 1.019× the capacity,
+which measures nothing at all — the precondition the claim rests on was
+never met, and the gate says so in its own output rather than reporting a
+ratio as if it were an answer.
+
+That is the finding, and it reframes everything above.
+
+**Where does MARL hit a wall?** MARL-13 (b) answered it and this phase
+walked past the answer three times: on a NOISY field NLMS does not
+converge, it hovers, at `μ/(2−μ)·V` of the measurement variance HOWEVER
+MUCH DATA ARRIVES. That is the only plateau in this system. On a noiseless
+field there is none — MARL-10's logarithmic law keeps paying out, so there
+is nothing to step away from.
+
 ### What the two phases together say
+
+    MARL's plateau is made of VARIANCE.
+
+So "a sleep is worth as much as there is variance to remove" and "a rest
+helps once you have hit the wall" are the SAME SENTENCE, and the campaign
+had already run the experiment: MARL-18's one-ray arm sits at a real wall
+— its trace goes backwards mid-run, 0.22455 → 0.23232, which is hovering
+— and three rests ratcheted it down to **0.940× after the best available
+learning rates**. That IS the guitar, measured, and MARL-19 filed it under
+the wrong heading before this gate.
+
+The corrected reading of MARL-19's negative results: they are not evidence
+against consolidation. They are the boundary of where it applies, and the
+boundary is the wall.
 
     A sleep is worth exactly as much as there is VARIANCE to remove.
 
