@@ -5737,6 +5737,221 @@ geometry nobody designed for it. Reproduce with:
 `src/marl.zig` is untouched by this phase; the additions are
 `cache.readVolume`, `cache.scaledAo` and a `marl-run --q3` mode.
 
+## MARL-18 — consolidation, and the control that refuted the phase twice (Tuesday 2026-09-08)
+
+Christian's plan for the day (`MARL_Tomorrow_Action_Plan.md`) proposes
+that distillation is not a deployment step but a LEARNING step: distil,
+put the student in the master's place, resume ordinary learning, repeat.
+Wake and sleep. "Learn, accumulate interference, consolidate, resume
+learning from a cleaner state."
+
+### The premise it rests on was a misreading, and saying so first is the phase
+
+The plan opens: "the distilled student has been observed to achieve
+significantly lower error than the teacher, not merely fewer kernels."
+**MARL-14 measured the opposite at every point of its sweep** — 1.058 at
+matched options, rising to 1.141 at the coarsest, against a teacher's
+0.13248. The number that reads like the claim is **0.878**, and it is a
+different ratio entirely: the student against a DENSE GRID OF THE SAME
+BYTE COUNT. The student beat the *baseline* by more than the teacher did,
+because shrinking a memory budget costs a grid a cube root of resolution
+and costs a placed basis almost nothing. A statement about the opponent,
+not about the teacher.
+
+The idea survives the correction and gets sharper for it, because
+**MARL-14 distilled a model and STOPPED.** It never resumed learning.
+"The student is worse at the instant of the copy" and "the student is a
+worse place to learn from" are different claims, and only the first had
+ever been run.
+
+### G37 (a) — a student cannot beat its teacher, EXCEPT when the teacher is noise-limited
+
+| rays | teacher | best student | ratio | |
+|---|---|---|---|---|
+| 16 | 3 387 k, 0.13222 | 3 228 k, 0.13789 | **1.043** | HELD (≥ 1.0) |
+| 1 | 5 520 k, 0.23875 | 3 456 k, 0.22913 | **0.960** | **REFUTED** |
+
+**Christian is right, and only in the noisy regime.** At one ray a sample
+every student in the sweep beats its teacher — matched 0.962, θ = 0.1
+0.960, and a basis with a third of the kernels (1 712 against 5 520) still
+0.971.
+
+The mechanism is not "discarding optimisation baggage". A student fits its
+teacher's OUTPUT, noise and all, and has no access to anything the teacher
+got wrong — so the only way it can come out ahead is by FAILING to
+reproduce part of the teacher and being better off for the failure. That
+is the low-pass argument, and the sweep is its signature: a shallow U
+(0.962, 0.960, 0.971) with a minimum at intermediate capacity, which is a
+bias-variance curve and not a monotone saving. **A copy is a filter, and
+it is worth something exactly when the original is carrying noise.**
+
+**THE DIFF was refuted the OTHER WAY, at 1.606.** The plan asked what edits
+a consolidation performs, and the unit that makes it measurable is not
+kernel identity — a student shares none — it is OVERLAP: how many kernels
+read above `coverage` at a query point, over the population ratio, so that
+a uniform thinning scores exactly 1. Christian's picture is A + B + C + D
+→ X + Y and would score BELOW one. It scored 1.606: at one ray the student
+sheds a THIRD of the population while RAISING the crowding per kernel.
+**A consolidation does not untangle, it CONCENTRATES** — the ninth item on
+his list rather than the eighth. Low-contribution kernels are retired and
+the survivors sit where the queries are.
+
+### G37 (b) — the staircase is real, and it tracks the noise
+
+Two arms on ONE reality stream in one order, the same points and the same
+estimates and the same total, differing only in whether the model was
+rebuilt from itself three times along the way. The control runs the
+identical code path at `sleeps = 0`.
+
+| rays | straight | consolidated | RMS | kernels |
+|---|---|---|---|---|
+| 16 | 0.13222, 3 387 | 0.13368, 3 225 | 1.011 (HELD) | 0.952 |
+| 1 | 0.23875, 5 520 | **0.21430, 3 671** | **0.898 (REFUTED)** | **0.665** |
+
+**MARL18_GRADIENT HELD at 1.432**, and it is the number that makes the
+mechanism a claim rather than a coincidence: the population saving is
+half again as large in the noisy regime as in the clean one. A re-fit that
+merely found a leaner solution would save the same either way.
+
+The one-ray trace is the staircase Christian drew, and the sleeps are
+doing the ratcheting:
+
+    wake 1  24 000   3 606   0.28004
+    SLEEP 1          3 783   0.26961     ← the sleep IMPROVED it
+    wake 2  48 000   4 011   0.22455
+    SLEEP 2          3 546   0.22828
+    wake 3  72 000   3 758   0.23232     ← learning went BACKWARDS: the hover
+    SLEEP 3          3 465   0.22565     ← and the sleep took it back
+    wake 4  96 000   3 671   0.21430
+
+At sixteen rays every sleep COSTS a little (0.16498 → 0.16533, 0.14158 →
+0.14363, 0.13450 → 0.14068) — MARL-14's generation loss with nothing to
+filter. `MARL18_POPULATION` is refuted there by two thousandths (0.952
+against a ceiling of 0.95) and comfortably held at one ray.
+
+### …and then the control refuted the phase
+
+The finding above is "consolidation is worth 10% of the accuracy at one
+ray". Two much cheaper things could produce that number, and until they
+were ruled out it read "some variance reduction helps", which nobody needs
+a second model to learn.
+
+    against the consolidated arm's 0.21430 at 3 671 kernels in 11.6 s —
+    4× the reality   0.21976 at 8 135 kernels,  8.9 s
+    rate/10          0.18474 at 3 142 kernels,  1.5 s
+
+**C1 holds and is instructive.** Four times the reality gets most of the
+way there and pays for it in TOPOLOGY: 2.2× the population. MARL-13's
+third door, open at every rate, is what makes "more samples" the wrong
+answer even when it nearly works.
+
+**C2 REFUTES the phase.** Dropping `rate_w` and `rate_geom` tenfold beats
+consolidation on accuracy, on memory and on wall clock at once, at an
+eighth of the cost. The control was written expecting a rate to close the
+weight door and leave the topology one open, because MARL-13 says "no rate
+closes that" — but MARL-13's sentence was about `rate_w`, and this moves
+`rate_geom` too. A kernel that does not chase a noise realisation
+geometrically stays where it can cover, so fewer births are needed. That
+is MARL-13 (c)'s own 11 176 → 7 113 showing up again in a place nobody
+looked for it.
+
+And it exposed a methodological error. The arms ran at G33 (d)'s
+configuration, which pins `rate_geom` to the DEFAULT deliberately, so that
+its headline is not configured from its own result. Right for G33 and
+**wrong here**: MARL-18 asks whether consolidation beats LEARNING, and
+that has to mean the best learning this repo already knows about.
+
+### G37 (c) — with the rates already right, does a sleep still buy anything?
+
+`MARL18_RATE_FIRST` was frozen in `thresholds.zig` and
+`tools/marl18_predict.py` before this ran, and it gated a decision: a
+refutation means consolidation does something no rate can, and the plan's
+§4 local micro-distillation is worth building.
+
+**REFUTED at 0.940.** At one ray with `rate_w` 0.05 and `rate_geom` 0.02,
+straight learning reaches 0.18954 with 2 984 kernels and three sleeps
+reach **0.17810 with 2 867** — six per cent of the accuracy and four of
+the memory, on top of the cheap fix.
+
+So the prediction was wrong and the direction of the error is the finding:
+the win SHRANK from 0.898 to 0.940 when the baseline was corrected, which
+is the variance story holding, and it did not go to zero. **A sleep is
+worth exactly as much as there is variance to remove** — 1.011× on a clean
+teacher, 0.940× at the right rates, 0.898× at the wrong ones — and a rate
+is the upstream way to not carry it, not a substitute for the downstream
+one.
+
+Which is the sentence the phase bought:
+
+    Turn the rates down before you consolidate. It is better and eight
+    times cheaper. Then consolidate anyway, because it still pays.
+
+**And at the right rates a sleep no longer RESTRUCTURES anything.** Overlap
+2.30 → 2.22, mean σ 0.0278 → 0.0284, population 0.961× — all within a few
+per cent. The 1.606 concentration of G37 (a) belonged to the handicapped
+regime, where a third of the population was bought on noise and there was
+something to retire. With the rates right there is almost nothing to
+retire, and what a sleep performs is a **RE-FIT**: the same population,
+better placed and better weighted, because the last fit it saw was against
+a noiseless field. Christian's edit vocabulary, on this fixture, is
+"movement" and "weight adjustment" — not merging, and not splitting.
+
+### What it costs, honestly
+
+The sleeps cost **5.6× the wall clock of the learning they improved** (8.8 s
+asleep against 1.6 s awake). That number is the pessimistic end of its
+range and the reason is worth stating: one ray a sample is the CHEAPEST
+reality that exists, about twenty marched fetches against the ~320 G33
+measured for a real estimate, so this fixture's reality is roughly sixteen
+times cheaper than a renderer's. Scale accordingly before reading anything
+into it for the plan's §10 per-frame scheduling.
+
+G37 is **79 s of suite** — (a) 29, (b) 44, (c) 19 — which is more than any
+gate the campaign has added and more than MARL-14's entry said the next
+one should assume it was entitled to. It is spent on three refutations and
+two controls, and if it needs trimming the first thing to go is (b)'s
+16-ray pair, whose only surviving job is the gradient.
+
+### What is NOT tested, and it is the thing MARL-9 would ask about
+
+One fixture, one field, STATIONARY. MARL-9's lesson stands: "a campaign
+that has only tested one kind of world cannot tell what its numbers are
+counting." Every result here is about a model carrying MEASUREMENT noise.
+The tangle Christian's plan describes — "path-dependent optimisation
+history, redundant kernels, awkward overlaps" — is what MARL-7 measured on
+a DRIFTING world, where capacity grows about a thousand kernels a move
+while accuracy stays flat and unrefinement moves it by 1%.
+
+**Distillation is a plausible candidate for the erosion mechanism MARL-7
+could not find**, and for a reason MARL-7's instrument could not see: it
+concluded "kernel death has nothing to target" because silencing old
+capacity costs 1.4–1.6× the RMS, so every kernel is individually
+load-bearing. Four overlapping kernels whose sum is smooth are all
+individually load-bearing and collectively replaceable. **A consolidation
+never chooses a victim — it declines to rebuild one**, which changes the
+unit of removal from the kernel to the local function. That is the next
+experiment, and it is a bigger one than today's.
+
+### Recorded, not built
+
+The plan's §4 (local micro-distillation) is greenlit by G37 (c)'s own rule,
+with one qualification the phase adds: at the right rates a sleep is a
+RE-FIT rather than a restructure, so the local version is a local re-fit,
+and what makes that plausible is exact locality — a region's kernels can be
+re-derived from the model's own field without disturbing anything outside
+the cutoff, which G17 (c)/(d) already check bitwise. §7–§12 (stacked
+dynamic layers, object frames, particles, per-frame budgets) are downstream
+of a drifting-world result that does not exist yet.
+
+    zig build test -Dtest-filter="G37"        # 79 s; (a) the premise, (b) the staircase and its controls, (c) the corrected fixture
+    python3 tools/marl18_predict.py           # where the numbers came from, extension included
+
+`src/marl.zig` is untouched by this phase. The additions are
+`cache.teachInto` (a split out of `teach`, so a run can be continued),
+`cache.distilEpoch` (a dream stream that differs per sleep),
+`cache.wakeSleep`, `cache.overlapOf` and `cache.meanWidth`. G34, G35 and
+G36 were re-run against the refactor and read identically, line for line.
+
 ## Where this goes, against the map the campaign measured (Tuesday 2026-09-08)
 
 Christian's list, after MARL-17: radiance fields and GI, occlusion,

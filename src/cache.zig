@@ -842,23 +842,35 @@ fn score(t: *Trained, extent: f32, invert: bool, pr: Probes) void {
     t.query_ns = @as(f64, @floatFromInt(qt.read())) / @as(f64, @floatFromInt(pr.x.len));
 }
 
+/// Observe `n` samples of the EXPENSIVE field into an EXISTING model,
+/// carrying the reality stream so a run can be stopped and continued.
+///
+/// MARL-18 needs this because its two arms must see the SAME reality in
+/// the SAME order — the only difference between them is whether the model
+/// was rebuilt from itself partway. A fresh stream per segment would make
+/// the arms differ in their data as well as their treatment, and the
+/// comparison would be measuring both.
+pub fn teachInto(model: *marl.Model, vol: *const bark.Volume, o: Options, n: u64, st: *rng.Stream) !void {
+    var ao = o.ao;
+    ao.rays = o.rays;
+    const inv = 1 / vol.extent;
+    var i: u64 = 0;
+    while (i < n) : (i += 1) {
+        const q = drawQuery(vol, o.surface_band, st);
+        const raw = aoAt(vol, ao, q, st);
+        const y = if (o.invert) 1 - raw else raw;
+        _ = try model.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, .{y});
+    }
+}
+
 /// Train from the EXPENSIVE field — the teacher's own apprenticeship.
 pub fn teach(gpa: std.mem.Allocator, vol: *const bark.Volume, o: Options, pr: Probes) !Trained {
     var t = Trained{ .model = try marl.Model.init(gpa, o.m), .samples = 0, .seconds = 0 };
     errdefer t.deinit();
     var st = rng.Stream.region(o.seed, 0x5445_4143, 0); // "TEAC"
-    var ao = o.ao;
-    ao.rays = o.rays;
-    const inv = 1 / vol.extent;
     t.samples = o.samples orelse (o.ray_budget / @max(1, o.rays));
     var timer = try std.time.Timer.start();
-    var i: u64 = 0;
-    while (i < t.samples) : (i += 1) {
-        const q = drawQuery(vol, o.surface_band, &st);
-        const raw = aoAt(vol, ao, q, &st);
-        const y = if (o.invert) 1 - raw else raw;
-        _ = try t.model.observe(.{ q[0] * inv, q[1] * inv, q[2] * inv }, .{y});
-    }
+    try teachInto(&t.model, vol, o, t.samples, &st);
     t.seconds = @as(f64, @floatFromInt(timer.read())) / 1e9;
     score(&t, vol.extent, o.invert, pr);
     return t;
@@ -875,9 +887,18 @@ pub fn teach(gpa: std.mem.Allocator, vol: *const bark.Volume, o: Options, pr: Pr
 /// dangerous, because a residual above θ might be a sampling wobble; with
 /// an exact teacher every residual above θ is real structure.
 pub fn distil(gpa: std.mem.Allocator, teacher: *marl.Model, vol: *const bark.Volume, o: Options, sopts: marl.Options, n: u64, pr: Probes) !Trained {
+    return distilEpoch(gpa, teacher, vol, o, sopts, n, pr, 0);
+}
+
+/// The same, with an EPOCH on the dream's own stream. A repeated
+/// consolidation (MARL-18) sleeps several times, and at epoch 0 every
+/// sleep would query the teacher at the identical points — which would
+/// make the later sleeps re-derivations of the earlier ones rather than
+/// fresh views of a changed field.
+pub fn distilEpoch(gpa: std.mem.Allocator, teacher: *marl.Model, vol: *const bark.Volume, o: Options, sopts: marl.Options, n: u64, pr: Probes, epoch: u64) !Trained {
     var t = Trained{ .model = try marl.Model.init(gpa, sopts), .samples = n, .seconds = 0 };
     errdefer t.deinit();
-    var st = rng.Stream.region(o.seed ^ 0x51, 0x4449_5354, 0); // "DIST"
+    var st = rng.Stream.region(o.seed ^ 0x51, 0x4449_5354, epoch); // "DIST"
     const inv = 1 / vol.extent;
     var timer = try std.time.Timer.start();
     var i: u64 = 0;
@@ -1405,4 +1426,481 @@ test "G36 a learned background is what rbf.zig has always had — and it costs e
     // …and asymptotic locality with one: the step is 1/n and the
     // disturbance is that step, so this number is about one.
     try testing.expect(scaled <= thresholds.MARL16_LOCALITY);
+}
+
+
+// ── MARL-18: consolidation ───────────────────────────────────────────
+//
+// Christian's plan for the day: once a model is built, distil it, REPLACE
+// THE MASTER WITH THE STUDENT, and resume ordinary learning — "learn,
+// accumulate interference, consolidate, resume learning from a cleaner
+// state". Memory consolidation, or optimisation garbage collection.
+//
+// The plan's premise is that MARL-14 already showed a student beating its
+// teacher on held-out error. **It did not.** Every row of G34's sweep goes
+// the other way (1.058 at matched options, rising to 1.141), and the 0.878
+// that reads like the claim is the student against a SAME-SIZED GRID — a
+// statement about the opponent, not about the teacher.
+//
+// The idea survives the correction and gets sharper for it, because
+// MARL-14 distilled a model and STOPPED. It never resumed learning. That a
+// student is worse at the instant of the copy and that it is a worse PLACE
+// TO LEARN FROM are different claims, and only the first has been run.
+//
+// `tools/marl18_predict.py` has the mechanisms. The two that matter:
+//
+//   FOR. The COVERAGE GATE is why "tangled" is a real state and not a
+//   metaphor. A birth needs surprise above θ AND no kernel reading above
+//   `coverage` within the responsibility radius — so a region that has
+//   already spent kernels CANNOT BUY MORE, however badly placed the ones
+//   it has are. It is locked by its own history. Consolidation is the only
+//   operation in this codebase that can unlock it, and it does so without
+//   choosing a victim: it does not remove kernels, it declines to rebuild
+//   them. That is precisely what MARL-7 went looking for and could not
+//   find, because it was looking for something to erode.
+//
+//   AGAINST. MARL-13 (b): on a noisy field NLMS does not converge, it
+//   hovers, at `RMS² = bias² + μ/(2−μ)·V/M`. The variance term belongs to
+//   the RATE. A consolidation changes the population and leaves μ alone,
+//   so an arm already sitting on its noise floor cannot be moved by one.
+
+/// One learn-and-consolidate run, and what it cost on both clocks.
+///
+/// The two costs are kept apart on purpose. REALITY is rays — the expense
+/// a cache exists to avoid — and it is the resource the arms are matched
+/// on. DREAM is gathers of the model's own field, which is a different and
+/// much cheaper thing, and folding the two into one "work" number would
+/// hide exactly the asymmetry that makes consolidation worth considering.
+pub const Run = struct {
+    t: Trained,
+    reality: u64 = 0,
+    dream: u64 = 0,
+    wake_s: f64 = 0,
+    sleep_s: f64 = 0,
+
+    pub fn deinit(self: *Run) void {
+        self.t.deinit();
+    }
+};
+
+/// The plan's §2 loop: learn `total/(sleeps+1)` of reality, rebuild the
+/// model from itself, learn the next segment, and so on. `sleeps = 0` is
+/// the control and runs the identical code path.
+///
+/// Both arms draw from ONE stream in one order, so the reality they see is
+/// the same sequence of the same points — the only difference between them
+/// is whether the model was rebuilt partway. A fresh stream per segment
+/// would make the arms differ in their data as well as their treatment.
+pub fn wakeSleep(
+    gpa: std.mem.Allocator,
+    vol: *const bark.Volume,
+    o: Options,
+    pr: Probes,
+    total: u64,
+    sleeps: u32,
+    dream: u64,
+    label: []const u8,
+) !Run {
+    var run = Run{ .t = .{ .model = try marl.Model.init(gpa, o.m), .samples = 0, .seconds = 0 } };
+    errdefer run.t.deinit();
+    var st = rng.Stream.region(o.seed, 0x5445_4143, 0); // "TEAC", and `teach`'s own
+    const wakes: u64 = @as(u64, sleeps) + 1;
+    const per = total / wakes;
+
+    var i: u64 = 0;
+    while (i < wakes) : (i += 1) {
+        const n = if (i + 1 == wakes) total - per * (wakes - 1) else per;
+        var wt = try std.time.Timer.start();
+        try teachInto(&run.t.model, vol, o, n, &st);
+        run.wake_s += @as(f64, @floatFromInt(wt.read())) / 1e9;
+        run.reality += n;
+        run.t.samples = run.reality;
+        score(&run.t, vol.extent, o.invert, pr);
+        std.debug.print("  G37: {s:>16}  wake {d}   reality {d:>7}   {d:>6} kernels   RMS {d:.5}\n", .{
+            label, i + 1, run.reality, run.t.kernels(), run.t.rms,
+        });
+        if (i + 1 == wakes) break;
+
+        // SLEEP. The student's options are the teacher's — this is a test
+        // of consolidation, not of coarsening, and a coarser student would
+        // be answering MARL-14's question again.
+        var stm = try std.time.Timer.start();
+        const s = try distilEpoch(gpa, &run.t.model, vol, o, o.m, dream, pr, i + 1);
+        run.sleep_s += @as(f64, @floatFromInt(stm.read())) / 1e9;
+        run.dream += dream;
+        run.t.model.deinit();
+        run.t.model = s.model; // taken, so `s` is never deinit'd
+        run.t.rms = s.rms;
+        std.debug.print("  G37: {s:>16}  SLEEP {d}  dream   {d:>7}   {d:>6} kernels   RMS {d:.5}\n", .{
+            label, i + 1, run.dream, run.t.kernels(), run.t.rms,
+        });
+    }
+    return run;
+}
+
+/// How many kernels read above `level` at a probe point, averaged.
+///
+/// `level` is the birth rule's own `coverage` and not a chosen number: a
+/// kernel covers a point exactly when it reads above it, and the coverage
+/// gate is what decides whether a crowded neighbourhood may buy any more
+/// capacity. Overlap measured at any other level would be measuring
+/// something the model does not act on.
+///
+/// O(N) per probe, which is why it is a diagnostic over 512 probes and not
+/// a query path — the same distinction `predictAll` carries.
+fn overlapOf(m: *const marl.Model, pr: Probes, extent: f32, level: f32) f64 {
+    var acc: f64 = 0;
+    const inv = 1 / extent;
+    for (pr.x) |x| {
+        const q = [3]f32{ x[0] * inv, x[1] * inv, x[2] * inv };
+        var n: u32 = 0;
+        for (m.regions) |*reg| {
+            for (reg.own.items) |ki| {
+                const k = &m.kernels.items[ki];
+                if (marl.gaussian(k.shape(), q) > level) n += 1;
+            }
+        }
+        acc += @as(f64, @floatFromInt(n));
+    }
+    return acc / @as(f64, @floatFromInt(pr.x.len));
+}
+
+/// The mean of a model's kernel widths, as σ along the shortest axis —
+/// `exp(−logd)` is a standard deviation, so a LARGER number is a wider
+/// kernel. Reported beside the overlap because "several overlapping
+/// kernels replaced by a cleaner one" should show up as fewer AND wider.
+fn meanWidth(m: *const marl.Model) f64 {
+    if (m.kernels.items.len == 0) return 0;
+    var acc: f64 = 0;
+    for (m.kernels.items) |*k| {
+        // The diagonal of L, which is `exp(logd)`; σ along an axis is its
+        // reciprocal. Read through `shape()` rather than the parameter
+        // indices, which are marl.zig's own business.
+        const l = k.shape().l;
+        acc += (1.0 / @as(f64, l[0]) + 1.0 / @as(f64, l[2]) + 1.0 / @as(f64, l[5])) / 3.0;
+    }
+    return acc / @as(f64, @floatFromInt(m.kernels.items.len));
+}
+
+test "G37 (a) a student cannot beat its teacher — and what a consolidation actually changes" {
+    // THE CORRECTION, first, because five sections of Christian's plan
+    // rest on it. The plan reads MARL-14 as having shown a student
+    // beating its teacher on held-out error. G34's own table says
+    // otherwise at every point, and this gate restates it as a CLAIM so
+    // that the plan is what refutes it rather than what assumes it.
+    //
+    // The information argument is short: a student sees only its
+    // teacher's output. It has no access to anything the teacher got
+    // wrong, so its best possible outcome is an exact copy and its actual
+    // outcome is a copy on a budget.
+    //
+    // There is exactly ONE mechanism against that, and it is the reason
+    // the one-ray teacher is here. Distillation to a smaller student is a
+    // low-pass filter, and if a teacher's error is partly high-frequency —
+    // kernels fighting, weights hovering at MARL-13's NLMS floor — a copy
+    // that cannot represent the wiggle can be closer to a smooth truth
+    // than the original. MARL-14 saw no sign of it, but its teacher was
+    // trained at sixteen rays and is nearly clean. If it exists anywhere
+    // it is at one ray, where MARL-13 measured 23% of the population
+    // bought on nothing.
+    const gpa = testing.allocator;
+    var vol = try groveVolume(gpa, GROVE_RES, GROVE_EXTENT);
+    defer vol.deinit(gpa);
+
+    var o = Options{ .samples = 96_000, .probes = 512, .surface_band = 1.0, .invert = true };
+    o.m.rate_w = 0.05;
+    var pr = try probesOf(gpa, &vol, o.ao, o.probes, o.seed, o.surface_band);
+    defer pr.deinit(gpa);
+
+    const DREAM: u64 = 150_000;
+    var best: [2]f32 = .{ 999, 999 };
+    var untangle: f64 = 999;
+
+    for ([_]u32{ 16, 1 }, 0..) |rays, ri| {
+        var to = o;
+        to.rays = rays;
+        var t = try teach(gpa, &vol, to, pr);
+        defer t.deinit();
+        const t_over = overlapOf(&t.model, pr, vol.extent, to.m.coverage);
+        std.debug.print("\n  G37 (a): {d:>2} rays — teacher {d} kernels, RMS {d:.5}, overlap {d:.2}, mean σ {d:.4} ({s})\n", .{
+            rays, t.kernels(), t.rms, t_over, meanWidth(&t.model), @tagName(builtin.mode),
+        });
+        std.debug.print("  G37 (a): {s:>22} {s:>8} {s:>10} {s:>10} {s:>9} {s:>8} {s:>9}\n", .{ "student", "kernels", "RMS", "RMS/RMS_t", "overlap", "mean σ", "untangle" });
+
+        // Matched, then the two dials MARL-14 established: a higher
+        // surprise threshold, and a coarser basis.
+        var so_theta = to.m;
+        so_theta.threshold = 0.1;
+        var so_coarse = to.m;
+        so_coarse.regions = 4;
+        const sweep = [_]struct { name: []const u8, m: marl.Options }{
+            .{ .name = "matched", .m = to.m },
+            .{ .name = "θ = 0.1", .m = so_theta },
+            .{ .name = "regions 6 → 4", .m = so_coarse },
+        };
+        for (sweep) |sw| {
+            var s = try distil(gpa, &t.model, &vol, to, sw.m, DREAM, pr);
+            defer s.deinit();
+            const s_over = overlapOf(&s.model, pr, vol.extent, to.m.coverage);
+            const kr = @as(f64, @floatFromInt(s.kernels())) / @as(f64, @floatFromInt(t.kernels()));
+            const ur = (s_over / t_over) / kr;
+            std.debug.print("  G37 (a): {s:>22} {d:>8} {d:>10.5} {d:>10.3} {d:>9.2} {d:>8.4} {d:>9.3}\n", .{
+                sw.name, s.kernels(), s.rms, s.rms / t.rms, s_over, meanWidth(&s.model), ur,
+            });
+            best[ri] = @min(best[ri], s.rms / t.rms);
+            // THE DIFF is read off the MATCHED student alone. A coarser
+            // student is a different question — of course it overlaps
+            // less, it has bigger regions — and mixing the two would let
+            // a coarsening dial answer a structural question.
+            if (std.mem.eql(u8, sw.name, "matched") and rays == 1) untangle = ur;
+        }
+    }
+
+    std.debug.print("  G37 (a): the best student over the sweep is {d:.3}× its teacher at 16 rays (≥ {d:.1} predicted, HELD) and {d:.3}× at one (≥ {d:.1}, REFUTED — Christian's premise, in the noisy regime only)\n", .{
+        best[0], thresholds.MARL18_PREMISE, best[1], thresholds.MARL18_REGULARISE,
+    });
+    std.debug.print("  G37 (a): THE DIFF, at one ray and matched options — overlap ratio over population ratio {d:.3} (≤ {d:.1} predicted, REFUTED the OTHER WAY: the student is MORE crowded per kernel, so a consolidation CONCENTRATES rather than untangles)\n", .{
+        untangle, thresholds.MARL18_UNTANGLE,
+    });
+
+    // MARL18_PREMISE HELD, and it is asserted: on a nearly-clean teacher a
+    // student cannot beat it, because it sees only the teacher's output
+    // and has no access to anything the teacher got wrong.
+    try testing.expect(best[0] >= thresholds.MARL18_PREMISE);
+
+    // MARL18_REGULARISE is REFUTED at 0.960 and is NOT asserted. What is
+    // asserted is the finding that refuted it, in its strong form: the
+    // effect is a CROSS-OVER and not a level. Distillation is a net LOSS
+    // on the clean teacher and a net GAIN on the noisy one, which is what
+    // says the mechanism is the teacher's own noise and not some general
+    // property of copying.
+    //
+    // The student fits the teacher's output, noise and all, so it cannot
+    // learn anything the teacher got wrong. The only way it can come out
+    // ahead is by FAILING to reproduce part of the teacher and being
+    // better off for the failure — which is the low-pass argument, and the
+    // sweep corroborates it: the coarsest student (1 712 kernels against
+    // 5 520) still beats the teacher, where an evidence explanation would
+    // have it lose.
+    try testing.expect(best[1] < 1.0);
+    try testing.expect(best[0] > best[1]);
+
+    // MARL18_UNTANGLE is REFUTED at 1.606 and is NOT asserted. The
+    // student sheds a THIRD of the population while raising the overlap at
+    // a probe, so what a consolidation performs is not Christian's
+    // A + B + C + D → X + Y. It is the ninth item on his list and not the
+    // eighth: low-contribution kernels are retired and the survivors sit
+    // where the queries are.
+    try testing.expect(untangle > 1.0);
+}
+
+test "G37 (b) is a consolidated model a better PLACE TO LEARN FROM?" {
+    // Christian's plan, §2, and the thing MARL-14 never ran: distil, put
+    // the student in the master's place, and CARRY ON LEARNING.
+    //
+    // Two arms on ONE reality stream in one order — the same points, the
+    // same estimates, the same total. The only difference is whether the
+    // model was rebuilt from itself three times along the way. Anything
+    // that separates them is attributable to the rebuild and to nothing
+    // else, which is why `wakeSleep` runs the control through the
+    // identical code path at `sleeps = 0`.
+    //
+    // Run at BOTH noise levels, because the population number alone
+    // cannot tell "consolidation collects capacity bought on noise" from
+    // "a re-fit happens to find a leaner solution". The noise story makes
+    // the harder prediction — that the saving GROWS with the noise —
+    // and MARL-13 measured the size of the prize: 9 923 kernels at one ray
+    // against 7 656 at sixteen for the same samples.
+    const gpa = testing.allocator;
+    var vol = try groveVolume(gpa, GROVE_RES, GROVE_EXTENT);
+    defer vol.deinit(gpa);
+
+    var o = Options{ .samples = 96_000, .probes = 512, .surface_band = 1.0, .invert = true };
+    o.m.rate_w = 0.05;
+    var pr = try probesOf(gpa, &vol, o.ao, o.probes, o.seed, o.surface_band);
+    defer pr.deinit(gpa);
+
+    const TOTAL: u64 = 96_000;
+    const SLEEPS: u32 = 3;
+    const DREAM: u64 = 150_000;
+    var kr: [2]f64 = undefined;
+    var b1_rms: f32 = 0;
+    var b1_k: u32 = 0;
+    var b1_s: f64 = 0;
+
+    for ([_]u32{ 16, 1 }, 0..) |rays, ri| {
+        var ro = o;
+        ro.rays = rays;
+        std.debug.print("\n  G37 (b): {d} rays, {d} reality samples, {d} sleeps of {d} dream samples ({s})\n", .{
+            rays, TOTAL, SLEEPS, DREAM, @tagName(builtin.mode),
+        });
+        var a = try wakeSleep(gpa, &vol, ro, pr, TOTAL, 0, DREAM, "straight");
+        defer a.deinit();
+        var b = try wakeSleep(gpa, &vol, ro, pr, TOTAL, SLEEPS, DREAM, "consolidated");
+        defer b.deinit();
+
+        kr[ri] = @as(f64, @floatFromInt(b.t.kernels())) / @as(f64, @floatFromInt(a.t.kernels()));
+        if (rays == 1) {
+            b1_rms = b.t.rms;
+            b1_k = b.t.kernels();
+            b1_s = b.wake_s + b.sleep_s;
+        }
+        std.debug.print("  G37 (b): {d:>2} rays — RMS {d:.5} → {d:.5} ({d:.3}×, ≥ {d:.1} predicted); kernels {d} → {d} ({d:.3}×, ≤ {d:.2}); {d:.1} s awake + {d:.1} s asleep against {d:.1} s\n", .{
+            rays,       a.t.rms,     b.t.rms,     b.t.rms / a.t.rms, thresholds.MARL18_STAIRCASE,
+            a.t.kernels(), b.t.kernels(), kr[ri],  thresholds.MARL18_POPULATION,
+            b.wake_s,   b.sleep_s,   a.wake_s,
+        });
+
+        // The arms are matched on REALITY, which is the expensive
+        // resource — rays are what a cache exists to avoid buying.
+        try testing.expectEqual(a.reality, b.reality);
+        try testing.expectEqual(@as(u64, 0), a.dream);
+    }
+
+    std.debug.print("  G37 (b): THE GRADIENT — the saving is {d:.3}× at 16 rays and {d:.3}× at one; ratio {d:.3} (≥ {d:.1} predicted, HELD)\n", .{
+        kr[0], kr[1], kr[0] / kr[1], thresholds.MARL18_GRADIENT,
+    });
+
+    // ── The two controls, which are the gate's ability to fail ────────
+    //
+    // The result above is that consolidation is worth 10% of the accuracy
+    // at one ray a sample. Two much cheaper things could produce that
+    // number, and until they are ruled out the finding is "some variance
+    // reduction helps", which nobody needed a second model to learn.
+    var co = o;
+    co.rays = 1;
+
+    // C1 — MORE REALITY, at roughly equal wall clock. The consolidated arm
+    // spent most of its time asleep, so the straight arm is given four
+    // times the samples instead.
+    //
+    // MARL-13 (b) says the VARIANCE half of the error cannot be bought
+    // down this way — NLMS hovers at μ/(2−μ)·V however much data arrives
+    // — but the BIAS half can, and this measures the two together. What
+    // it finds is that four times the reality gets most of the way there
+    // (0.21976 against 0.21430) and pays for it in TOPOLOGY: 8 135 kernels
+    // against 3 671. The third door, open at every rate, and it is what
+    // makes "more samples" the wrong answer even when it nearly works.
+    var c1 = co;
+    c1.samples = TOTAL * 4;
+    var more = try wakeSleep(gpa, &vol, c1, pr, TOTAL * 4, 0, DREAM, "4x reality");
+    defer more.deinit();
+
+    // C2 — A LOWER RATE, and it REFUTES the phase's headline. MARL-13 (c)
+    // measured the rate as a real door on the same noise, so a tenth of it
+    // is the cheapest possible way to buy what a sleep buys. The
+    // expectation written into this control was that a rate closes the
+    // weight door and leaves the topology one open, because MARL-13 says
+    // "no rate closes that".
+    //
+    // **It closes both.** 0.18474 at 3 142 kernels in 1.5 s, against
+    // consolidation's 0.21430 at 3 671 in 11.6 — better on accuracy,
+    // better on memory, and eight times cheaper. MARL-13's sentence was
+    // about `rate_w`; this control moves `rate_geom` too, and a kernel
+    // that does not chase a noise realisation geometrically stays where it
+    // can cover, so fewer births are needed. That is MARL-13 (c)'s own
+    // 11 176 → 7 113 showing up again.
+    //
+    // So the arms above were run against a baseline this repo already knew
+    // was not the best available: G33 (d) fixed `rate_geom` at the default
+    // ON PURPOSE, so that its headline would not be configured from its
+    // own result. For MARL-18 that choice is wrong — the question is
+    // whether consolidation beats LEARNING, and it has to be the best
+    // learning. G37 (c) re-runs it on the corrected fixture.
+    var c2 = co;
+    c2.m.rate_w = o.m.rate_w / 10;
+    c2.m.rate_geom = o.m.rate_geom / 10;
+    var slow = try wakeSleep(gpa, &vol, c2, pr, TOTAL, 0, DREAM, "rate/10");
+    defer slow.deinit();
+
+    std.debug.print("  G37 (b): CONTROLS at one ray, against the consolidated arm's {d:.5} at {d} kernels and {d:.1} s —\n", .{ b1_rms, b1_k, b1_s });
+    std.debug.print("  G37 (b):   4× the reality  {d:.5} at {d:>5} kernels, {d:.1} s — MARL-13 (b)'s hover does not decay with sample count\n", .{ more.t.rms, more.t.kernels(), more.wake_s });
+    std.debug.print("  G37 (b):   rate/10         {d:.5} at {d:>5} kernels, {d:.1} s — a rate closes the weight door and not the topology one\n", .{ slow.t.rms, slow.t.kernels(), slow.wake_s });
+
+    // C1 holds: more reality does not reach what the sleeps reached, and
+    // buys its accuracy in kernels — 2.2× the population for 2.5% more
+    // error than the consolidated arm.
+    try testing.expect(more.t.rms > b1_rms);
+    try testing.expect(more.t.kernels() > 2 * b1_k);
+
+    // C2 is the REFUTATION and it is asserted in the direction it actually
+    // went, so that a future change which makes consolidation win outright
+    // fails here and gets read rather than celebrated.
+    try testing.expect(slow.t.rms < b1_rms);
+    try testing.expect(slow.t.kernels() < b1_k);
+}
+
+test "G37 (c) …and with the rates already right, does a sleep still buy anything?" {
+    // G37 (b)'s control refuted G37 (b). Consolidation beat straight
+    // learning 0.898 at one ray — and then `rate_w`/10 with `rate_geom`/10
+    // beat consolidation on accuracy, on memory and on wall clock at once.
+    //
+    // The arms there ran at G33 (d)'s configuration, which pins
+    // `rate_geom` to the default ON PURPOSE so that its headline is not
+    // configured from its own result. That is right for G33 and wrong
+    // here: MARL-18 asks whether consolidation beats LEARNING, and that
+    // has to mean the best learning this repo knows about — MARL-13 (c)'s
+    // `rate_w` 0.05 WITH `rate_geom` 0.02, which it measured at 1.67× and
+    // 11 176 → 7 113 kernels.
+    //
+    // `MARL18_RATE_FIRST` was written into `thresholds.zig` and
+    // `tools/marl18_predict.py` before this ran, and it gates a decision:
+    // a refutation here means a sleep does something no rate can, and the
+    // plan's §4 local micro-distillation is worth building.
+    const gpa = testing.allocator;
+    var vol = try groveVolume(gpa, GROVE_RES, GROVE_EXTENT);
+    defer vol.deinit(gpa);
+
+    var o = Options{ .samples = 96_000, .probes = 512, .surface_band = 1.0, .invert = true, .rays = 1 };
+    o.m.rate_w = 0.05;
+    o.m.rate_geom = 0.02; // MARL-13 (c)'s, and the only line that differs from (b)
+    var pr = try probesOf(gpa, &vol, o.ao, o.probes, o.seed, o.surface_band);
+    defer pr.deinit(gpa);
+
+    const TOTAL: u64 = 96_000;
+    std.debug.print("\n  G37 (c): one ray, at MARL-13 (c)'s own best rates — rate_w {d}, rate_geom {d} ({s})\n", .{
+        o.m.rate_w, o.m.rate_geom, @tagName(builtin.mode),
+    });
+    var a = try wakeSleep(gpa, &vol, o, pr, TOTAL, 0, 150_000, "straight");
+    defer a.deinit();
+    var b = try wakeSleep(gpa, &vol, o, pr, TOTAL, 3, 150_000, "consolidated");
+    defer b.deinit();
+
+    std.debug.print("  G37 (c): RMS {d:.5} → {d:.5} ({d:.3}×, ≥ {d:.1} predicted — REFUTED); kernels {d} → {d} ({d:.3}×); {d:.1} s + {d:.1} s asleep against {d:.1} s\n", .{
+        a.t.rms,       b.t.rms,       b.t.rms / a.t.rms, thresholds.MARL18_RATE_FIRST,
+        a.t.kernels(), b.t.kernels(),
+        @as(f64, @floatFromInt(b.t.kernels())) / @as(f64, @floatFromInt(a.t.kernels())),
+        b.wake_s,      b.sleep_s,     a.wake_s,
+    });
+
+    // WHAT a sleep did, since at the right rates it is barely a population
+    // effect (0.961×). Christian's §3 asked for the edit vocabulary; these
+    // are the two entries on his list that a Gaussian population can show
+    // without a correspondence between kernels — widening, and crowding.
+    std.debug.print("  G37 (c): straight     overlap {d:.2}, mean σ {d:.4}\n", .{
+        overlapOf(&a.t.model, pr, vol.extent, o.m.coverage), meanWidth(&a.t.model),
+    });
+    std.debug.print("  G37 (c): consolidated overlap {d:.2}, mean σ {d:.4}\n", .{
+        overlapOf(&b.t.model, pr, vol.extent, o.m.coverage), meanWidth(&b.t.model),
+    });
+
+    // And the honest accounting, because the plan's §10 wants to schedule
+    // this per frame. One ray a sample is the CHEAPEST reality that
+    // exists: about twenty marched fetches, against the ~320 G33 measured
+    // for a real estimate. So this fixture's reality is roughly sixteen
+    // times cheaper than a renderer's, and the ratio below is the
+    // pessimistic end of the range, not the typical one.
+    std.debug.print("  G37 (c): the sleeps cost {d:.1}× the wall clock of the learning they improved — and this fixture's reality is ~16× cheaper than a renderer's, so scale accordingly\n", .{
+        b.sleep_s / b.wake_s,
+    });
+
+    // MARL18_RATE_FIRST is REFUTED at 0.940 and is NOT asserted. What is
+    // asserted is the finding: a sleep still pays ON TOP of the cheap fix,
+    // so consolidation is not merely a slow proxy for a lower rate. That
+    // is the result that makes the plan's §4 worth building.
+    try testing.expect(b.t.rms < a.t.rms);
+    // …and the win is SMALLER than it was against the handicapped baseline
+    // (0.940 against 0.898), which is the variance story holding: turn the
+    // rates down first, and there is less left for a sleep to collect.
+    try testing.expect(b.t.rms / a.t.rms > 0.898);
 }

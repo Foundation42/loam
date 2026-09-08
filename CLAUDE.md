@@ -66,6 +66,7 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G36"             # MARL-16: the BIAS term, refuted twice — zero is special because it is the model's DEFAULT
     python3 tools/q3_volume.py --res 160 --out out/oa_spirit3.vol          # MARL-17: a Quake 3 level as a bark.Volume (reads ~/dev/tessera's BSP loader)
     zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 250000   # ... the occlusion cache on it (a tool run; not gated)
+    zig build test -Dtest-filter="G37"             # MARL-18: CONSOLIDATION — distil, replace the master, resume learning. 79 s, four refutations; tools/marl18_predict.py
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -442,6 +443,88 @@ own 28.8-unit voxels. And a DENSE grid is the baseline `rbf.zig` was
 written against, not the best a renderer could do: nobody stores a dense
 grid over a level's bounding box, they cluster probes near surfaces, and
 that sparse structure is a harder opponent that was not measured.
+
+MARL-18 is Christian's wake/sleep idea: distillation as a LEARNING step
+rather than a deployment one — distil, put the student in the master's
+place, resume ordinary learning, repeat. Its stated premise was that
+MARL-14 had shown a student beating its teacher. **It had not**: every row
+of G34 goes the other way (1.058 rising to 1.141), and the 0.878 that
+reads like the claim is the student against a SAME-SIZED GRID — a
+statement about the opponent. The idea survives and sharpens, because
+MARL-14 distilled a model and STOPPED; whether a student is a worse PLACE
+TO LEARN FROM had never been run.
+
+**A student cannot beat its teacher — except when the teacher is
+noise-limited.** At sixteen rays the best of a coarseness sweep is 1.043;
+at one ray every student wins, best 0.960, and a basis with a third of the
+kernels still 0.971. A student fits its teacher's OUTPUT and has no access
+to what the teacher got wrong, so the only way it can come out ahead is by
+FAILING to reproduce part of it — the low-pass argument, whose signature is
+the shallow U across the sweep (0.962, 0.960, 0.971). **A copy is a filter,
+and it is worth something exactly when the original carries noise.**
+
+**A consolidation CONCENTRATES rather than untangles.** The edit vocabulary
+is measurable as overlap-ratio over population-ratio, so that a uniform
+thinning scores exactly 1 and Christian's A + B + C + D → X + Y would score
+below it. It scored **1.606**: at one ray the student sheds a third of the
+population while RAISING crowding per kernel. Low-contribution kernels are
+retired; the survivors sit where the queries are.
+
+**The staircase is real and it tracks the noise.** Two arms on ONE reality
+stream in one order, the control through the identical code path at
+`sleeps = 0`: at sixteen rays three sleeps COST 1.011× (generation loss
+with nothing to filter), at one ray they BUY 0.898× and a third of the
+population, and the gradient — the saving in the noisy regime over the
+clean one — is **1.432**, which is what makes the mechanism a claim rather
+than a coincidence.
+
+**Then the control refuted the phase.** Against the consolidated arm's
+0.21430 at 3 671 kernels in 11.6 s: four times the reality reaches 0.21976
+but at 2.2× the population (the third door again), and **`rate_w`/10 with
+`rate_geom`/10 reaches 0.18474 at 3 142 kernels in 1.5 s** — better on
+every axis, eight times cheaper. MARL-13's "no rate closes the topology
+door" was about `rate_w`; moving `rate_geom` closes it too, because a
+kernel that does not chase a noise realisation geometrically stays where it
+can cover. The arms had been run at G33 (d)'s configuration, which pins
+`rate_geom` to the default DELIBERATELY so its headline is not configured
+from its own result — right for G33, wrong for a phase asking whether
+consolidation beats the best available LEARNING.
+
+So G37 (c) re-ran it at MARL-13 (c)'s own rates, on a number frozen before
+the run that gated a decision. **REFUTED at 0.940**: three sleeps still buy
+six per cent of the accuracy and four of the memory on top of the cheap
+fix. The win SHRANK from 0.898 to 0.940 rather than vanishing, which is the
+one story every number here fits — **a sleep is worth exactly as much as
+there is variance to remove**, and a rate is the UPSTREAM way not to carry
+it, not a substitute for the downstream one. The sentence:
+
+    Turn the rates down before you consolidate. It is better and eight
+    times cheaper. Then consolidate anyway, because it still pays.
+
+And at the right rates a sleep no longer restructures anything — overlap
+2.30 → 2.22, mean σ 0.0278 → 0.0284, population 0.961× — so what it
+performs is a **RE-FIT**: the same population, better placed and better
+weighted, because the last fit it saw was against a noiseless field. The
+1.606 concentration belonged to the handicapped regime, where there was
+something to retire.
+
+Honest costs: the sleeps are **5.6× the wall clock of the learning they
+improve**, and that is the pessimistic end — one ray a sample is the
+cheapest reality there is (~20 marched fetches against a real estimate's
+~320), so this fixture's reality is ~16× cheaper than a renderer's. G37 is
+79 s of suite, more than any gate the campaign has added.
+
+What is NOT tested is what MARL-9 would ask about: one fixture, one field,
+STATIONARY, and every result about MEASUREMENT noise. The tangle the plan
+describes is what MARL-7 measured on a DRIFTING world — a thousand kernels
+a move at flat accuracy, unrefinement moving it by 1%. **Distillation is a
+candidate for the erosion mechanism MARL-7 could not find**, and for a
+reason MARL-7's instrument could not see: it concluded "kernel death has
+nothing to target" because every kernel is individually load-bearing, and
+four overlapping kernels whose sum is smooth are all individually
+load-bearing and collectively replaceable. **A consolidation never chooses
+a victim — it declines to rebuild one**, which moves the unit of removal
+from the kernel to the local function. That is the next experiment.
 
 Recorded, not built. QAT belongs in the DISTILLATION transfer step
 (Christian's, and right) — a student is already re-fitting against a free

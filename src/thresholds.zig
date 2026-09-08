@@ -1830,4 +1830,197 @@ pub const MARL16_KERNELS: f32 = 1.0;
 /// worth buying on a field with a large zero mass.
 pub const MARL16_LOCALITY: f32 = 1.5;
 
+// ── MARL-18 (consolidation: is a distilled student a better place to
+//    LEARN from?) ────────────────────────────────────────────────────
+//
+// Christian's plan for the day opens on a premise: "the distilled student
+// has been observed to achieve significantly lower error than the
+// teacher". **MARL-14 measured the opposite at every point of its sweep**
+// — 1.058 at matched options, rising to 1.141 at the coarsest. The number
+// that reads like the claim is 0.878, and it is the student against a
+// SAME-SIZED GRID: a statement about the opponent, not about the teacher.
+//
+// The plan survives the correction and gets better for it, because
+// MARL-14 distilled a model and STOPPED. It never resumed learning. The
+// student is worse at the instant of the copy; whether it is a better
+// PLACE TO LEARN FROM is a different claim and has never been run.
+//
+// `tools/marl18_predict.py` has the two mechanisms pulling each way. The
+// short version: the coverage gate means a region that has already spent
+// kernels CANNOT BUY MORE however badly placed they are, and consolidation
+// is the only operation in the codebase that unlocks it — it does not
+// remove kernels, it declines to rebuild them. Against that, MARL-13 (b)
+// says the error on a noisy field is variance-limited and the variance
+// term belongs to the RATE, which a consolidation does not touch.
+
+/// G37: RMS(student)/RMS(teacher) at matched options on the same probes,
+/// sixteen rays. PROPOSED as a FLOOR at parity.
+///
+/// A student sees only its teacher's output, so it has no access to
+/// anything the teacher got wrong: its best case is an exact copy and its
+/// actual case is a copy on a budget. This restates MARL-14's 1.058 as a
+/// CLAIM rather than an observation, so that the plan's premise is what
+/// refutes it.
+///
+/// **HELD, at 1.043.** Teacher 3 387 kernels at 0.13222; the best of a
+/// three-point coarseness sweep is 3 228 kernels at 0.13789. MARL-14's
+/// 1.058 reproduces on a fresh fixture.
+pub const MARL18_PREMISE: f32 = 1.0;
+
+/// G37: the same ratio at ONE RAY a sample, minimised over a coarseness
+/// sweep. PROPOSED as a FLOOR at parity, and it is the one mechanism by
+/// which the plan's premise could be right.
+///
+/// Distillation to a SMALLER student is a low-pass filter. If a teacher's
+/// error against truth is partly high-frequency — kernels fighting, weights
+/// hovering at MARL-13's NLMS floor — then a copy that cannot represent the
+/// wiggle is closer to a smooth truth than the original was. That is the
+/// textbook regularisation argument for distillation, and it is what
+/// "discarding optimisation baggage" would look like as a number.
+///
+/// MARL-14 saw no sign of it, but its teacher was trained at sixteen rays
+/// and is nearly clean. If it exists anywhere it is at one ray.
+///
+/// **REFUTED, at 0.960 — and this is Christian's premise, in the noisy
+/// regime only.** Teacher 5 520 kernels at 0.23875; matched 0.962, θ = 0.1
+/// 0.960, and a basis with a THIRD of the kernels (1 712) still 0.971.
+///
+/// The mechanism is the low-pass one and the sweep is its signature: a
+/// shallow U with a minimum at intermediate capacity, which is a
+/// bias-variance curve rather than a monotone saving. A student fits its
+/// teacher's OUTPUT and has no access to anything the teacher got wrong,
+/// so the only way it can come out ahead is by FAILING to reproduce part
+/// of it and being better off for the failure.
+///
+/// **A copy is a filter, and it is worth something exactly when the
+/// original is carrying noise.**
+pub const MARL18_REGULARISE: f32 = 1.0;
+
+/// G37, THE STAIRCASE: RMS(consolidated)/RMS(straight) at equal reality
+/// samples on identical streams. PROPOSED as a FLOOR at parity.
+///
+/// The plan's central claim is that periodic consolidation escapes
+/// learning plateaus. The floor says it does not, on the grounds of
+/// MARL-13 (b): on a stationary field the error is variance-limited,
+/// `RMS² = bias² + μ/(2−μ)·V/M`, and the variance term belongs to the rate.
+/// Each sleep pays MARL-14's 1.058 and buys back only what more
+/// updates-per-kernel are worth, which on a converged arm is little.
+///
+/// Stated as a floor so that the plan refutes it rather than confirming it.
+///
+/// **REFUTED at one ray, at 0.898; HELD at sixteen, at 1.011.** Three
+/// sleeps take 0.23875 to 0.21430 and 5 520 kernels to 3 671 on the noisy
+/// field, and cost 1.1% on the clean one where there is nothing to filter.
+/// Christian's staircase exists, and it exists where the noise is.
+///
+/// The control then refuted the phase — see `MARL18_RATE_FIRST`.
+pub const MARL18_STAIRCASE: f32 = 1.0;
+
+/// G37: K(consolidated)/K(straight) at equal reality samples. PROPOSED as
+/// a CEILING at 0.95 — the minimum claim, that repetition does not erase
+/// MARL-14's one-shot 6% saving.
+///
+/// **REFUTED at sixteen rays by two thousandths (0.952), and held with
+/// room at one (0.665).** Stated unconditionally, so a marginal miss in
+/// the clean regime refutes it; the finding underneath is that the saving
+/// is a function of how much noise the population was bought on, which is
+/// `MARL18_GRADIENT`'s business and not this one's.
+pub const MARL18_POPULATION: f32 = 0.95;
+
+/// G37, THE GRADIENT: the population saving at sixteen rays over the
+/// saving at one. PROPOSED as a FLOOR at parity.
+///
+/// The population number alone cannot tell "consolidation collects
+/// capacity bought on NOISE" from "a re-fit happens to find a leaner
+/// solution". The noise story makes a second and harder prediction: the
+/// saving must GROW with the noise, because that is what there is more of
+/// to collect. MARL-13 measured the prize — 9 923 kernels at one ray
+/// against 7 656 at sixteen for the same samples, 23% bought on nothing.
+///
+/// A flat gradient refutes the mechanism while leaving the population
+/// number intact, which is exactly the confound worth a second arm.
+///
+/// **HELD, at 1.432.** 0.952× at sixteen rays against 0.665× at one. The
+/// population saving is half again as large in the noisy regime, which is
+/// what makes the mechanism a claim rather than a coincidence: a re-fit
+/// that merely found a leaner solution would save the same either way.
+pub const MARL18_GRADIENT: f32 = 1.0;
+
+/// G37, THE DIFF (the plan's §3): overlap(student)/overlap(teacher) over
+/// K(student)/K(teacher). PROPOSED as a CEILING at parity.
+///
+/// Christian asked what edits a distillation performs. Kernel identity
+/// cannot answer it — a student shares none — so the unit is OVERLAP: how
+/// many kernels read above a level at a query point. The trap is that
+/// overlap falls when population falls for no structural reason, so the
+/// quantity under test is the RATIO OF RATIOS. At 1 the population thinned
+/// uniformly and nothing was untangled; below 1 crowded neighbourhoods
+/// were preferentially thinned, which is A + B + C + D → X + Y and is
+/// Christian's picture.
+///
+/// **REFUTED, at 1.606 — and refuted the OTHER WAY.** At one ray and
+/// matched options the student sheds a THIRD of the population while
+/// RAISING the crowding per kernel. **A consolidation does not untangle,
+/// it CONCENTRATES**: the ninth item on Christian's list rather than the
+/// eighth, low-contribution kernels retired and the survivors left where
+/// the queries are.
+///
+/// And at the RIGHT rates it does neither — G37 (c) measures overlap
+/// 2.30 → 2.22 and mean σ 0.0278 → 0.0284, all within a few per cent. The
+/// 1.606 belongs to the handicapped regime, where a third of the
+/// population was bought on noise and there was something to retire.
+pub const MARL18_UNTANGLE: f32 = 1.0;
+
+/// G37 (c): RMS(consolidated)/RMS(straight) at one ray with `rate_w` 0.05
+/// AND `rate_geom` 0.02 — MARL-13 (c)'s own best rates. PROPOSED as a
+/// FLOOR at parity, and written AFTER G37 (a) and (b) ran.
+///
+/// (b) refuted MARL18_STAIRCASE at 0.898 and held MARL18_GRADIENT at
+/// 1.432: three sleeps beat straight learning by a tenth of the accuracy
+/// and a third of the population on a one-ray field, and the saving tracks
+/// the noise. Then the control refuted the phase: dropping both rates
+/// tenfold reaches 0.18474 at 3 142 kernels in 1.5 s, against
+/// consolidation's 0.21430 at 3 671 in 11.6.
+///
+/// Those arms ran at G33 (d)'s configuration, which pins `rate_geom` to
+/// the default DELIBERATELY so that its headline is not configured from
+/// its own result. Right for G33; wrong here, because the question is
+/// whether consolidation beats LEARNING and that has to mean the best
+/// learning this repo knows about.
+///
+/// So: with the rates already right, does a sleep still buy anything? Every
+/// number in (a) and (b) is consistent with one story — a sleep removes
+/// the MODEL'S OWN VARIANCE and is worth exactly as much as there is
+/// variance to remove (1.011× on a clean teacher, 0.898× on a noisy one,
+/// the gradient at 1.432). A rate is the other way not to carry variance
+/// and it acts UPSTREAM: it stops the variance entering rather than
+/// removing it afterwards. So there should be little left to collect, and
+/// MARL-14's 1.058 generation cost should dominate as it does at sixteen
+/// rays.
+///
+/// This number gates a decision. If it is REFUTED — a sleep still pays on
+/// top of the right rates — then consolidation does something no rate can
+/// and the plan's §4 local micro-distillation is worth building.
+///
+/// **REFUTED, at 0.940.** Straight learning reaches 0.18954 with 2 984
+/// kernels; three sleeps reach 0.17810 with 2 867 — six per cent of the
+/// accuracy and four of the memory, ON TOP of the cheap fix.
+///
+/// The direction of the error is the finding: the win SHRANK from 0.898 to
+/// 0.940 when the baseline was corrected, and did not vanish. Every number
+/// in G37 fits one story — **a sleep is worth exactly as much as there is
+/// variance to remove** (1.011× on a clean teacher, 0.940× at the right
+/// rates, 0.898× at the wrong ones) — and a rate is the UPSTREAM way not
+/// to carry variance, not a substitute for the downstream one.
+///
+///     Turn the rates down before you consolidate. It is better and eight
+///     times cheaper. Then consolidate anyway, because it still pays.
+///
+/// So the decision this number gated goes to §4: consolidation does
+/// something no rate can. With one qualification the measurement adds — at
+/// the right rates a sleep is a RE-FIT and not a restructure, so the local
+/// version is a local RE-FIT, and what makes that plausible is exact
+/// locality, which G17 (c)/(d) already check bitwise.
+pub const MARL18_RATE_FIRST: f32 = 1.0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
