@@ -459,6 +459,15 @@ of 13–17, which would waste most of the levels on outliers.
 the mutation that paid for each gate. Same rules as rill's ledger, restated
 at its head. Docs ride the same commit as the code they describe.
 
+`docs/marl-talk.html` — the campaign written up as a GDC-style talk, for
+sharing outside the repo. Self-contained: no build step, open it in a
+browser. Its hero is a LIVE two-dimensional MARL — the same birth rule, the
+same NLMS attribution, the same responsibility radius — rendered by
+accumulating each kernel over its own cutoff box, which is the locality
+argument the whole technique rests on. Every figure in it is a measurement
+from a gate in this repo. Published at
+https://claude.ai/code/artifact/0fd1946b-9a53-482a-8c7e-82a1ed3871df
+
 ## House style
 
 Write the reasoning into the code. A gate's comment should name the bug it

@@ -1,0 +1,771 @@
+<title>A Level in Two Kilobytes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800&family=Newsreader:opsz,wght@6..72,300;6..72,400;6..72,500&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+:root {
+  --ground:      #eceef0;
+  --ground-sunk: #e2e5e8;
+  --panel:       #f7f8f9;
+  --ink:         #14181c;
+  --ink-soft:    #3c454b;
+  --muted:       #6b7378;
+  --rule:        #d3d7db;
+  --rule-soft:   #e0e3e6;
+  --signal:      #c1521f;
+  --signal-dim:  #e8d6cb;
+  --instrument:  #22706e;
+  --instr-dim:   #cfe0df;
+  --field-lo:    #171d21;
+  --field-hi:    #e58a4a;
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "Newsreader", Georgia, "Times New Roman", serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --col: 34rem;
+  --wide: 62rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0f1418;
+    --ground-sunk: #0a0e11;
+    --panel:       #161c21;
+    --ink:         #e6eaec;
+    --ink-soft:    #b6c0c5;
+    --muted:       #838f95;
+    --rule:        #28323a;
+    --rule-soft:   #1e262c;
+    --signal:      #e8834a;
+    --signal-dim:  #3a2418;
+    --instrument:  #5cb6b1;
+    --instr-dim:   #14322f;
+    --field-lo:    #0b0f12;
+    --field-hi:    #f0a367;
+  }
+}
+:root[data-theme="dark"] {
+  --ground:      #0f1418;
+  --ground-sunk: #0a0e11;
+  --panel:       #161c21;
+  --ink:         #e6eaec;
+  --ink-soft:    #b6c0c5;
+  --muted:       #838f95;
+  --rule:        #28323a;
+  --rule-soft:   #1e262c;
+  --signal:      #e8834a;
+  --signal-dim:  #3a2418;
+  --instrument:  #5cb6b1;
+  --instr-dim:   #14322f;
+  --field-lo:    #0b0f12;
+  --field-hi:    #f0a367;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 1.0625rem;
+  line-height: 1.65;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: var(--wide); margin: 0 auto; padding: 0 1.5rem; }
+.col { max-width: var(--col); }
+
+h1, h2, h3, .eyebrow, .num, th, .btn { font-family: var(--display); }
+
+h1 {
+  font-weight: 800;
+  font-size: clamp(2.6rem, 7vw, 4.6rem);
+  line-height: 0.98;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+  margin: 0;
+}
+h2 {
+  font-weight: 800;
+  font-size: clamp(1.5rem, 3.2vw, 2.05rem);
+  line-height: 1.12;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+  margin: 0;
+}
+h3 {
+  font-weight: 600;
+  font-size: 1.0625rem;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+p { margin: 0; }
+p + p { margin-top: 0.9rem; }
+
+.eyebrow {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--signal);
+}
+.lede {
+  font-size: 1.25rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  font-weight: 300;
+}
+strong { font-weight: 500; color: var(--ink); }
+em { font-style: italic; }
+code, .mono { font-family: var(--mono); font-size: 0.875em; font-variant-numeric: tabular-nums; }
+code { color: var(--instrument); }
+
+a { color: var(--signal); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+
+/* ── hero ────────────────────────────────────────────────────────── */
+.hero { border-bottom: 1px solid var(--rule); background: var(--ground-sunk); }
+.hero-in {
+  display: grid;
+  gap: 2.5rem 3rem;
+  grid-template-columns: 1fr;
+  padding: 3.5rem 0 3rem;
+  align-items: center;
+}
+@media (min-width: 62rem) { .hero-in { grid-template-columns: 1.05fr 0.95fr; } }
+
+.hero-copy { display: flex; flex-direction: column; gap: 1.25rem; }
+.hero h1 span { color: var(--signal); }
+
+figure.field { margin: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border: 1px solid var(--rule);
+  background: var(--field-lo);
+}
+figcaption {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+figcaption b { color: var(--instrument); font-weight: 500; }
+
+/* ── sections ────────────────────────────────────────────────────── */
+section { padding: 3.25rem 0; border-bottom: 1px solid var(--rule-soft); }
+.sec-head { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem; }
+.stack { display: flex; flex-direction: column; gap: 1.5rem; }
+
+/* ── the rule callout ────────────────────────────────────────────── */
+.rule-box {
+  border-left: 3px solid var(--signal);
+  padding: 0.15rem 0 0.15rem 1.4rem;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 1.2rem;
+  line-height: 1.35;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+
+/* ── data tables ─────────────────────────────────────────────────── */
+.tbl-shell { overflow-x: auto; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+caption {
+  text-align: left;
+  font-family: var(--display);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-bottom: 0.7rem;
+}
+th {
+  text-align: right;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 0 0.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+th:first-child, td:first-child { text-align: left; white-space: normal; }
+td { text-align: right; padding: 0.5rem 0; border-bottom: 1px solid var(--rule-soft); }
+td:first-child { font-family: var(--body); font-size: 0.98rem; padding-right: 1.5rem; }
+th + th, td + td { padding-left: 1.4rem; }
+tr.hi td { color: var(--signal); font-weight: 700; }
+tr.hi td:first-child { font-weight: 500; }
+tr.base td { color: var(--muted); }
+tbody tr:last-child td { border-bottom: none; }
+
+/* ── stat strip ──────────────────────────────────────────────────── */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+}
+.stat { background: var(--ground); padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.num {
+  font-size: 1.85rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--signal);
+}
+.stat span { font-size: 0.78rem; line-height: 1.35; color: var(--muted); font-family: var(--body); }
+
+/* ── kernel spec ─────────────────────────────────────────────────── */
+.spec {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  padding: 1.25rem 1.4rem;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.9;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.1rem 1.5rem;
+  overflow-x: auto;
+}
+.spec dt { color: var(--instrument); white-space: nowrap; }
+.spec dd { margin: 0; color: var(--ink-soft); }
+
+/* ── pipeline ────────────────────────────────────────────────────── */
+.pipe { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); grid-template-columns: 1fr; }
+@media (min-width: 48rem) { .pipe { grid-template-columns: repeat(4, 1fr); } }
+.step { background: var(--ground); padding: 1.1rem 1.2rem; display: flex; flex-direction: column; gap: 0.45rem; }
+.step.out { background: var(--signal-dim); }
+.step .sz { font-family: var(--display); font-weight: 800; font-size: 1.5rem; letter-spacing: -0.03em; color: var(--ink); }
+.step.out .sz { color: var(--signal); }
+.step .lbl { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.step .det { font-size: 0.85rem; line-height: 1.45; color: var(--ink-soft); }
+
+/* ── application list ────────────────────────────────────────────── */
+.apps { display: grid; gap: 1.5rem; grid-template-columns: 1fr; }
+@media (min-width: 44rem) { .apps { grid-template-columns: 1fr 1fr; } }
+.app { display: flex; flex-direction: column; gap: 0.4rem; padding-top: 0.9rem; border-top: 2px solid var(--rule); }
+.app.proven { border-top-color: var(--signal); }
+.app h3 { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.tag {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--instr-dim);
+  background: var(--instr-dim);
+  color: var(--instrument);
+  white-space: nowrap;
+}
+.tag.p { border-color: var(--signal); background: transparent; color: var(--signal); }
+.app p { font-size: 0.95rem; line-height: 1.55; color: var(--ink-soft); }
+
+/* ── open questions ──────────────────────────────────────────────── */
+.open { display: flex; flex-direction: column; gap: 1.1rem; }
+.q { display: grid; grid-template-columns: auto 1fr; gap: 1rem; align-items: start; }
+.q .mk { font-family: var(--mono); font-size: 0.75rem; color: var(--signal); padding-top: 0.35rem; }
+.q p { font-size: 0.98rem; }
+
+footer { padding: 2.5rem 0 3.5rem; color: var(--muted); font-size: 0.85rem; }
+footer p + p { margin-top: 0.5rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+</style>
+
+<header class="hero">
+  <div class="wrap hero-in">
+    <div class="hero-copy">
+      <p class="eyebrow">Learned spatial fields for real-time graphics</p>
+      <h1>A level in<br>two <span>kilobytes</span></h1>
+      <p class="lede">Ambient occlusion for a whole Quake&nbsp;3 deathmatch map, stored as 340 anisotropic Gaussians in 2.3&nbsp;KiB — beating a same-sized volume texture by 2.4×, with C∞ smoothness and a free LOD chain.</p>
+      <p style="font-size:0.95rem;color:var(--muted)">Here is the same algorithm running in two dimensions. It starts empty. Every dot is a kernel it decided to buy.</p>
+    </div>
+    <figure class="field">
+      <canvas id="c" width="720" height="520" aria-label="A live two-dimensional version of the learner: kernels appear where the field surprises it"></canvas>
+      <figcaption>
+        <span>live · 2-D · same birth rule, same attribution</span>
+        <span><b id="k">0</b> kernels · <b id="n">0</b> samples · error <b id="e">—</b></span>
+      </figcaption>
+    </figure>
+  </div>
+</header>
+
+<main class="wrap">
+
+<section>
+  <div class="col stack">
+    <div class="sec-head">
+      <p class="eyebrow">The problem</p>
+      <h2>Spatial fields are everywhere, and we store them all the same way</h2>
+    </div>
+    <p>Occlusion. Irradiance. Material blends. Signed distance for collision. A modern renderer is full of functions of position that are expensive to evaluate and cheap to look up, so we bake them — and almost always into a dense grid. A 3-D texture, uniform cells, trilinear filtering.</p>
+    <p>Which is a strange choice, when you look at what those fields actually are. Take ambient occlusion in a deathmatch level. The map is <strong>3.9% solid</strong>. Every shading point sits within a couple of voxels of a surface. The rest of the bounding box — the overwhelming majority of it — is either open air where nothing is occluded, or rock where nothing is lit.</p>
+    <p>A dense grid spends its memory uniformly on a field that is not remotely uniform. At the budget where a learned field is still doing useful work, the grid it is competing against has 184-unit cells and is <em>worse than predicting a single constant everywhere.</em></p>
+    <div class="rule-box">A learned sparse field beats a dense grid when the interesting set is sparse in the domain — and loses when the field is non-trivial everywhere.</div>
+    <p>That rule is the useful part of this whole project. It is predictive, it decides in advance whether the technique is worth reaching for, and it has been measured on two unrelated pieces of geometry.</p>
+  </div>
+</section>
+
+<section>
+  <div class="stack">
+    <div class="col sec-head">
+      <p class="eyebrow">The constraint</p>
+      <h2>You get each sample once</h2>
+    </div>
+    <div class="col stack">
+      <p>Here is what makes this different from fitting a neural field offline. A cache sample is <em>expensive</em> — one ambient-occlusion estimate is 16 rays × 20 marched steps, 320 fetches of the occluder. And it arrives wherever the renderer happened to ask.</p>
+      <p>You cannot shuffle it. You cannot epoch over it. It is not a dataset, it is a stream. A batch optimiser that re-reads its pool sixty times is not a slower option here; it is not an option.</p>
+      <p>And the samples are <strong>noisy</strong>. Monte-Carlo occlusion is a Binomial estimate — its standard deviation is <code>√(p(1−p)/M)</code>, which is a half at one ray and a sixteenth at sixty-four. So the learner has to tell structure from sampling wobble, online, without ever seeing the same point twice.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="stack">
+    <div class="col sec-head">
+      <p class="eyebrow">How it works</p>
+      <h2>Anisotropic Gaussians, born where the field surprises you</h2>
+    </div>
+    <div class="col stack">
+      <p>The model is a sum of anisotropic Gaussians. Each carries a centre, a lower-triangular factor of its precision matrix — so it can be an ellipsoid at any orientation, which is what lets a handful of kernels cover a wall or a vein instead of a hundred spheres — and one weight per channel.</p>
+    </div>
+    <div class="col">
+      <dl class="spec">
+        <dt>ŷ(q)</dt><dd>= Σ wᵢ · exp(−½ |Lᵀᵢ (q − μᵢ)|²)</dd>
+        <dt>μ</dt><dd>centre, 3 floats</dd>
+        <dt>L</dt><dd>precision factor, 3 log-diagonal + 3 off-diagonal</dd>
+        <dt>w</dt><dd>one weight per channel, C floats</dd>
+        <dt>CUTOFF</dt><dd>32 — a hard zero beyond √32 ≈ 5.657 widths</dd>
+      </dl>
+    </div>
+    <div class="col stack">
+      <h3>Locality is exact, not approximate</h3>
+      <p>That cutoff is the load-bearing design decision. Beyond √32 Mahalanobis widths a kernel returns <em>exactly zero</em> — not a small number, zero. Kernels are owned by the region holding their centre, and every shape is projected after each update so its cutoff box reaches at most one region edge.</p>
+      <p>So a 27-region gather is not an approximation of the sum over the model. It <strong>is</strong> the sum over the model, and one learning event is structurally incapable of disturbing a distant part of the level. Not "empirically small" — provably zero, and checked bitwise.</p>
+
+      <h3>Learning: attribution, then a natural gradient</h3>
+      <p>Each sample computes a residual, and that residual is shared among the kernels responsible for it in proportion to how much each contributed — normalised least-mean-squares, <code>aᵢ = e·gᵢ / Σgⱼ²</code>.</p>
+      <p>The pretty part is the geometry. The natural gradient on a centre — the gradient in the kernel's <em>own</em> metric rather than the world's — collapses to <code>Δμ ∝ −(w·a)·d</code>. A kernel that under-reads at a point simply moves toward that point, by its share and no more. No matrix, no units to get wrong.</p>
+
+      <h3>Topology is discovered</h3>
+      <p>Nobody places the kernels. When a sample surprises the model by more than a threshold <em>and</em> no existing kernel covers it, a new one is born right there, weighted to answer that sample exactly. Descent then has to keep it honest everywhere else it reaches.</p>
+      <p>That is why capacity ends up where the structure is, and why the open air costs nothing: a model that predicts zero is never surprised by a field that is zero.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="stack">
+    <div class="col sec-head">
+      <p class="eyebrow">Multi-channel</p>
+      <h2>Nine channels for the price of one</h2>
+    </div>
+    <div class="col stack">
+      <p>The geometry is the expensive part — a centre and a shape is nine floats, a weight is one. So a set carrying nine channels shares one centre and one shape between them and pays for the geometry <em>once</em>.</p>
+      <p>That is not a hope, it is a measurement. Fitting nine material channels instead of one costs <strong>0.3% more kernels</strong>, because a birth is gated by geometric coverage and coverage knows nothing about channels. And the first channel's own accuracy actually improves slightly for having eight passengers — they are extra constraints on where a centre belongs, and they agree.</p>
+    </div>
+    <div class="col stats">
+      <div class="stat"><span class="num">0.997</span><span>kernels at 9 channels ÷ kernels at 1</span></div>
+      <div class="stat"><span class="num">18</span><span>floats a kernel, against 90 for nine separate models</span></div>
+      <div class="stat"><span class="num">5×</span><span>smaller than fitting each channel alone</span></div>
+    </div>
+    <div class="col stack">
+      <p>One gotcha worth carrying away if you build this: the geometry descends on the <em>sum</em> over channels of each weight's attribution, and that sum grows as <strong>√C</strong>. Use the single-channel learning rate at nine channels and it diverges. Divide by √C and it is stable.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="stack">
+    <div class="col sec-head">
+      <p class="eyebrow">Distillation</p>
+      <h2>Once it is built, it is a free oracle</h2>
+    </div>
+    <div class="col stack">
+      <p>Here is the idea that turned out to matter most, and it is embarrassingly simple. Once you have a trained model, <em>sample it</em> to train another one.</p>
+      <p>A teacher is two things no real field ever is. It is <strong>noiseless</strong> — a deterministic sum of Gaussians, so the student never confuses sampling wobble for structure. And it is <strong>unlimited</strong> — you can query it anywhere, as often as you like, for the cost of one gather instead of 320 marched rays.</p>
+      <p>Which means the student can be given a budget and told to hit it. Raise its surprise threshold and it simply stops buying kernels once it is within that of its teacher. Give it a coarser region grid and it uses bigger kernels and fewer of them.</p>
+    </div>
+    <div class="col tbl-shell">
+      <table>
+        <caption>Distilling a 3 513-kernel teacher · error measured against the true field, never against the teacher</caption>
+        <thead><tr><th>student</th><th>kernels</th><th>of teacher</th><th>error cost</th></tr></thead>
+        <tbody>
+          <tr><td>same settings</td><td>3 292</td><td>0.937</td><td>1.058×</td></tr>
+          <tr><td>threshold ×5</td><td>2 512</td><td>0.715</td><td>1.091×</td></tr>
+          <tr class="hi"><td>threshold ×10</td><td>1 612</td><td>0.459</td><td>1.141×</td></tr>
+          <tr><td>coarser basis</td><td>814</td><td>0.232</td><td>1.231×</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="col stack">
+      <p><strong>Halving the population costs 14% of the accuracy.</strong> A quarter of the memory costs 23%. That is a dial you can turn per-platform, per-distance, per-anything.</p>
+      <h3>And it does not degrade under iteration</h3>
+      <p>The usual worry about distilling a distillation is generation loss compounding. It does not — it <em>decays</em>. The first copy costs 1.058×, the second costs 1.036×. The reason is structural: the teacher is a sum of anisotropic Gaussians, which is exactly what the student can represent. The truth is not. The first copy pays a representation cost; the second is fitting something it can reproduce perfectly given enough kernels.</p>
+      <p>So a distillation chain is a genuine LOD ladder. Every level is C∞ smooth rather than blocky, and because a weighted blend of two Gaussian sets is just another Gaussian set, cross-fading between levels is exact and costs nothing.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="stack">
+    <div class="col sec-head">
+      <p class="eyebrow">Quantization</p>
+      <h2>A kernel ships in 6.75 bytes</h2>
+    </div>
+    <div class="col stack">
+      <p>Ten floats a kernel is forty bytes, and nobody ships forty bytes. The interesting question is which of those numbers actually need precision.</p>
+      <p>Starving each field to eight bits on its own, with the others left in full float, gives a clear answer:</p>
+    </div>
+    <div class="col tbl-shell">
+      <table>
+        <caption>Cost of eight bits, per field, measured alone</caption>
+        <thead><tr><th>field</th><th>span</th><th>added error</th></tr></thead>
+        <tbody>
+          <tr class="hi"><td>centre</td><td>32.0 (the whole extent)</td><td>0.01872</td></tr>
+          <tr><td>log-width</td><td>1.0361</td><td>0.00412</td></tr>
+          <tr><td>off-diagonal</td><td>1.1304</td><td>0.00312</td></tr>
+          <tr class="base"><td>weight</td><td>1.8741</td><td>0.00000</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="col stack">
+      <p>Two things stand out. The <strong>weight costs nothing at all</strong> — the field you would most expect to be fragile, because neighbouring kernels cancel. And the centre is the only expensive one, but its cost is a <em>span</em> problem, not a sensitivity problem: it is being quantized over the whole level.</p>
+      <p>A kernel's centre is inside its owning region by definition. Store it relative to that region instead, and the span drops by the region count for free — the kernels are already written grouped by region, so all you add is a count per region.</p>
+      <p>That lands the whole thing at <strong>54 bits — 6.75 bytes — a kernel, at no measurable accuracy cost.</strong> A 5.9× saving, where the same budget with absolute centres costs 8.6%.</p>
+      <h3>The nice surprise</h3>
+      <p>An adaptive basis compresses <em>better</em> than a uniform one, and the log-width span is why. It measures 1.04 nats — a quarter of the range the clamp allows. An adaptive learner refines by <em>placing more kernels</em>, not by making them wildly different sizes, so the population stays tightly clustered in scale and never needs the dynamic range. A fixed-count basis covering the same detail would have to spread its widths, and would pay for it in bits.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="stack">
+    <div class="sec-head col">
+      <p class="eyebrow">End to end</p>
+      <h2>oa_spirit3, from bake to shipped asset</h2>
+    </div>
+    <div class="col stack">
+      <p>An OpenArena deathmatch map, 2176 × 4608 × 1600 units, voxelised from its collision brushes. Occlusion queried where a renderer actually shades — within two voxels of a surface. Every arm gets the same ray budget.</p>
+      <p>The honest baseline first: <strong>predicting the mean everywhere scores 0.26448.</strong> That is what everything below has to beat, and quoting an RMS without it is quoting half a result.</p>
+    </div>
+    <div class="pipe">
+      <div class="step">
+        <span class="lbl">Bake</span>
+        <span class="sz">63.0 KiB</span>
+        <span class="det">1 614 kernels learned online from 250 000 one-shot samples. Error 0.12011 — 2.20× better than a constant.</span>
+      </div>
+      <div class="step">
+        <span class="lbl">Distil</span>
+        <span class="sz">13.3 KiB</span>
+        <span class="det">340 kernels on a coarser basis, taught by the master. Error 0.14649.</span>
+      </div>
+      <div class="step out">
+        <span class="lbl">Quantize → ship</span>
+        <span class="sz">2.3 KiB</span>
+        <span class="det">Same 340 kernels at 54 bits each. Error 0.15807, still 1.67× better than a constant.</span>
+      </div>
+      <div class="step">
+        <span class="lbl">A grid at 2.0 KiB</span>
+        <span class="sz">8³ cells</span>
+        <span class="det">Error 0.37835 — <strong>worse than predicting the mean.</strong> Trilinear over 184-unit cells adds error to a constant.</span>
+      </div>
+    </div>
+    <div class="col stats">
+      <div class="stat"><span class="num">27×</span><span>smaller than the master, for 1.32× the error</span></div>
+      <div class="stat"><span class="num">0.418</span><span>of a same-sized grid's error</span></div>
+      <div class="stat"><span class="num">0.589</span><span>of the grid's error at full size</span></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="stack">
+    <div class="col sec-head">
+      <p class="eyebrow">Where to point it</p>
+      <h2>Applications</h2>
+    </div>
+    <div class="apps">
+      <div class="app proven">
+        <h3>Occlusion caches <span class="tag p">measured</span></h3>
+        <p>The worked example above. Sparse in the domain by construction, because shading points live on surfaces and surfaces are a 2-D set in a 3-D world.</p>
+      </div>
+      <div class="app proven">
+        <h3>Procedural materials <span class="tag p">measured</span></h3>
+        <p>Albedo, roughness, metalness and emissive as nine channels on one geometry — a marble's veins packed into Gaussians instead of a giant volume texture. Veins are 9–28% of the block, comfortably inside the rule.</p>
+      </div>
+      <div class="app">
+        <h3>Radiance &amp; GI <span class="tag">strong fit</span></h3>
+        <p>RGB is three channels, spherical harmonics are nine or twenty-seven, and channels are nearly free. Watch the √C rate correction and normalise per band. Best where geometry is dense — contact shadows, corners, clutter.</p>
+      </div>
+      <div class="app">
+        <h3>Ray importance sampling <span class="tag">strong fit</span></h3>
+        <p>A distribution over directions per position looks five-dimensional, but its SH coefficients are just <em>channels</em> on a 3-D field. Clamp and renormalise on read, as the material path already does for its blend.</p>
+      </div>
+      <div class="app">
+        <h3>Collision proxies <span class="tag">next</span></h3>
+        <p>The best fit on paper — a surface is maximally sparse in the volume, distillation gives proxies at any budget, and C∞ means continuous normals for free. One trap: zero means "on the surface", and zero is what the model returns where it has learned nothing. Learn a narrow band instead, and read the surface off its crest.</p>
+      </div>
+      <div class="app">
+        <h3>Level of detail <span class="tag">free</span></h3>
+        <p>Falls straight out of distillation. Smooth at every level rather than blocky, exact cross-fades between them, and roughly 25× off the master end to end for about a quarter more error.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="col stack">
+    <div class="sec-head">
+      <p class="eyebrow">Open questions</p>
+      <h2>What we would want to know next</h2>
+    </div>
+    <div class="open">
+      <div class="q">
+        <span class="mk">01</span>
+        <p><strong>GPU evaluation.</strong> The number that decides real-time viability. A lookup is currently 6.7 µs on one CPU core against a texture fetch's 9 ns — but that is a scalar gather of a 1 600-kernel master. The shipped asset is 340 kernels total, small enough for a shader to sum wholesale with no acceleration structure at all. That measurement has not been taken.</p>
+      </div>
+      <div class="q">
+        <span class="mk">02</span>
+        <p><strong>Narrow-band signed distance for physics.</strong> The most promising untried target, and the first one where <em>maximum</em> error matters more than mean. An RMS of 0.15 with a worst case of 0.6 is a proxy that lets things fall through floors.</p>
+      </div>
+      <div class="q">
+        <span class="mk">03</span>
+        <p><strong>Quantization-aware training, inside the distillation step.</strong> The student is already re-fitting from scratch against a free oracle, so snapping to the quantization grid costs nothing extra there. No headroom at 54 bits, where the cost is already unmeasurable — the case is below it.</p>
+      </div>
+      <div class="q">
+        <span class="mk">04</span>
+        <p><strong>Consolidation.</strong> An online pair plus a distilled low-resolution copy providing grounding, with surprise measured against the <em>consolidated</em> model rather than the live one. That is generative replay, and it is the principled way to tell "genuinely new" from "I knew this and drifted".</p>
+      </div>
+      <div class="q">
+        <span class="mk">05</span>
+        <p><strong>Sparse baselines.</strong> A dense grid is the thing this replaces, but it is not the best a renderer could do — nobody stores a dense grid over a level's bounding box. Probes clustered near surfaces would be a harder opponent, and a fairer one.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="col">
+  <p>Every figure on this page is a measurement from a reproducible gate, taken on one machine in ReleaseFast, with the threshold written down before the run.</p>
+  <p>Built on <span class="mono">loam</span>'s anisotropic RBF kernel, held bit-for-bit identical to the renderer's own evaluator.</p>
+</footer>
+</main>
+
+<script>
+(function () {
+  var cv = document.getElementById('c');
+  if (!cv || !cv.getContext) return;
+  var ctx = cv.getContext('2d', { alpha: false });
+  var W = cv.width, H = cv.height;
+
+  var css = getComputedStyle(document.documentElement);
+  function tok(n, fb) { var v = css.getPropertyValue(n).trim(); return v || fb; }
+  function rgb(hex) {
+    hex = hex.replace('#', '');
+    if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)];
+  }
+  var LO = rgb(tok('--field-lo', '#171d21'));
+  var HI = rgb(tok('--field-hi', '#e58a4a'));
+  var MARK = tok('--instrument', '#22706e');
+
+  // ── the target. COMPACT SUPPORT, which is the honest thing: every
+  // field this technique is good at is exactly zero over most of its
+  // domain — a marble's matrix, a level's open air — and that is why
+  // empty space costs nothing. A Gaussian with tails would leave the
+  // model mildly surprised everywhere and it would buy kernels to
+  // cancel its own leakage.
+  var AR = H / W;
+  function bump(d2, s) {
+    var v = Math.exp(-d2 / (2 * s * s)) - 0.05;
+    return v > 0 ? v * 1.0526 : 0;
+  }
+  var BLOBS = [[0.24, 0.30, 0.075], [0.70, 0.63, 0.065], [0.45, 0.78, 0.050]];
+  function truth(x, y) {
+    var v = 0, i, dx, dy;
+    for (i = 0; i < BLOBS.length; i++) {
+      dx = x - BLOBS[i][0]; dy = (y - BLOBS[i][1]) * AR;
+      v += bump(dx * dx + dy * dy, BLOBS[i][2]);
+    }
+    // a thin curved ridge — the case an ellipse covers and a disc cannot
+    var cy = 0.33 + 0.30 * Math.sin(2.1 * x + 0.5);
+    var d = (y - cy) * AR;
+    var env = Math.max(0, 1 - Math.pow(Math.abs((x - 0.5) / 0.44), 4));
+    v += 0.95 * bump(d * d, 0.030) * env;
+    return Math.min(1.3, v);
+  }
+
+  // σ is comparable to the structure it has to resolve, as it is in the
+  // real model, and RESP is G24's responsibility radius: only kernels
+  // within three widths may take a share of the residual. Letting the
+  // whole support share it spreads every correction over kernels that
+  // contributed nothing, and the model never settles.
+  var SIG0 = 0.038, RESP2 = 9, THETA = 0.045, COVER = 0.35;
+  var RW = 0.5, RG = 0.2, MAXK = 220;
+  var ks, n, err, held;
+  function reset() { ks = []; n = 0; err = 0; held = 0; }
+  reset();
+
+  function step() {
+    var x = Math.random(), y = Math.random();
+    var t = truth(x, y), got = 0, cover = 0, gg = 0, i, k, dx, dy, u, v, r2, g;
+    var hit = [];
+    for (i = 0; i < ks.length; i++) {
+      k = ks[i];
+      dx = x - k.x; dy = y - k.y;
+      u = k.a * dx + k.b * dy; v = k.c * dy;
+      r2 = u * u + v * v;
+      if (r2 > 32) continue;
+      g = Math.exp(-0.5 * r2);
+      got += k.w * g;                       // prediction: the whole support
+      if (r2 <= RESP2) {                    // responsibility: who may learn
+        if (g > cover) cover = g;
+        gg += g * g;
+        hit.push([k, g, dx, dy, u, v]);
+      }
+    }
+    var e = got - t;
+    n++;
+    err += Math.max(0.0006, 1 / n) * (Math.abs(e) - err); // exact from sample one, a window after
+    if (Math.abs(e) <= THETA) return;
+
+    if (cover < COVER && ks.length < MAXK) {
+      var s0 = 1 / SIG0;
+      ks.push({ x: x, y: y, a: s0, b: 0, c: s0 / AR, w: -e });
+      return;
+    }
+    var inv = 1 / (gg + 1e-6);
+    for (i = 0; i < hit.length; i++) {
+      var h = hit[i]; k = h[0];
+      var a = e * h[1] * inv;
+      var wa = k.w * a * RG;
+      k.w -= RW * a;
+      k.x -= wa * h[2];
+      k.y -= wa * h[3];
+      var na = k.a + wa * h[4] * h[2] * k.a;
+      var nc = k.c + wa * h[5] * h[3] * k.c;
+      k.a = Math.min(1 / (SIG0 * 0.35), Math.max(1 / (SIG0 * 2.2), na));
+      k.c = Math.min(1 / (SIG0 * 0.35 / AR), Math.max(1 / (SIG0 * 2.2 / AR), nc));
+    }
+  }
+
+  // ── render by accumulating each kernel over its OWN cutoff box, which
+  // is the same locality the algorithm rests on.
+  var GW = 180, GH = Math.round(180 * AR);
+  var acc = new Float32Array(GW * GH);
+  // The low-resolution field gets its own buffer and is scaled up from
+  // there — drawing a canvas onto itself is legal but fragile.
+  var off = document.createElement('canvas');
+  off.width = GW; off.height = GH;
+  var octx = off.getContext('2d');
+  var img = octx.createImageData(GW, GH);
+
+  function draw() {
+    acc.fill(0);
+    var i, k, gx, gy, x0, x1, y0, y1, dx, dy, u, v, r2;
+    for (i = 0; i < ks.length; i++) {
+      k = ks[i];
+      var rx = 5.66 / k.a, ry = 5.66 / k.c;
+      x0 = Math.max(0, Math.floor((k.x - rx) * GW)); x1 = Math.min(GW - 1, Math.ceil((k.x + rx) * GW));
+      y0 = Math.max(0, Math.floor((k.y - ry) * GH)); y1 = Math.min(GH - 1, Math.ceil((k.y + ry) * GH));
+      for (gy = y0; gy <= y1; gy++) {
+        var py = (gy + 0.5) / GH;
+        for (gx = x0; gx <= x1; gx++) {
+          dx = (gx + 0.5) / GW - k.x; dy = py - k.y;
+          u = k.a * dx + k.b * dy; v = k.c * dy;
+          r2 = u * u + v * v;
+          if (r2 > 32) continue;
+          acc[gy * GW + gx] += k.w * Math.exp(-0.5 * r2);
+        }
+      }
+    }
+    var d = img.data;
+    for (i = 0; i < GW * GH; i++) {
+      var s = Math.max(0, Math.min(1, acc[i] / 1.15));
+      s = Math.pow(s, 0.72);
+      d[i * 4] = LO[0] + (HI[0] - LO[0]) * s;
+      d[i * 4 + 1] = LO[1] + (HI[1] - LO[1]) * s;
+      d[i * 4 + 2] = LO[2] + (HI[2] - LO[2]) * s;
+      d[i * 4 + 3] = 255;
+    }
+    octx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(off, 0, 0, GW, GH, 0, 0, W, H);
+
+    // "Every dot is a kernel it decided to buy" — so they have to read.
+    // A dark seat under each one keeps it legible over the bright parts
+    // of the field as well as the dark.
+    for (i = 0; i < ks.length; i++) {
+      var px = ks[i].x * W, py = ks[i].y * H;
+      ctx.beginPath(); ctx.arc(px, py, 3.4, 0, 6.2832);
+      ctx.fillStyle = 'rgba(8,12,15,0.55)'; ctx.fill();
+      ctx.beginPath(); ctx.arc(px, py, 2.0, 0, 6.2832);
+      ctx.fillStyle = MARK; ctx.fill();
+    }
+    document.getElementById('k').textContent = ks.length;
+    document.getElementById('n').textContent = n.toLocaleString();
+    document.getElementById('e').textContent = n > 400 ? err.toFixed(4) : '—';
+  }
+
+  var still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (still) {
+    for (var q = 0; q < 400000; q++) step();
+    draw();
+    return;
+  }
+  var last = 0;
+  function frame(ts) {
+    if (ts - last > 16) {
+      last = ts;
+      // The full arc, on about a ten-second cycle: build from empty,
+      // then HOLD visibly converged — the error flat, the population
+      // steady — and only then start over. The hold is the half that was
+      // missing; without it the restart read as "it never converges".
+      // The sample rate RAMPS. At a flat 900 a frame the whole
+      // population is born in the first frame or two and the only thing
+      // left to watch is the field settling — so the births, which are
+      // the interesting part, happen too fast to see. Starting at ten and
+      // accelerating spreads them over about two seconds, which is the
+      // rate a person can actually follow.
+      var building = n < 150000;
+      // SIX samples a frame at the start — about one birth a frame, which
+      // is a rate you can actually follow — accelerating from there. The
+      // population is nearly all placed inside the first few thousand
+      // samples, so that stretch has to be the slow one; everything after
+      // it is the field settling, and that can hurry.
+      var m = building ? Math.min(900, 6 + n * 0.02) : 90;
+      for (var q = 0; q < m; q++) step();
+      if (!building && ++held > 260) reset();
+      draw();
+    }
+    requestAnimationFrame(frame);
+  }
+  // one settled frame before the first paint, so the page is never blank
+  for (var q0 = 0; q0 < 152000; q0++) step();
+  draw();
+  requestAnimationFrame(frame);
+})();
+</script>
