@@ -5630,6 +5630,113 @@ asked for it not to be run on every edit. G17 (d) reads 2 468 kernels and
 G17 (e) 0.04823 at gain 2.99, both identical to the pre-change baseline,
 and G31 (a) is still bit-identical at 975 kernels.
 
+## MARL-17 — a real Quake 3 level, and the sparsity rule confirmed (Tuesday 2026-09-08)
+
+MARL-13 ended with a rule: **a learned sparse field beats a dense grid when
+the interesting set is SPARSE IN THE DOMAIN, and loses when the field is
+non-trivial everywhere.** The grove of spheres it was measured on has open
+sky and crevices but no rooms, no doorways and no scale separation.
+Christian suggested `oa_spirit3` — an OpenArena deathmatch level — which
+has all three.
+
+### Getting it in
+
+`tools/q3_volume.py` reads the BSP through `~/dev/tessera`'s loader
+(Christian's, already mirrored field-for-field against
+`~/dev/importers/src/q3bsp.zig`) rather than writing a third parser, and
+rasterises the world's SOLID BRUSHES to signed distance. Brushes and not
+the render faces: a brush is a convex intersection of half-spaces, so its
+signed distance is exactly `−maxᵢ(nᵢ·p − dᵢ)` — positive inside, which is
+the convention MARL-13 measured the carrier to have — where the faces are
+an unclosed triangle soup with sky and decals in it.
+
+Two things had to be got right.
+
+**The clamp is ±3 CELLS, not ±3 units.** The carrier's is; an absolute ±3
+is sub-voxel on a level where a voxel is twenty-odd Q3 units and there
+would be no band at all.
+
+**Conservative rasterisation, or the level leaks.** Q3 walls are eight to
+sixteen units and a voxel at 160³ is 28.8, so a centre-sampled
+rasterisation drops most of them: measured, 2.8% of the cube solid, and
+rays walking straight through walls. Growing every brush by half a cell
+puts it at 3.9% at 160³ and 3.6% at 224³ — converging, which is what says
+the growth is sealing the level rather than inflating it. The cost is that
+the thinnest walls end up about a voxel thick, and that is stated rather
+than hidden: **a level the grid cannot seal has no occlusion to study.**
+
+    oa_spirit3: 1 568 solid brushes, bounds 2176 × 4608 × 1600 Q3 units,
+    a cube of 4608 at 160³ = 28.8 units a voxel, 3.9% of it solid.
+
+### The result, with an anchor this time
+
+Every RMS in MARL-13 through MARL-16 was quoted without saying what
+predicting a CONSTANT would score, which is the only thing that gives an
+RMS a scale. Fixed here, and it changes how one of the numbers reads.
+
+    the query set: mean AO 0.2269, sd 0.2645
+    → predicting the mean everywhere scores 0.26448
+
+| arm | kernels / grid | KiB | RMS | vs a constant | query ns |
+|---|---|---|---|---|---|
+| MARL, online | 1 614 | 63.0 | **0.12011** | 2.20× better | 12 607 |
+| dense grid, trilinear | 25³ | 61.0 | 0.20397 | 1.30× better | 9 |
+
+**MARL/grid 0.589** — a far bigger margin than the grove's 0.804, and for
+exactly the reason the rule predicts. The level is 3.9% solid and the
+queries sit within two voxels of a surface, so the interesting set is a
+thin shell inside a mostly-empty cube. A 25³ grid over 4608 units has
+184-unit cells and cannot resolve anything; MARL puts 1 614 kernels where
+the shading points are.
+
+### The pipeline, end to end
+
+| stage | kernels | KiB | RMS | vs a constant |
+|---|---|---|---|---|
+| the master, f32 | 1 614 | 63.0 | 0.12011 | 2.20× |
+| distilled, regions 3 (MARL-14) | 340 | 13.3 | 0.14649 | 1.81× |
+| …and quantized, 54 bits (MARL-15) | 340 | **2.3** | 0.15807 | **1.67×** |
+| dense grid at the same bytes | 8³ | 2.0 | 0.37835 | **1.43× WORSE** |
+
+**27.1× off the master for 1.32× the error**, and the shipped model is
+0.418 of the grid's error at the same size.
+
+The line worth pausing on is the last one: at two kilobytes an 8³ grid is
+**worse than predicting the mean everywhere**. Trilinear interpolation over
+184-unit cells does not approximate the field, it adds error to a constant.
+The learned field at the same size is still doing real work.
+
+### What the numbers do not say
+
+**Nothing here is a good fit in absolute terms.** The master is 2.20× a
+constant and the shipped model 1.67×. Occlusion near surfaces in a level is
+driven by geometry at the scale of tens of units and the occluder itself is
+quantised to 28.8-unit voxels, so some of that ceiling is the fixture's and
+not the learner's. A finer volume would raise every arm and is not run here
+because a 224³ grid is 45 MB and the AO marcher's random access into it
+dominates the wall clock.
+
+**And a dense grid is the baseline `rbf.zig` was written against, not the
+best a renderer could do.** Nobody stores a dense grid over a level's whole
+bounding box; they cluster probes near surfaces. That is a sparse structure,
+it is a harder opponent, and it is not what was measured. What the 0.418
+says is that a learned field beats the DENSE representation decisively on
+real geometry — which is the claim `rbf.zig` exists to make and the one this
+campaign set out to test.
+
+### Not gated, and why
+
+The fixture is a 16 MB artefact generated from a copyrighted game asset that
+is not in this repo, so a gate cannot depend on it. The MECHANISM is already
+gated on the grove (G33 d, G34, G35), and this is its confirmation on
+geometry nobody designed for it. Reproduce with:
+
+    python3 tools/q3_volume.py --res 160 --out out/oa_spirit3.vol
+    zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 250000
+
+`src/marl.zig` is untouched by this phase; the additions are
+`cache.readVolume`, `cache.scaledAo` and a `marl-run --q3` mode.
+
 ## Measurements (regime stated)
 
 Sapling, seed 7, 3652 bricks, Ryzen 9950X3D, serial:

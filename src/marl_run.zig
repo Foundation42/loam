@@ -18,6 +18,7 @@ const builtin = @import("builtin");
 const loam = @import("loam");
 const marl = loam.marl;
 const marble_mod = loam.marble;
+const cache = loam.cache;
 const seedbed = loam.seedbed;
 const th = loam.thresholds;
 
@@ -96,6 +97,8 @@ const usage =
     \\                      static biased, and three schedules
     \\  --marble            MARL-11: the 2×2 against rbf.fit's batch Adam bake
     \\                      on a sheet-vein field — the first external baseline
+    \\  --q3 FILE           MARL-17: the occlusion cache on a real Quake 3 level
+    \\                      (tools/q3_volume.py writes FILE from a .bsp)
     \\  --marble9           MARL-12: the same arms at NINE channels on a sheet
     \\                      carrying two materials — what sharing one geometry
     \\                      across nine weights costs, and what it saves
@@ -128,6 +131,7 @@ const Opts = struct {
     cycle: bool = false,
     marble: bool = false,
     marble9: bool = false,
+    q3: ?[]const u8 = null,
     mo: marble_mod.ArmOptions = .{},
     /// Whether `--responsibility` was actually passed. The marble's arms
     /// are a PRE-REGISTERED configuration at G24's radius of 3, and
@@ -244,6 +248,8 @@ fn parse(args: []const []const u8) !?Opts {
             o.marble = true;
         } else if (std.mem.eql(u8, a, "--marble9")) {
             o.marble9 = true;
+        } else if (std.mem.eql(u8, a, "--q3")) {
+            o.q3 = try next(args, &i);
         } else if (std.mem.eql(u8, a, "--marble-pool")) {
             o.mo.pool = try std.fmt.parseInt(u32, try next(args, &i), 10);
         } else if (std.mem.eql(u8, a, "--marble-iters")) {
@@ -303,6 +309,7 @@ pub fn main() !void {
         return;
     };
 
+    if (o.q3) |path| return q3Cache(gpa, o, path);
     if (o.marble9) return marbleNine(gpa, o);
     if (o.marble) return marbleArms(gpa, o);
     if (o.arms) return arms(gpa, o);
@@ -1126,4 +1133,85 @@ fn marbleNine(gpa: std.mem.Allocator, o: Opts) !void {
     try out.print("    blend RMS  {d:.3}   predicted ≤ {d:.2}\n", .{ c9.rms_c0 / c1.rms_c0, th.MARL12_SHARING });
     try out.print("    nine channels packed cost {d} floats a kernel against {d} for nine separate scalar models ({d:.2}x)\n", .{ 9 + @as(usize, 9), 9 * 10, @as(f32, 18) / 90 });
     try out.print("    D/B at nine {d:.3}   predicted ≤ {d:.2}\n", .{ nine.d.rms_band / nine.b.rms_band, th.MARL12_ONLINE_COST });
+}
+
+// ── MARL-17: a real level ─────────────────────────────────────────────
+
+/// The occlusion cache on `oa_spirit3`, which is the fixture MARL-13's
+/// "sparse in the domain" question was really asking about. A grove of
+/// spheres has open sky and crevices; a deathmatch level has ROOMS,
+/// DOORWAYS and SCALE SEPARATION, and its playable space is a thin shell
+/// inside a mostly-empty bounding cube.
+fn q3Cache(gpa: std.mem.Allocator, o: Opts, path: []const u8) !void {
+    const out = std.io.getStdOut().writer();
+    var vol = try cache.readVolume(gpa, path);
+    defer vol.deinit(gpa);
+    const cell = vol.extent / @as(f32, @floatFromInt(vol.res));
+
+    var co = cache.Options{ .ray_budget = o.exemplars * 16, .probes = 1024 };
+    co.ao = cache.scaledAo(&vol, 1.0 / 18.0); // occlusion is a room-scale effect
+    co.seed = o.m.seed;
+    co.m = o.m;
+    co.m.rate_w = 0.05; // MARL-13: the rate is the noise floor
+    co.invert = true; // MARL-13: a zero background is the free one
+    co.surface_band = 2 * cell; // where a renderer actually shades
+
+    var solid: usize = 0;
+    for (vol.data) |x| {
+        if (x > 0) solid += 1;
+    }
+    try out.print("marl-run — MARL-17, {s}, {s}\n", .{ path, @tagName(builtin.mode) });
+    try out.print("  {d}³ over {d:.0} units ({d:.1} a voxel), φ {d:.1}..{d:.1}, solid {d:.4} of the cube\n", .{ vol.res, vol.extent, cell, vol.min, vol.max, @as(f64, @floatFromInt(solid)) / @as(f64, @floatFromInt(vol.data.len)) });
+    try out.print("  AO: {d} rays, reach {d:.0} units, step {d:.1}; queries within {d:.0} units of a surface\n", .{ co.ao.rays, co.ao.reach, co.ao.step, co.surface_band });
+    try out.print("  {d} marched directions the budget, {d} probes at {d} rays each\n\n", .{ co.ray_budget, co.probes, cache.TRUTH_RAYS });
+
+    var pr = try cache.probesOf(gpa, &vol, co.ao, co.probes, co.seed, co.surface_band);
+    defer pr.deinit(gpa);
+    var mean: f64 = 0;
+    for (pr.y) |y| mean += y;
+    const mu = mean / @as(f64, @floatFromInt(pr.y.len));
+    var varsum: f64 = 0;
+    for (pr.y) |y| varsum += (y - mu) * (y - mu);
+    const sd = @sqrt(varsum / @as(f64, @floatFromInt(pr.y.len)));
+    // The only honest denominator: what predicting the MEAN everywhere
+    // scores. Any model that does not beat this has learned nothing, and
+    // an RMS quoted without it is a number with no scale.
+    try out.print("  the field: mean AO {d:.4}, sd {d:.4} — predicting the mean everywhere scores {d:.5}, which is what every arm below has to beat\n", .{ mu, sd, sd });
+
+    var t = try cache.teach(gpa, &vol, co, pr);
+    defer t.deinit();
+    const g = try cache.gridArm(gpa, &vol, co, t.bytes(), pr, "dense grid, trilinear");
+    try out.print("\n  {s:<26} {s:>8} {s:>10} {s:>9} {s:>9}\n", .{ "arm", "kernels", "KiB", "RMS", "query ns" });
+    try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5} {d:>9.0}\n", .{ "MARL, online", t.kernels(), @as(f64, @floatFromInt(t.bytes())) / 1024.0, t.rms, t.query_ns });
+    try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5} {d:>9.0}\n", .{ "dense grid, trilinear", g.grid_res, @as(f64, @floatFromInt(g.bytes)) / 1024.0, g.rms, g.query_ns });
+    try out.print("  MARL/grid {d:.3}\n", .{t.rms / g.rms});
+
+    // The production pipeline, end to end: DISTIL to a coarser basis
+    // (MARL-14) and QUANTIZE at 54 bits with region-relative centres
+    // (MARL-15). The teacher above is the master copy; this is what ships.
+    var so = co.m;
+    so.regions = 3;
+    var st = try cache.distil(gpa, &t.model, &vol, co, so, o.exemplars, pr);
+    defer st.deinit();
+    const one: [loam.rbf.CHANNELS]f32 = [_]f32{1} ** loam.rbf.CHANNELS;
+    var set = try loam.marble.setOf(gpa, &st.model, vol.extent, vol.columns, vol.hash, one);
+    defer set.deinit(gpa);
+    var bits = cache.Bits{ .mu = 6, .logd = 5, .off = 5, .w = 6 };
+    bits.regions = so.regions;
+    _ = cache.quantizeSet(&set, bits);
+    const q_rms = cache.rmsOfSetInverted(&set, pr);
+    const q_bytes = bits.bytesFor(set.kernels.len);
+    const qg = try cache.gridArm(gpa, &vol, co, q_bytes, pr, "grid at the shipped size");
+
+    try out.print("\n  the pipeline — distil to a coarser basis, then quantize\n", .{});
+    try out.print("  {s:<26} {s:>8} {s:>10} {s:>9}\n", .{ "stage", "kernels", "KiB", "RMS" });
+    try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5}\n", .{ "the master, f32", t.kernels(), @as(f64, @floatFromInt(t.bytes())) / 1024.0, t.rms });
+    try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5}\n", .{ "distilled, regions 3", st.kernels(), @as(f64, @floatFromInt(st.bytes())) / 1024.0, st.rms });
+    try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5}\n", .{ "…and quantized, 54 bits", set.kernels.len, @as(f64, @floatFromInt(q_bytes)) / 1024.0, q_rms });
+    try out.print("  {s:<26} {d:>8} {d:>10.1} {d:>9.5}\n", .{ "dense grid, same bytes", qg.grid_res, @as(f64, @floatFromInt(qg.bytes)) / 1024.0, qg.rms });
+    try out.print("  shipped/grid {d:.3}; {d:.1}× off the master for {d:.2}× the error\n", .{
+        q_rms / qg.rms,
+        @as(f64, @floatFromInt(t.bytes())) / @as(f64, @floatFromInt(q_bytes)),
+        q_rms / t.rms,
+    });
 }

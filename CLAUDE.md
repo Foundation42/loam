@@ -64,6 +64,8 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G34"             # MARL-14: DISTILLATION — sample a built model to train a smaller one; all four numbers HELD
     zig build test -Dtest-filter="G35"             # MARL-15: QUANTIZATION — a kernel ships in 6.75 bytes (region-relative centres)
     zig build test -Dtest-filter="G36"             # MARL-16: the BIAS term, refuted twice — zero is special because it is the model's DEFAULT
+    python3 tools/q3_volume.py --res 160 --out out/oa_spirit3.vol          # MARL-17: a Quake 3 level as a bark.Volume (reads ~/dev/tessera's BSP loader)
+    zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 250000   # ... the occlusion cache on it (a tool run; not gated)
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -407,6 +409,39 @@ with one, so disturbance × n / |e| = 0.272. The campaign CAN buy a
 background at the cost of asymptotic rather than exact locality — it is
 just not worth it where the zero mass is large. `BiasRule` stays,
 defaulting `.off`, with both failures written into the enum.
+
+MARL-17 then put the whole thing on a REAL Quake 3 level (`oa_spirit3`,
+via `tools/q3_volume.py`, which reads `~/dev/tessera`'s BSP loader and
+rasterises the world's solid BRUSHES to signed distance — a brush is a
+convex intersection of half-spaces so its distance is exactly
+`−maxᵢ(nᵢ·p − dᵢ)`, positive inside). Two things had to be right: the clamp
+is ±3 CELLS not ±3 units, and rasterisation must be CONSERVATIVE — Q3 walls
+are 8–16 units against a 28.8-unit voxel, so centre-sampling drops most of
+them and the level LEAKS (2.8% solid against 3.9% grown, converging at
+higher resolution). A level the grid cannot seal has no occlusion to study.
+
+**And every RMS before this was quoted without an anchor.** Predicting the
+mean everywhere scores 0.26448 on this query set; that is now reported
+beside every arm, because an RMS without it is a number with no scale.
+
+    MARL, online            1 614 kernels  63.0 KiB  0.12011  2.20× a constant
+    dense grid, trilinear   25³            61.0 KiB  0.20397  1.30×
+    → MARL/grid 0.589, against the grove's 0.804
+
+The margin is far bigger than the synthetic fixture's, for exactly the
+reason MARL-13's rule predicts: the level is 3.9% solid and queries sit two
+voxels from a surface, so the interesting set is a thin shell in a mostly
+empty cube. **The pipeline end to end — distil (MARL-14) then quantize
+(MARL-15) — is 340 kernels in 2.3 KiB at 0.15807, which is 27.1× off the
+master for 1.32× the error and 0.418 of a same-sized grid's.** At two
+kilobytes an 8³ grid is WORSE THAN PREDICTING THE MEAN.
+
+Two things the numbers do not say. Nothing here is a good fit absolutely —
+the master is 2.20× a constant — and some of that ceiling is the occluder's
+own 28.8-unit voxels. And a DENSE grid is the baseline `rbf.zig` was
+written against, not the best a renderer could do: nobody stores a dense
+grid over a level's bounding box, they cluster probes near surfaces, and
+that sparse structure is a harder opponent that was not measured.
 
 Recorded, not built. QAT belongs in the DISTILLATION transfer step
 (Christian's, and right) — a student is already re-fitting against a free

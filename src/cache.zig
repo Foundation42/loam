@@ -129,6 +129,55 @@ pub fn groveVolume(gpa: std.mem.Allocator, res: u32, extent: f32) !bark.Volume {
     return v;
 }
 
+/// A volume written by `tools/q3_volume.py` — a Quake 3 level's solid
+/// brushes rasterised to signed distance, positive inside.
+///
+/// Read rather than baked, because the BSP parser that produced it is
+/// `~/dev/tessera`'s and is already mirrored field-for-field against
+/// `~/dev/importers/src/q3bsp.zig`. Writing a third one here to avoid a
+/// file would be the worse trade.
+pub fn readVolume(gpa: std.mem.Allocator, path: []const u8) !bark.Volume {
+    var f = try std.fs.cwd().openFile(path, .{});
+    defer f.close();
+    var br = std.io.bufferedReader(f.reader());
+    const r = br.reader();
+    var magic: [4]u8 = undefined;
+    try r.readNoEof(&magic);
+    if (!std.mem.eql(u8, &magic, "QVOL")) return error.NotAQ3Volume;
+    const res = try r.readInt(u32, .little);
+    const extent: f32 = @bitCast(try r.readInt(u32, .little));
+    var v = bark.Volume{
+        .res = res,
+        .extent = extent,
+        .columns = 0,
+        .stride = bark.strideOf(0),
+        .data = try gpa.alloc(f32, @as(usize, res) * res * res),
+        .hash = [_]u8{0} ** 32,
+        .min = std.math.floatMax(f32),
+        .max = -std.math.floatMax(f32),
+    };
+    errdefer gpa.free(v.data);
+    for (v.data) |*x| {
+        x.* = @bitCast(try r.readInt(u32, .little));
+        v.min = @min(v.min, x.*);
+        v.max = @max(v.max, x.*);
+    }
+    return v;
+}
+
+/// Ambient-occlusion options scaled to a volume's own units, so the same
+/// study runs on a 32-unit grove and a 4608-unit deathmatch level without
+/// either set of numbers being a coincidence of the fixture's size.
+///
+/// `reach` is a FRACTION OF THE EXTENT rather than an absolute, because
+/// occlusion is local relative to the thing being occluded; `step` is half
+/// a cell, because a marcher that steps further than the grid can resolve
+/// is sampling a field it has already blurred past.
+pub fn scaledAo(vol: *const bark.Volume, reach_fraction: f32) AoOptions {
+    const cell = vol.extent / @as(f32, @floatFromInt(vol.res));
+    return .{ .rays = 16, .reach = vol.extent * reach_fraction, .step = cell * 0.5 };
+}
+
 // ── The expensive thing ──────────────────────────────────────────────
 
 pub const AoOptions = struct {
@@ -1062,7 +1111,7 @@ pub fn quantizeGrid(g: *Grid, bits: u6) void {
     for (g.data) |*v| v.* = quant(v.*, 0, 1, bits);
 }
 
-fn rmsOfSetInverted(set: *const rbf.Set, pr: Probes) f32 {
+pub fn rmsOfSetInverted(set: *const rbf.Set, pr: Probes) f32 {
     var acc: f64 = 0;
     for (pr.x, pr.y) |x, y| {
         const e = (1 - set.eval(x)[0]) - y;
