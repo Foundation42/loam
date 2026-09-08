@@ -1750,4 +1750,84 @@ pub const MARL15_RELATIVE: f32 = 2.5;
 /// off-diagonal, 6 of weight, plus a u16 count per region.
 pub const MARL15_RBITS: f32 = 1.05;
 
+// ── MARL-16 (a learned background) ───────────────────────────────────
+//
+// From `tools/marl16_predict.py`. `rbf.zig` has had this since the day it
+// was written — "the entry is the BIAS: the matrix costs nothing, only the
+// structure costs kernels" — and MARL never needed it, because every field
+// it learned before MARL-13 had a ZERO background. Occlusion does not.
+
+/// G36: RMS with a learned bias over RMS without, on MARL-13's losing
+/// configuration (volume-uniform occlusion, learned directly).
+///
+/// PROPOSED as a CEILING at 0.85 — at least a 1.18× improvement, against
+/// the 1.40× that being TOLD the background was worth (MARL-13's
+/// inversion). Set BELOW the inversion's number deliberately: inversion
+/// sets the background to the value of the largest flat region, and a
+/// least-squares bias converges to the MEAN of what the kernels have not
+/// explained. Those coincide only when one region dominates.
+///
+/// **REFUTED, twice, and left standing.** A bias from the RESIDUAL scores
+/// 1.302× and strands itself at 0.1057; a bias from the TARGET converges
+/// correctly to 0.7211 — the field's actual mean — and scores **5.679×**.
+/// The better estimator is the worse model, which is what says the fault
+/// is not in the estimator.
+///
+/// A Gaussian basis with a HARD CUTOFF cannot cheaply represent a plateau
+/// of ANY value. Zero is not special because it is zero; it is special
+/// because it is what an EMPTY MODEL ALREADY PREDICTS, so a target that is
+/// zero over a large region costs literally nothing. A bias moves that
+/// free value from 0 to b — it helps where y ≈ b and it hurts everywhere
+/// y ≈ 0, which now has to be held DOWN by kernels that did not need to
+/// exist. Measured: 0.123 of this field is within θ of zero against 0.049
+/// within θ of the bias, a losing trade by 2.5×.
+///
+/// **And a claim in MARL-13's ledger entry was wrong.** It said `rbf.zig`
+/// has had a bias term since it was written and MARL never grew one.
+/// `rbf.zig`'s "entry" is NOT a learned constant: it is the HOST's own
+/// material, supplied per hit, showing through where the kernels are
+/// silent — and the kernels carry a blend that is ZERO in the matrix.
+/// That is exactly what MARL already does. **MARL was never missing the
+/// term**, and this phase is the correction.
+pub const MARL16_BIAS: f32 = 0.85;
+
+/// G36: kernels with a bias over kernels without. PROPOSED as a CEILING at
+/// parity — the bias removes work from the kernels and cannot add any. The
+/// one way it could go wrong is the warm-up, which is why the step is 1/n
+/// and not a small constant: at n = 1 the bias IS the first exemplar, so
+/// it cannot buy kernels to hold up a constant it is about to learn.
+///
+/// **REFUTED.** 1.085× from the residual form and 1.342× from the target
+/// form. The bias does not remove work from the kernels, it relocates it —
+/// from holding up the open majority to holding down the solid interior —
+/// and relocating it costs more than it saves on this field.
+pub const MARL16_KERNELS: f32 = 1.0;
+
+/// G36, THE TRADE: the whole-field disturbance from one late event, times
+/// n, over the event's residual.
+///
+/// PROPOSED as a CEILING at 1.5, where a pure running mean gives exactly
+/// one and the slack is for the kernels' own contribution to the same
+/// event.
+///
+/// `CUTOFF` makes a learning event structurally unable to disturb a
+/// distant region, and G17 (c)/(d) check it bitwise. A global scalar is
+/// not local at all: one update moves every point by the same amount. This
+/// is the campaign giving up EXACT locality for ASYMPTOTIC locality, and
+/// the number exists so that the trade is stated rather than hidden. An
+/// EWMA would give up both — its step never decays, so no region is ever
+/// undisturbed again — and that is what `rate_bias > 0` is for, knowingly,
+/// on a field that drifts.
+///
+/// **HELD, at 0.272.** One late event at probes over 0.4 of the domain
+/// away moves a biased model by 2.26e-6 on a residual of 1.04 after
+/// 125 001 exemplars, and moves an unbiased one by **exactly 0.00** —
+/// exact locality, bitwise, which is the mutation that says the number is
+/// measuring the bias and not the kernels.
+///
+/// So the trade is real and it is priced: a background term is available
+/// at the cost of asymptotic rather than exact locality. It is simply not
+/// worth buying on a field with a large zero mass.
+pub const MARL16_LOCALITY: f32 = 1.5;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

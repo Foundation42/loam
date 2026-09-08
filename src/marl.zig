@@ -380,6 +380,29 @@ pub const SchedMode = enum {
     hybrid,
 };
 
+/// Where a learned background takes its evidence from (MARL-16).
+pub const BiasRule = enum {
+    /// No background term. Every gate from G17 to G35 runs here, and
+    /// locality is EXACT.
+    off,
+    /// A running mean of the RESIDUAL — what the kernels have not
+    /// explained. The obvious formulation, and it does not work: the
+    /// kernels descend at `rate_w` per event while a running mean's step
+    /// is 1/n, so they absorb the background long before the bias can and
+    /// then E[y − K] ≈ 0 leaves it stranded near zero. Measured at 0.1057
+    /// after 125 000 exemplars on a field whose mean is far above that,
+    /// for 1.302× the RMS and 8.5% MORE kernels. Kept because it is the
+    /// formulation anyone would reach for first and the ledger should say
+    /// why it is wrong.
+    residual,
+    /// A running mean of the TARGET, which converges whatever the kernels
+    /// are doing. What the kernels then carry is `y − b`, whose amplitude
+    /// is the field's standard deviation rather than its RMS — and MARL-13
+    /// established that a smaller amplitude is most of what its inversion
+    /// trick bought.
+    target,
+};
+
 pub const BirthRule = enum {
     /// MARL-0 through MARL-2: birth where nothing already covers.
     coverage,
@@ -504,6 +527,35 @@ pub const Options = struct {
     /// kernel can ever be responsible AND covering, so births fire on
     /// every event. `coverage` and this belong to the same sweep.
     responsibility: f32 = CUTOFF_R,
+    /// A learned constant added to every prediction — `rbf.zig`'s "entry"
+    /// as a parameter the model finds for itself.
+    ///
+    /// A hard cutoff makes a Gaussian decay to EXACTLY zero, so a constant
+    /// non-zero background is not free: it has to be held up by
+    /// overlapping kernels everywhere it extends. Every field this
+    /// campaign learned before MARL-13 had a ZERO background — the quiet
+    /// slab, the marble's matrix — so the term was never needed. Ambient
+    /// occlusion is ≈1 across the open majority of a cube, and MARL-13
+    /// measured the size of the hole by NEGATING the target: 1.40× the
+    /// accuracy for 14% less capacity, from a trick that has to be told
+    /// what the background is.
+    ///
+    /// **It costs exact locality, and that is the point of gating it.**
+    /// `CUTOFF` makes a learning event structurally unable to disturb a
+    /// distant region (G17 c, d, bitwise). One global scalar is not local
+    /// at all: updating it moves every point by the same amount. Learned
+    /// as a RUNNING MEAN the step is 1/n, so the disturbance decays and
+    /// exact locality is recovered in the limit — asymptotic instead of
+    /// exact. `rate_bias` puts a permanent floor back, deliberately, for a
+    /// field that drifts.
+    ///
+    /// Default OFF, so every number from G17 to G35 is untouched.
+    bias: BiasRule = .off,
+    /// The floor under the bias's 1/n step. Zero is a pure running mean,
+    /// which converges optimally and gives up its influence as it goes;
+    /// non-zero is an EWMA that can track a moving background and never
+    /// stops disturbing everywhere.
+    rate_bias: f32 = 0,
     /// The recent-window the running error is averaged over.
     window: u32 = 4096,
 };
@@ -875,6 +927,10 @@ pub fn Marl(comptime C: usize) type {
 
             gpa: std.mem.Allocator,
             opts: Options,
+            /// The learned background (`opts.bias`), and how many exemplars
+            /// have gone into it. Zero and unused when the option is off.
+            bias: Ch.Vec = [_]f32{0} ** C,
+            bias_n: u64 = 0,
             /// Region edge, and the widest a kernel's cutoff box may reach.
             h: f32,
             sigma_max: f32,
@@ -1101,6 +1157,12 @@ pub fn Marl(comptime C: usize) type {
                     const w = k.weightsConst();
                     inline for (0..C) |c| y[c] += w[c] * g;
                 }
+                // Behind a branch and not an unconditional `+ 0`, because
+                // `−0.0 + 0.0` is `+0.0` and a sign of zero reaches the
+                // gates that compare predictions bitwise.
+                if (self.opts.bias != .off) inline for (0..C) |c| {
+                    y[c] += self.bias[c];
+                };
                 if (t) |*tt| self.stats.predict_ns += tt.read();
                 self.stats.predictions += 1;
                 return y;
@@ -1128,6 +1190,9 @@ pub fn Marl(comptime C: usize) type {
                         inline for (0..C) |c| y[c] += w[c] * g;
                     }
                 }
+                if (self.opts.bias != .off) inline for (0..C) |c| {
+                    y[c] += self.bias[c];
+                };
                 return y;
             }
 
@@ -1339,11 +1404,42 @@ pub fn Marl(comptime C: usize) type {
                     inline for (0..C) |c| yhat[c] += w[c] * g;
                     if (m.r2 <= resp2) cover = @max(cover, g);
                 }
+                if (self.opts.bias != .off) inline for (0..C) |c| {
+                    yhat[c] += self.bias[c];
+                };
                 if (pt) |*tt| self.stats.predict_ns += tt.read();
                 self.stats.predictions += 1;
                 ev.touched = @intCast(self.hit.items.len);
                 inline for (0..C) |c| ev.residual[c] = y[c] - yhat[c];
                 ev.surprise = Ch.magOf(ev.residual);
+
+                // The background, as a RUNNING MEAN of what the kernels
+                // have not explained. Stepped 1/n, so at n = 1 it is the
+                // first exemplar exactly and the warm-up cannot buy kernels
+                // to hold up a constant it is about to learn; and so that
+                // its disturbance to the whole field decays rather than
+                // sitting at a permanent floor.
+                //
+                // Updated on EVERY exemplar, including the ones below the
+                // surprise threshold. A background is exactly what a
+                // sequence of unsurprising exemplars is evidence about, and
+                // skipping them would bias it toward the structure.
+                if (self.opts.bias != .off) {
+                    self.bias_n += 1;
+                    const step = @max(self.opts.rate_bias, 1 / @as(f32, @floatFromInt(self.bias_n)));
+                    switch (self.opts.bias) {
+                        .off => unreachable,
+                        .residual => inline for (0..C) |c| {
+                            self.bias[c] += step * ev.residual[c];
+                        },
+                        // From the TARGET, so the estimate does not depend
+                        // on how fast the kernels are eating the thing it
+                        // is trying to measure.
+                        .target => inline for (0..C) |c| {
+                            self.bias[c] += step * (y[c] - self.bias[c]);
+                        },
+                    }
+                }
 
                 const home = self.regionOf(x);
                 const reg = &self.regions[home];

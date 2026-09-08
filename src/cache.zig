@@ -1249,3 +1249,111 @@ test "G35 quantization: what a shippable kernel costs, and what it does to MARL-
     try testing.expect(g_kib[0] <= ship.kib and g_kib[1] >= ship.kib);
     try testing.expect(ship.rms / g_rms[1] <= thresholds.MARL15_HEADLINE);
 }
+
+// ── MARL-16: a learned background ────────────────────────────────────
+
+test "G36 a learned background is what rbf.zig has always had — and it costs exact locality" {
+    // MARL-13's LOSING configuration: volume-uniform occlusion, learned
+    // directly rather than inverted. That is where the background problem
+    // lives — a hard cutoff makes a Gaussian decay to exactly zero, so the
+    // ≈1 across the open majority of the cube has to be held up by
+    // overlapping kernels everywhere it extends.
+    //
+    // MARL-13 measured the size of the hole by NEGATING the target: 1.40×
+    // the accuracy for 14% less capacity, from a trick that has to be TOLD
+    // what the background is. This is the same thing learned.
+    const gpa = testing.allocator;
+    var vol = try groveVolume(gpa, GROVE_RES, GROVE_EXTENT);
+    defer vol.deinit(gpa);
+    var o = Options{ .ray_budget = 2_000_000, .probes = 512 };
+    o.m.rate_w = 0.05;
+    var pr = try probesOf(gpa, &vol, o.ao, o.probes, o.seed, o.surface_band);
+    defer pr.deinit(gpa);
+
+    var plain = try teach(gpa, &vol, o, pr);
+    defer plain.deinit();
+    o.m.bias = .residual;
+    var resb = try teach(gpa, &vol, o, pr);
+    defer resb.deinit();
+    o.m.bias = .target;
+    var withb = try teach(gpa, &vol, o, pr);
+    defer withb.deinit();
+    std.debug.print("\n  G36: a bias from the RESIDUAL — {d} kernels, RMS {d:.5}, b = {d:.4}: {d:.3}× the no-bias RMS. REFUTED, and the value is the tell — the kernels eat the background long before a 1/n step can reach it.\n", .{ resb.kernels(), resb.rms, resb.model.bias[0], resb.rms / plain.rms });
+
+    std.debug.print("  G36: no bias {d} kernels RMS {d:.5}; a bias from the TARGET {d} kernels RMS {d:.5} (b = {d:.4} after {d} exemplars) — RMS {d:.3}× (≤ {d:.2}), kernels {d:.3}× (≤ {d:.1}) ({s})\n", .{
+        plain.kernels(), plain.rms, withb.kernels(), withb.rms,
+        withb.model.bias[0], withb.model.bias_n,
+        withb.rms / plain.rms, thresholds.MARL16_BIAS,
+        @as(f32, @floatFromInt(withb.kernels())) / @as(f32, @floatFromInt(plain.kernels())), thresholds.MARL16_KERNELS,
+        @tagName(builtin.mode),
+    });
+    // BOTH REFUTED, and the mechanism is not the estimator — the target
+    // form converges to the right number (0.7211, the field's mean) and is
+    // WORSE than the residual form that never converged at all.
+    //
+    // A Gaussian basis with a HARD CUTOFF cannot cheaply represent a
+    // plateau of ANY value. Zero is not special because it is zero; it is
+    // special because it is what an empty model already predicts, and a
+    // target that is zero over a large region therefore costs literally
+    // nothing. A bias moves that free value from 0 to b: it helps where
+    // y ≈ b and it HURTS everywhere y ≈ 0, which now has to be held DOWN
+    // by kernels that previously did not need to exist.
+    //
+    // So the trade is decided by how much of the field sits at zero, which
+    // is measured here rather than argued.
+    var at_zero: u32 = 0;
+    var near_b: u32 = 0;
+    for (pr.y) |y| {
+        if (y <= 0.02) at_zero += 1;
+        if (@abs(y - withb.model.bias[0]) <= 0.02) near_b += 1;
+    }
+    const fz = @as(f32, @floatFromInt(at_zero)) / @as(f32, @floatFromInt(pr.y.len));
+    const fb = @as(f32, @floatFromInt(near_b)) / @as(f32, @floatFromInt(pr.y.len));
+    std.debug.print("  G36: {d:.3} of the field is within θ of ZERO — free to a model that predicts zero — against {d:.3} within θ of the learned bias {d:.4}. A bias trades the first for the second, and here it is a losing trade by {d:.1}×.\n", .{ fz, fb, withb.model.bias[0], fz / @max(1e-6, fb) });
+
+    // The claim, asserted: the zero mass is the larger, which is WHY the
+    // bias loses. If this ever flips on some other field, the bias should
+    // be tried again there and is expected to win.
+    try testing.expect(fz > fb);
+    // And both formulations are worse, which is what MARL16_BIAS records.
+    try testing.expect(withb.rms > plain.rms and resb.rms > plain.rms);
+
+    // THE TRADE, measured. `CUTOFF` makes a learning event structurally
+    // unable to disturb a distant region and G17 (c)/(d) check it bitwise.
+    // One global scalar is not local at all. Learned as a running mean its
+    // step is 1/n, so what this gate asserts is that the disturbance
+    // DECAYS — asymptotic locality where the kernels have exact locality.
+    //
+    // MUTATION: the same measurement on the model WITHOUT a bias, which
+    // must be exactly zero. If it is not, the probes are not far enough
+    // away and the number below is measuring the kernels.
+    const inv = 1 / vol.extent;
+    const far = [3]f32{ 0.02, 0.02, 0.02 }; // a corner, in unit coords
+    const before = try gpa.alloc(f32, pr.x.len);
+    defer gpa.free(before);
+    var moved: [2]f32 = .{ 0, 0 };
+    var resid: [2]f32 = .{ 0, 0 };
+    for ([_]*Trained{ &plain, &withb }, 0..) |t, arm| {
+        for (pr.x, before) |x, *b| b.* = (try t.model.predict(.{ x[0] * inv, x[1] * inv, x[2] * inv }))[0];
+        var est = rng.Stream.region(99, 1, 0);
+        const y = aoAt(&vol, o.ao, .{ far[0] * vol.extent, far[1] * vol.extent, far[2] * vol.extent }, &est);
+        const ev = try t.model.observe(far, .{y});
+        resid[arm] = @abs(ev.residual[0]);
+        for (pr.x, before) |x, b| {
+            // Only probes FAR from the event, so the kernels it touched
+            // cannot be what is being measured.
+            const d = @max(@abs(x[0] * inv - far[0]), @max(@abs(x[1] * inv - far[1]), @abs(x[2] * inv - far[2])));
+            if (d < 0.4) continue;
+            const a = (try t.model.predict(.{ x[0] * inv, x[1] * inv, x[2] * inv }))[0];
+            moved[arm] = @max(moved[arm], @abs(a - b));
+        }
+    }
+    const n: f64 = @floatFromInt(withb.model.bias_n);
+    const scaled = @as(f64, moved[1]) * n / @max(1e-9, resid[1]);
+    std.debug.print("  G36: one late event, at probes over 0.4 of the domain away — no bias moved {e:.2} (exactly zero is the claim), with a bias {e:.2} on a residual of {d:.4} after {d} exemplars, so disturbance × n / |e| = {d:.3} (≤ {d:.1})\n", .{ moved[0], moved[1], resid[1], withb.model.bias_n, scaled, thresholds.MARL16_LOCALITY });
+    // Exact locality, with no bias, bitwise.
+    try testing.expectEqual(@as(f32, 0), moved[0]);
+    // …and asymptotic locality with one: the step is 1/n and the
+    // disturbance is that step, so this number is about one.
+    try testing.expect(scaled <= thresholds.MARL16_LOCALITY);
+}

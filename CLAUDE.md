@@ -62,7 +62,8 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G32"             # MARL-12's gate; tools/marl12_predict.py. The widening's own gate is the suite being UNCHANGED
     zig build test -Dtest-filter="G33"             # MARL-13: the occlusion cache — the first NOISY field; tools/marl13_predict.py, two of whose three were REFUTED
     zig build test -Dtest-filter="G34"             # MARL-14: DISTILLATION — sample a built model to train a smaller one; all four numbers HELD
-    zig build test -Dtest-filter="G35"             # MARL-15: QUANTIZATION — a kernel ships in 8.5 bytes; tools/marl15_predict.py was pessimistic 5×
+    zig build test -Dtest-filter="G35"             # MARL-15: QUANTIZATION — a kernel ships in 6.75 bytes (region-relative centres)
+    zig build test -Dtest-filter="G36"             # MARL-16: the BIAS term, refuted twice — zero is special because it is the model's DEFAULT
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a
@@ -296,10 +297,10 @@ complexity" is now a measurement rather than an instruction.
 LOSES 1.854× on a volume-filling field and WINS at 0.912 on a shell around
 geometry.** Two mechanisms. A hard cutoff makes a Gaussian decay to exactly
 zero, so a constant non-zero background must be held up by overlapping
-kernels everywhere it extends — and every field the campaign ever learned
-had a ZERO background, so it never grew the bias term `rbf.zig` has had
-from the start ("the entry is the BIAS"). Learning `1 − AO` is one negation
-and worth 1.40× for 14% less capacity. And a grid pays memory for every
+kernels everywhere it extends. Learning `1 − AO` is one negation and worth
+1.40× for 14% less capacity. (This originally added that MARL "never grew
+the bias term `rbf.zig` has had from the start". **MARL-16 corrected that**
+— see below.) And a grid pays memory for every
 cell whether or not anything is asked there, while a renderer asks at
 SHADING POINTS. So: **a learned sparse field beats a dense grid when the
 interesting set is SPARSE IN THE DOMAIN, and loses when the field is
@@ -376,6 +377,36 @@ because a cubic grid cannot land on a byte budget (17³ is 4.8 KiB, 18³ is
 of compression moves the comparison further in the packed set's favour,
 because **an adaptive basis compresses better than a uniform one: adaptation
 narrows the dynamic range every field has to carry.**
+
+MARL-16 then built the bias term MARL-13 said was owed, and **refuted it
+twice.** A bias from the RESIDUAL never converges (the kernels absorb the
+background long before a 1/n step reaches it — b strands at 0.1057) and
+scores 1.302×. A bias from the TARGET converges correctly to 0.7211, the
+field's actual mean, and scores **5.679×**. *The better estimator being the
+worse model is what says the fault is not in the estimator.*
+
+The mechanism: a Gaussian basis with a hard cutoff cannot cheaply represent
+a plateau of ANY value. **Zero is not special because it is zero — it is
+special because it is what an empty model already predicts**, so a target
+that is zero over a large region costs literally nothing. A bias moves that
+free value from 0 to b, helping where y ≈ b and hurting everywhere y ≈ 0,
+which must now be held DOWN. Measured: 0.123 of the field within θ of zero
+against 0.049 within θ of the bias — a losing trade by 2.5×, and G36
+asserts that inequality rather than the refuted thresholds, so if it flips
+on another field the bias should be tried there.
+
+**And a claim of mine needed correcting.** `rbf.zig`'s "entry" is NOT a
+learned constant — it is the HOST's material, supplied per hit, showing
+through where the kernels are silent, with the kernels carrying a blend
+that is ZERO in the matrix. That is exactly what MARL already does. MARL
+was never missing the term.
+
+What DID hold is the trade, now priced: one late event moves distant probes
+by exactly 0.00 without a bias (exact locality, bitwise) and by 2.26e-6
+with one, so disturbance × n / |e| = 0.272. The campaign CAN buy a
+background at the cost of asymptotic rather than exact locality — it is
+just not worth it where the zero mass is large. `BiasRule` stays,
+defaulting `.off`, with both failures written into the enum.
 
 Recorded, not built. QAT belongs in the DISTILLATION transfer step
 (Christian's, and right) — a student is already re-fitting against a free

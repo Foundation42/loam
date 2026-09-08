@@ -5184,12 +5184,16 @@ beat. Equal bytes (memory is what a cache is rationed by) and equal rays
 **The background.** A hard cutoff makes a Gaussian decay to EXACTLY zero,
 so a constant non-zero background is not free — it has to be held up by
 overlapping kernels everywhere it extends. Occlusion is ≈1 across the open
-majority of a cube. Every field this campaign has ever learned had a ZERO
-background — the quiet slab, the marble's matrix — so **it never grew the
-bias term `rbf.zig` has had since the day it was written** ("the entry is
-the BIAS: the matrix costs nothing, only the structure costs kernels").
-Learning `1 − AO` instead is one negation and no new code, and it is worth
-1.40× the accuracy for 14% less capacity.
+majority of a cube. Learning `1 − AO` instead is one negation and no new
+code, and it is worth 1.40× the accuracy for 14% less capacity.
+
+> **Corrected by MARL-16.** This entry originally went on to say that MARL
+> "never grew the bias term `rbf.zig` has had since the day it was
+> written". That was wrong. `rbf.zig`'s entry is not a learned constant —
+> it is the HOST's own material, supplied per hit, showing through where
+> the kernels are silent, and the kernels carry a blend that is ZERO in the
+> matrix. That is exactly what MARL already does. MARL-16 built the learned
+> bias the claim implied and it is worse in both formulations.
 
 **The domain.** A grid pays memory for every cell whether or not anything
 is ever asked there. A renderer asks for occlusion at SHADING POINTS, which
@@ -5541,6 +5545,90 @@ regime reached mean |w| of 13–17, and a set with that spread would waste
 most of its levels on outliers; per-region spans, or a non-uniform
 allocation, are the obvious next thing and are not built. Nothing here
 tested a set in that condition.
+
+## MARL-16 — the bias term, refuted twice, and a claim of mine corrected (Tuesday 2026-09-08)
+
+MARL-13 left "a bias term" as the indicated next thing, on the strength of
+a sentence I wrote in its ledger entry: that `rbf.zig` has had one since
+the day it was written and MARL never grew it. **That sentence was wrong**,
+and building the thing it implied is how it got found.
+
+### Both formulations, and the better estimator is the worse model
+
+The field is MARL-13's LOSING configuration — volume-uniform occlusion,
+learned directly rather than inverted — because that is where the
+background problem lives.
+
+| | kernels | RMS | b after 125 000 | vs no bias |
+|---|---|---|---|---|
+| no bias | 9 307 | 0.11872 | — | — |
+| bias from the RESIDUAL | 10 100 | 0.15459 | 0.1057 | 1.302× |
+| bias from the TARGET | 12 493 | **0.67423** | 0.7211 | **5.679×** |
+
+The residual form is the one anyone reaches for first, and it does not even
+converge: the kernels descend at `rate_w` per event while a running mean's
+step is 1/n, so they absorb the background long before the bias can and
+then `E[y − K] ≈ 0` strands it near zero. Fixing that — taking the running
+mean of the TARGET, which converges whatever the kernels do — lands b on
+0.7211, the field's actual mean, and makes the model **five times worse.**
+
+**The better estimator being the worse model is what says the fault is not
+in the estimator.**
+
+### The mechanism, measured rather than argued
+
+A Gaussian basis with a hard cutoff cannot cheaply represent a plateau of
+ANY value. **Zero is not special because it is zero. It is special because
+it is what an empty model already predicts** — so a target that is zero
+over a large region costs literally nothing, and that is the only sense in
+which the campaign's earlier fields had a "free background".
+
+A bias moves the free value from 0 to b. It helps where y ≈ b and it hurts
+everywhere y ≈ 0, which now has to be held DOWN by kernels that previously
+did not need to exist. On this field:
+
+    0.123 of the probes sit within θ of ZERO   (free without a bias)
+    0.049 sit within θ of the learned bias     (free with one)
+
+A losing trade by 2.5×, and the gate asserts that inequality rather than
+the refuted thresholds — so if it ever flips on some other field, the bias
+should be tried there and is expected to win.
+
+### What MARL-13's inversion actually bought
+
+Not a "zero background" in any abstract sense. Two concrete things: the
+zero mass stayed free, AND the amplitude the kernels had to carry fell from
+mean(AO) ≈ 0.72 to mean(1 − AO) ≈ 0.28. A bias delivers the second and
+destroys the first.
+
+### The trade that DID hold, and it is worth keeping
+
+`CUTOFF` makes a learning event structurally unable to disturb a distant
+region, and G17 (c)/(d) check it bitwise. A global scalar is not local at
+all. Learned as a running mean its step is 1/n, so the disturbance decays:
+
+    no bias    one late event moved distant probes by EXACTLY 0.00
+    with bias  2.26e-6 on a residual of 1.04 after 125 001 exemplars
+               → disturbance × n / |e| = 0.272 against a ceiling of 1.5
+
+So the campaign CAN buy a background term, at the price of asymptotic
+rather than exact locality, and the price is now priced. It is simply not
+worth paying on a field with a large zero mass. An EWMA (`rate_bias > 0`)
+would give up both — its step never decays — and is there for a field whose
+background drifts, knowingly.
+
+### Kept, not deleted
+
+`BiasRule` stays in `Options`, defaulting `.off`, with both formulations
+and the reason each fails written into the enum. The residual form
+especially: it is what anyone would reach for, and the ledger should say
+why it is wrong rather than leave the next person to find out.
+
+Every number from G17 to G35 is untouched — verified on G17 and G31 (a)
+rather than by a suite run, because the suite is four minutes and Christian
+asked for it not to be run on every edit. G17 (d) reads 2 468 kernels and
+G17 (e) 0.04823 at gain 2.99, both identical to the pre-change baseline,
+and G31 (a) is still bit-identical at 975 kernels.
 
 ## Measurements (regime stated)
 
