@@ -44,6 +44,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
+| Adaptive inverse births | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-3; src/adaptive_inferred.zig, G50; docs/data/obs3 |
 | Hidden potential inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-2; src/inferred.zig, G49 |
 | Observational state inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md; src/observed.zig, G48 |
 | Current field experiments | docs/MARL_ALGEBRA_CAMPAIGN.md, sections 5b/5c |
@@ -91,12 +92,20 @@ Completed OBS-1 / G48 (ea22c84): fixed-flow observations update the source
 MARL at the preimage. Corrected/prior RMS .12553; wrong coordinates grow
 ~900 kernels, but spatial footprint confounds mismatch interpretation.
 
-Latest beat: OBS-2 / G49; docs/MARL_OBSERVATIONAL_CAMPAIGN.md.
+Completed OBS-2 / G49 (038b0ea); docs/MARL_OBSERVATIONAL_CAMPAIGN.md.
 Frozen 9-kernel potential inferred from trajectory endpoints. Correct/prior
 held-out RMS .003332, correct/wrong-dynamics .002397, with matched work.
 972 f64 sensitivity checks: raw large-step FD prediction refuted in four
 cases; smaller steps pass. Recorded Richardson amendment passes unchanged
 tolerances, worst relative error 2.65e-6. Missing-position-feedback mutation
 fails 936 checks. Targeted G49(a/b) passed. Headline recovery uses f32.
-Next: adaptive mismatch diagnostics; record pre-update residuals, coverage,
-birth location/scale and work. K=9 is frozen here, so no proliferation claim.
+Latest beat: OBS-3 / G50, restricted candidate activation, not core MARL
+births or moving geometry. 41 shared candidates, active cap25, 4 arms.
+Correct stays K9; wrong adds16 at every seed, then requests4 more. Wrong
+adaptive/frozen RMS: train .3432, heldout1.8230. Prior coverage at every
+birth centre >=.8133. Histories and spatial records in docs/data/obs3.
+All arms share RHS/search counts; active coefficient updates differ.
+No death policy, hence no birth-death churn claim. Next control should
+vary true complexity/observation windows before broadening interpretation.
+Shared sensitivities now live in src/trajectory.zig; G49 stays unchanged.
+Targeted G49/G50 passed. Use smoke at commit; do not run full suite.

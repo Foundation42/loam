@@ -65,6 +65,8 @@ pub const deferred = @import("deferred.zig");
 pub const observed = @import("observed.zig");
 /// OBS-2: fixed-geometry trajectory sensitivities and potential inference.
 pub const inferred = @import("inferred.zig");
+/// OBS-3: matched-budget candidate births for inverse fitting.
+pub const adaptive_inferred = @import("adaptive_inferred.zig");
 
 // The working surface, re-exported flat.
 pub const Domain = lattice.Domain;
@@ -108,5 +110,6 @@ test {
     _ = deferred;
     _ = observed;
     _ = inferred;
+    _ = adaptive_inferred;
     _ = @import("tests.zig");
 }

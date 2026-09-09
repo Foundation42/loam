@@ -212,3 +212,136 @@ its recorded Richardson amendment, and G49(b) pass targeted ReleaseSafe.
 
 Commit validation: the standard smoke check passed 12/12 tests, about
 3 s execution plus 12 s compilation. No full regression run.
+
+## OBS-3 / G50 — restricted births under matched candidate coverage
+
+### What is adaptive here
+
+This phase adds coefficient-driven activation of new Gaussian shapes to
+OBS-2. It is a **restricted inverse-fitting birth policy**, not a change
+to MARL.observe's online coverage rule, nor moving-geometry inference.
+Nine coarse kernels begin active. Both arms have the same dictionary of
+32 additional candidates: a 4×4 lattice at .2/.4/.6/.8 in each axis, at
+widths .14 and .09. Maximum active count is 25. Candidates retain fixed
+centres and shapes after activation; there is no death, relocation or
+hierarchical tree in this phase. K means active basis functions: all 41
+candidate slots and sensitivities are allocated in every arm, so active
+K is not a measurement of actual allocator bytes.
+
+This restriction removes candidate-placement and candidate-search-budget
+confounds before testing a freer adaptive representation. The scientific
+predictions were frozen in `tools/obs3_predict.py`: wrong dynamics should
+produce more total and late births, while correct dynamics should retain
+lower held-out error. These are reported as HELD/REFUTED; implementation
+invariants are hard gates. No prediction that births improve generalisation
+under wrong dynamics was made.
+
+### Controls and birth rule
+
+Use OBS-2's exact three seeds, 16 initial positions, 32 endpoints, 64
+held-out trajectories, dynamics and Adam settings. Four arms cross
+correct/wrong dynamics with frozen/adaptive allocation. All receive 1200
+full-batch updates, rather than OBS-2's 400; frozen controls measure the
+effect of those additional iterations. Observations remain the same batch
+throughout: this phase does not yet test a changing stream of new evidence.
+
+The first 400 updates allow the initial basis to settle. At updates
+440,480,...,1200, the best inactive candidate may be activated with zero
+weight. For current pre-update loss gradient g_j and sensitivity-energy
+h_j (the Gauss–Newton diagonal), its score is g_j²/(2h_j). This is the
+linearised one-coefficient predicted loss reduction, not a guaranteed
+improvement after nonlinear optimisation. Require score > 5e-9, the
+half-squared loss corresponding to a declared 1e-4 endpoint accuracy
+target. This is a chosen accuracy target, not measured observation noise.
+If capacity is full, count the request as denied. Old optimiser moments
+persist; new coefficients start fresh moment and bias-correction clocks.
+
+All 41 candidate sensitivities are evaluated at every learning step,
+including in frozen controls. Every arm uses **1,228,800 learning RHS
+calls and 50,380,800 learning kernel evaluations**, and shares the same
+capacity ceiling and 1200-update limit. Active coefficient updates are
+also recorded; those counts can differ as K grows. Thus the dominant
+integration/search work is exactly matched, not every hardware instruction
+or total allocator operation. Scoring uses the same schedule in all arms.
+
+### Histories, not just final populations
+
+The portable measurements are in `docs/data/obs3/`:
+
+- `history.csv`: 360 pre-update checkpoints, errors, K before/after birth,
+  candidate score, requests/denials, coefficient-change L1 over the previous
+  window, and work counters.
+- `birth.csv`: every birth's position, width, pre-birth coverage, local
+  residual energy, loss gradient, sensitivity energy and predicted gain.
+- `spatial.csv`: residual squared error binned at the **common observation
+  starts**, plus visit counts along predicted integration points. Source
+  residual bins cover [.15,.85]²; path bins cover [0,1]². Both are 4×4 in
+  x-fast order, followed by an outside bin. These are two distinct spatial
+  diagnostics, not a claim that source residuals are force-localisation.
+- `final.csv`: final errors, active K, late births (after update 800),
+  requests, denials, work and measured time including scoring/output.
+
+`python3 tools/obs3_report.py /tmp/marl-g50.log docs/data/obs3` extracts a
+completed G50 log and refuses a partial sweep. Held-out values never enter
+the birth score or optimiser. Local residual energy at a birth weights
+pre-update endpoint errors by that candidate's Gaussian at observation
+starts; this is a localisation proxy, not an adjoint-derived residual map.
+
+### Results
+
+Correct dynamics request **no births**, retaining K=9 at all seeds.
+Wrong dynamics activate **16 candidates per seed**, reaching K=25 at
+update 1040. Each makes 20 requests, including four denied after saturation.
+Six births per seed occur after update 800. All three frozen directional
+predictions hold: pooled births 0/48, late births 0/18, and lower adaptive
+held-out error under correct dynamics.
+
+| seed | correct K | wrong adaptive K | wrong frozen train RMS | wrong adaptive train RMS | wrong frozen held-out RMS | wrong adaptive held-out RMS |
+|---|---:|---:|---:|---:|---:|---:|
+| 7 | 9 | 25 | .029921 | .011182 | .050910 | .093706 |
+| 19 | 9 | 25 | .022706 | .007661 | .053516 | .086554 |
+| 41 | 9 | 25 | .026689 | .008142 | .042721 | .089017 |
+
+Pooled across seeds, adaptation under wrong dynamics reduces training RMS
+to **.3432×** its frozen control, but increases held-out RMS to **1.8230×**.
+This is a capacity-enabled training/generalisation split under matched
+observations and search work. Correct adaptive and frozen arms coincide;
+held-out error is 5.15e-7/5.24e-7/3.56e-7. OBS-2 seed 19's optimisation
+residual disappears with the longer budget, without requiring a birth.
+
+Every selected location was already covered before birth: maximum active
+Gaussian value at its centre ranges **.8133 to 1.0**. Thus these are not
+births into previously empty candidate locations. Of 48 births, 39 use
+width .09 and nine width .14. Each seed activates 16 kernels at 13 distinct
+locations: three locations acquire both scales. The mean ratio of
+birth-local residual MSE to global training MSE is 1.13/1.17/1.64 by seed.
+This is descriptive evidence of where allocation occurs, not a separately
+pre-registered statistical test or proof of causal residual localisation.
+
+Predicted path visit counts already differ between correct and wrong arms
+at the first birth, despite shared sensor coverage and candidate sites.
+Neither has outside-domain visits at that checkpoint. Internal-path
+coverage therefore remains a distinction to account for in broader
+claims; matching observation locations alone cannot make it identical.
+
+### Claim boundary and validation
+
+This supports a restricted statement: **under this birth policy, wrong
+dynamics activate more already-covered basis functions, fit training
+observations better, and generalise worse**. It does not establish a
+universal MARL mismatch detector, physical memory expenditure, or persistent
+birth–death churn. With no death policy, saturation ends actual growth;
+continued rejected requests are pressure, not churn. The true field also
+lies in the initial nine-kernel span, making this a controlled favourable
+case for the correct dynamics, not an unknown-complexity recovery test.
+
+The common trajectory engine was extracted into `src/trajectory.zig`;
+G49's derivative audit and recovery results are unchanged. G50(a) checks
+that dormant candidates preserve the original trajectory and sensitivities
+bitwise, that zero-weight activation changes no field value, that a new
+fine coefficient's derivative matches finite differences, and that inactive
+weights remain zero. G50(b) enforces capacity and work contracts while
+retaining the directional research predictions as explicit results.
+
+Validation: targeted G49 and G50 passed; all 12 smoke tests passed
+(about 3 s execution plus 12 s compilation). No full regression run.

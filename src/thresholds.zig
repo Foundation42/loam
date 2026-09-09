@@ -2918,5 +2918,9 @@ pub const OBS2_GRAD_REL: f64 = 1e-3;
 pub const OBS2_GRAD_ABS: f64 = 1e-9;
 /// Directional held-out trajectory and field-gradient recovery predictions.
 pub const OBS2_GAIN_MARGIN: f64 = 1;
+/// OBS-3 birth policy: a declared 1e-4 endpoint accuracy target, expressed
+/// as predicted reduction in mean half-squared Euclidean endpoint loss.
+/// Not a measured noise estimate. Frozen in tools/obs3_predict.py.
+pub const OBS3_BIRTH_GAIN: f32 = 0.5 * 1e-4 * 1e-4;
 
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

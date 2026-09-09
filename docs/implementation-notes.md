@@ -7207,3 +7207,37 @@ spanning 3.14e-8 to .8264. Omitting position feedback fails 936 raw checks.
 This mutation exposes the Hessian term in temporal credit assignment.
 G49(a) and (b) pass targeted ReleaseSafe. Full method and limitations are
 in docs/MARL_OBSERVATIONAL_CAMPAIGN.md. No full suite was launched.
+
+
+## OBS-3 — already-covered births improve training and worsen prediction (2026-09-09)
+
+G50 adds a restricted candidate-birth policy to inverse fitting, with
+pre-registration in tools/obs3_predict.py. Four arms cross correct/wrong
+dynamics and frozen/adaptive allocation. Identical OBS-2 data, 1200 updates,
+41 shared candidate shapes, active cap 25. All candidates carry sensitivities
+in all arms, including frozen controls. This is not original MARL.observe
+or moving-geometry differentiation, and allocated dictionary memory is
+fixed: K counts active basis functions.
+
+Correct arms stay at K=9 without requesting a birth. Wrong adaptive arms
+reach K=25 at step 1040, each with 16 births (6 after 800) and 4 subsequent denied
+requests. Compared with wrong frozen controls, pooled training RMS falls
+to .3432x but held-out RMS rises to 1.8230x. Each birth centre already has
+maximum active Gaussian coverage .8133–1.0; 39/48 births use the finer .09
+width. Each seed revisits three candidate locations at a second scale.
+The two growth predictions and held-out ordering hold.
+
+Every arm uses 1,228,800 learning RHS and 50,380,800 learning basis evaluations.
+Actual coefficient updates are 10,800 in frozen/correct arms versus 18,176
+in wrong adaptive arms; budget and dominant search work are matched, not
+every instruction. Timings including scoring/output are about .43s per arm.
+All 32 endpoints repeat throughout: no newly arriving evidence, no deletion,
+no claim of persistent birth-death churn. Internal paths differ despite
+matched sensors and candidate coverage; visits are recorded separately.
+
+The lab book OBS-3 section details the policy, controls and limitations.
+Portable CSVs in docs/data/obs3 preserve 360 histories/spatial snapshots,
+48 births and 12 final reports; tools/obs3_report.py extracts a complete log.
+The shared trajectory engine moved to src/trajectory.zig. Targeted G49
+still matches prior results; G50's zero-weight birth, dormant-candidate,
+fine sensitivity, masking, capacity and work contracts passed.
