@@ -2694,4 +2694,209 @@ pub const MARL25_STEP_PAYS: f32 = 0.6;
 /// 340 in 2.3 KiB at 0.598×.
 pub const MARL25_FREE: f32 = 1.05;
 
+/// G44 (a): |closed-form mass − fine quadrature| / closed form, worst over
+/// six random kernels. PROPOSED as a CEILING at 1e-5.
+///
+/// Not a tolerance — a DERIVATION check. The integral of a kernel is
+/// w·(2π)^{3/2}/det L, det L is the product of L's diagonal, and the
+/// diagonal is already stored as its log. The hard cutoff removes
+/// 5.233e-7 of it (P(χ²₃ > 32), `tools/alg1_predict.py`), which is the
+/// only approximation in the formula. A 64³ midpoint rule over a
+/// gaussian's own cutoff box is exact far below that — a trapezoid on a
+/// smooth decaying function converges exponentially — so anything this
+/// gate can see above 1e-5 is an error in the closed form and not in the
+/// quadrature.
+///
+/// §13 proposes measuring a conserved quantity before and after
+/// projection. This says it is free: one multiply-add per kernel, exact
+/// to a part in two million, no grid anywhere.
+pub const ALG1_MASS_CLOSED_FORM: f64 = 1e-5;
+
+/// G44 (b): RMS between a rotated model and the model it was rotated
+/// from, read at the pre-image. PROPOSED as a CEILING at 1e-4.
+///
+/// The affine subgroup acts on a gaussian's parameters in closed form —
+/// mu' = A mu + b, L' = chol(A^-T L L^T A^-1) — so a rotation of a MARL is
+/// EXACT and needs no projection. Over 4 000 random kernels the worst
+/// single-step departure is 3.9e-15 in f64 and 2.4e-6 in f32, the f32
+/// figure being the 3x3 Cholesky's own rounding; G31 (a)'s conversion IS
+/// bit-exact only because rounding a difference commutes with scaling by a
+/// power of two, and a rotation mixes axes.
+///
+/// Forty composed steps accumulate as a random walk: sqrt(40)*2.4e-6 =
+/// 1.5e-5. The bound is that with a 6x margin, because a random walk is an
+/// argument and not a proof.
+///
+/// This is what makes §35's proposed first experiment a CONTROL. Its
+/// velocity field is linear, hence its flow map is affine, hence it is
+/// exactly representable here — so an arm that only reproduced it would
+/// have demonstrated nothing about projection.
+pub const ALG1_WARP_EXACT: f32 = 1e-4;
+
+/// G44 (c): |mass after − mass before| / mass before, over one revolution.
+/// PROPOSED as a CEILING at 0.20.
+///
+/// The swirl is divergence-free (the two pi-terms of a Taylor-Green cell
+/// cancel exactly), so mass is conserved in the continuum and every unit of
+/// drift belongs to the projection. The pre-registration derived its source
+/// as the projection's dead zone — `threshold` is 0.02, the blob falls
+/// below that at 2.797 widths, and a 3-D gaussian carries 4.98% of its mass
+/// beyond that radius — and deliberately did NOT predict the sign, on the
+/// grounds that the arriving tail is never learned (loss) while the
+/// departing tail is never unlearned (gain).
+///
+/// **REFUTED on both counts, and the second is the informative one.** The
+/// drift reaches 0.39 on the rotation and 0.71 on the swirl, and it is not
+/// one-signed: it wanders above and below 1 along a single run (1.00,
+/// 0.98, 0.98, 1.05, 0.91, 0.68, 0.61). A drift that alternates is not a
+/// dead-zone effect — it is the loop's own instability showing up in the
+/// integral, which is what G44 (c) and (e) then measured directly.
+///
+/// Not asserted. A conservation number taken on a field that is decaying
+/// to a constant measures the decay, and ALG-5 should be re-run once the
+/// loop is stable — which is to say after ALG-2.
+pub const ALG1_MASS_DRIFT: f64 = 0.20;
+
+/// G44 (c): the ORACLE arm's RMS as a fraction of a constant predictor,
+/// after forty projection steps. PROPOSED as a CEILING at 0.15.
+///
+/// The same loop, the same points, the same projection, handed the EXACT
+/// solution at each step instead of the model's own backtraced output. No
+/// simulation can do that; it is the ceiling, and it exists so that a
+/// degrading field can be told apart into "the representation cannot hold
+/// the answer" and "the loop cannot find it". The fit it starts from
+/// scores 0.058 of a constant, so 0.15 allows the transport to cost the
+/// representation about 2.5x its own error.
+///
+/// **HELD, at 0.069.** The representation holds a transported field
+/// essentially as well as it holds a static one.
+pub const ALG1_ORACLE: f32 = 0.15;
+
+/// G44 (c): the self-referential arm's RMS divided by the oracle's, after
+/// forty steps. PROPOSED as a FLOOR at 5.
+///
+/// Stated as a floor, which is unusual and deliberate: this asserts a
+/// FAILURE, because the failure is the phase's finding. `ALG1_TRANSPORT`
+/// was the pre-registered headline and it is REFUTED (see below); what
+/// replaced it is the sharper claim, that the cost lives entirely in the
+/// loop's self-reference and not in the basis, the operator or the scheme.
+pub const ALG1_LOOP_COST: f32 = 5;
+
+/// G44 (c): the self-referential arm's RMS as a fraction of a constant
+/// predictor, after one revolution of a non-affine swirl. PROPOSED as a
+/// CEILING at 0.25.
+///
+/// **REFUTED, at 1.54** (and the rotation arm at 1.02) — the field decays
+/// to a constant over a single revolution. Left standing for Christian to
+/// strike, with what it measured written here, because the number it was
+/// reaching for turned out to be about a different thing entirely:
+///
+///   - the REPRESENTATION is fine: the oracle arm ends at 0.069;
+///   - the SCHEME is fine: the blob's width is FLAT throughout, so this is
+///     not the numerical diffusion a semi-Lagrangian scheme is known for;
+///   - what fails is that the field is its OWN SOURCE. Every step fits the
+///     model to a resampling of itself, and MARL-19 priced one such copy at
+///     1.179x on a noiseless field.
+///
+/// The remedy the data points at is §19's lazy expression graph, which the
+/// note proposes as an OPTIMISATION. It is not — it is the numerical
+/// remedy. Every materialisation is a generation of loss, so the algebra
+/// should project as RARELY as it can, not once per timestep. That is
+/// ALG-2.
+pub const ALG1_TRANSPORT: f32 = 0.25;
+
+/// G44 (e): the worst RMS an ADAPTIVE arm reaches over a fourfold sweep of
+/// basis fineness, forty steps. PROPOSED as a CEILING at 0.30.
+///
+/// The other half of G44 (e), and the surprise in it. With the topology and
+/// geometry frozen, one step is a linear recursion w' = Phi(P)^+ Phi(P-d) w
+/// and iterating it is a power method; MARL-23 established that a Gaussian
+/// basis much finer than the feature is nearly linearly dependent, so the
+/// pseudo-inverse amplifies, and the divergence rate duly rises with
+/// fineness — 1.9, 52, 8e8, 6e9 at regions 2/3/4/6.
+///
+/// Switch births and the geometry descent back on and the same loop stays
+/// bounded at every setting. **MARL's adaptivity is what stops it
+/// exploding.** Every earlier sighting of MARL-1's invariant had capacity
+/// acquisition as the thing to restrain; here it is the stabiliser.
+pub const ALG1_ADAPTIVE_BOUND: f32 = 0.30;
+
+/// G44 (g): the push-forward arm's RMS as a fraction of a constant
+/// predictor, after one revolution. PROPOSED as a CEILING at 0.15 — the
+/// oracle's own bar, because a projection-free operator has no excuse to be
+/// worse than a projection given the exact answer.
+///
+/// The operator: a kernel is small, so the flow is affine across it, so
+/// G44 (b)'s closed form applies LOCALLY with the flow map's Jacobian —
+/// mu' = Phi_dt(mu), L' = J^-T L, w unchanged. No learning, no evidence, no
+/// births, no generation loss. Exact for an affine flow by construction;
+/// second order in the kernel's width times the flow's curvature otherwise,
+/// where the projected loop's error is FIRST order in the step count.
+pub const ALG1_PUSH: f32 = 0.15;
+
+/// G44 (g): how much better the projection-free push-forward must be than
+/// the projected loop on the SAME non-affine flow. PROPOSED as a factor of
+/// 2 — stated as a margin so the gate fails if the advantage shrinks.
+///
+/// Derivable before the run, and that is why it is the assertion the gate
+/// rests on rather than an absolute. The push-forward's error is SECOND
+/// order (the kernel's width times the flow's curvature, once) where the
+/// projected loop's is FIRST order in the number of projections, and G44
+/// (d) measured that the loop's error rises rather than falls when the step
+/// is refined. Over forty steps the two cannot be close.
+///
+/// Measured at 3.6x: 0.431 against 1.543 of a constant, at 125 kernels
+/// against 894, in 0.004 s against 3.2.
+pub const ALG1_PUSH_MARGIN: f32 = 2;
+
+/// G44 (h): measured excess RMS from a learned velocity, divided by the
+/// error-propagation prediction T |dV| RMS|grad F|. PROPOSED as a BAND of
+/// 2 — the ratio must lie between 0.5 and 2.
+///
+/// A band and not a ceiling, deliberately. An excess far SMALLER than the
+/// law would refute it just as squarely, and would mean the velocity's
+/// error cancels along the path instead of accumulating — which would be a
+/// statement about closed trajectories worth chasing.
+///
+/// There is no free parameter: RMS|grad F| = 3.392 over the ball of three
+/// widths is computed from the analytic blob in `tools/alg1_predict.py`,
+/// T is one revolution, and |dV| is the velocity model's own measured
+/// error. The prediction was written before the velocity model existed.
+///
+/// The original run reported an excess much smaller than this estimate.
+/// Follow-up: it subtracted truth-RMS values on different probes. That
+/// observable can hide compensation between velocity and transport error;
+/// it does not establish cancellation or a circulation law. G44 (h) now
+/// uses paired probes and reports direct field separation. G44 (j) gives
+/// a closed-orbit counterexample to a general cancellation claim. The
+/// pre-registered value below is retained, not retuned or asserted.
+pub const ALG1_VELOCITY_BAND: f32 = 2;
+
+/// G44 (k), PROPOSED before the diagnostic: a single fit to transported
+/// samples of the original MARL is more accurate than forty local-affine
+/// pushes on the nonlinear swirl, with 60k exemplars as in the initial fit.
+/// This is an ordering only; population and training time are reported,
+/// not assumed equal. It tests the deferred-materialisation opportunity,
+/// not whether more kernels alone repair the current transport operator.
+pub const ALG1_PULLBACK_MARGIN: f64 = 1;
+
+/// G45 pre-registration (2026-09-09): doubling permitted support at
+/// fixed ownership grid reduces the mean population on the broad blob,
+/// over seeds 7, 19, 41 and 60k identical exemplars per arm. Predict an
+/// ordering, not the naive 8x coverage-volume saving: learned shapes and
+/// the surprise floor alter which parts of the sampling ball need cover.
+pub const ALG_WIDTH_POPULATION_MARGIN: f64 = 1;
+/// PROPOSED accuracy guard for that same comparison: broad births should
+/// not cost more than 25% in mean RMS. This is a prediction, not a default
+/// change, and is retained as refuted if the run disagrees.
+pub const ALG_WIDTH_RMS_ALLOWANCE: f64 = 1.25;
+
+/// G46, PROPOSED before the selector diagnostic: at half the kernels
+/// evaluated through the backtrace, a weighted per-kernel probe error
+/// ranks corrections better than eight matched random subsets, averaged
+/// over seeds 7,19,41. No fitted cutoff, no accuracy claim on an unseen
+/// flow: this asks whether the local signal is useful at all. Signed
+/// cancellation between kernels is a possible refutation.
+pub const ALG_SELECTOR_MARGIN: f64 = 1;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

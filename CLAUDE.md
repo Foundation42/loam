@@ -7,7 +7,7 @@ feel reassured. Chris has asked for this in every sibling repo; a suite
 run per edit makes the harness the activity rather than the work.
 
     zig build test -Dtest-filter=straddling   # one gate: 17 s to compile ReleaseSafe, then seconds
-    zig build test                            # 105 gates, ~3 min ReleaseSafe — before a commit
+    zig build test                            # full suite, ~12 min ReleaseSafe with G44–G46 — before a commit
     zig build test -Dtest-optimize=Debug -Dtest-filter=…   # the other regime: 2 s to compile, slower to run
     zig build test -Dtest-optimize=ReleaseFast              # the delta, when Christian asks for it
     zig build verify-dump                     # loam-run writes a dump, the struple PYTHON port reads it
@@ -76,6 +76,11 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G42"             # MARL-24: a residual layer wants a COARSER basis than the bake — 25 kernels in 1.0 KiB
     zig build test -Dtest-filter="G43"             # MARL-25: was `regions` wrong everywhere? the clamp read as a diagnostic. 40 s
     zig build marl -Doptimize=ReleaseFast -- --q3 out/oa_spirit3.vol --exemplars 120000 --exterior --regions 4   # the corrected headline: MARL/grid 0.329
+    zig build test -Dtest-filter="G44"             # ALG-1: the FIELD ALGEBRA opens a new lab book (docs/MARL_ALGEBRA_CAMPAIGN.md). 53 s
+    python3 tools/alg1_predict.py                  # ... its pre-registration; four of eleven numbers REFUTED, and the refutations are the phase
+    zig build test -Dtest-filter="G45"             # support width independent of ownership: blob sweep, sharp-shell control, exact wider gather
+    zig build test -Dtest-filter="G46"             # selective transport: local-error probes vs random and weight-only selection; accuracy diagnostic, not a speed claim
+    python3 tools/width_predict.py                 # G45 geometry prediction and G46 selector pre-registration
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, the lot once before a

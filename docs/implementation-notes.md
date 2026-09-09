@@ -6956,3 +6956,151 @@ after ten steps and over on every one of them.
 With 16 threads apply, finalize and the seam pass all go parallel;
 ReleaseFast at 200 steps: 0.75 ms per step against 2.12 serial, the
 scene build 30 ms against 237.
+
+
+## ALG-1 follow-up — query correctness and the velocity observable (2026-09-09)
+
+Christian handed over the completed, uncommitted ALG-1 beat for a fresh
+look. Two corrections precede ALG-2; no pre-registered threshold value
+was changed, and the frozen Python predictions remain untouched.
+
+**Transport must preserve the query as well as the parameters.** A warp
+can violate the learner's one-region-edge support bound. `Model.compact`
+and `reseedFrom` now detect this (including centres outside their owner's
+cube) and select an ordered full gather. Ordinary fitted models keep the
+27-region path. G44 (i) rotates an admissible kernel into a shape whose
+support crosses two owner cells: the old gather returns zero for a
+nonzero contribution; the new query agrees bit for bit with `predictAll`,
+also over 2 048 random points. Copying preserves this behaviour and
+removing the last kernel restores the narrow path. The old gather is an
+executable mutation in the gate.
+
+This deliberately pays O(K) kernel evaluations for affected models;
+it does not shrink or refit the field. A fixed 5³ gather was not chosen
+because repeated nonlinear deformation can outgrow it too. A spatial
+index based on transformed support is deferred until transported-query
+cost is measured as the bottleneck. Derivatives stay in `field.zig`:
+there is no correctness pressure to move the pinned kernel boundary.
+
+**The circulation conclusion was not measured by G44 (h).** Its two arms
+used different probes and subtracted RMS errors against truth. G44 (h)
+now shares probes and reports direct RMS between the fields. At 10 and
+40 steps this is 0.020783 and 0.064921, while the truth-RMS difference
+falls from 0.00927 to 0.00053. Small difference of errors is not small
+field error. The reference centre is still 0.096610 from its starting
+point at 40 steps: a nominal rotation period is not this swirl's period.
+G44 (j) supplies a closed-streamline counterexample: a 1% angular-rate
+bias grows displacement from 0.003927 to 0.015705 at quarter/full turn.
+Removing that bias is the executable mutation; strict growth disappears.
+The lab book retains the original numbers and records the correction.
+
+The main push-forward result survives full support: swirl 0.432× a
+constant versus the projected loop's 1.431×, 125 versus 894 kernels.
+The appropriate ALG-2 comparison still includes deferred projection,
+but cancellation on recurrence is now a hypothesis to test directly,
+not an established law to build on.
+
+Validation: ReleaseSafe G44 and G17 passed; G28's transplant/compaction
+check passed. No full-suite rerun or commit in this follow-up. Logs are
+in `/tmp/marl-g44-review.log`, `/tmp/marl-g17-review.log`, and
+`/tmp/marl-g28-review.log` for this workspace session.
+
+
+## ALG-1 diagnosis — initial fit versus transport, and one materialisation (2026-09-09)
+
+Christian asked whether the observed errors indict the original MARL
+representation and what can improve them. G44 (k) holds the initial fit
+immutable, transports coordinates instead of kernel parameters, and
+measures all arms on common final swirl probes. The original model read
+at backtraced coordinates has RMS 0.008781 (0.049× a constant); the pushed
+model has 0.073649 (0.413×). Their direct separation is 0.071951, while
+40-versus-640-step backtracing differs by only 8.547e-6. The large added
+error is therefore the local-affine transport approximation in this case.
+A nonlinear deformation need not preserve Gaussian shape.
+
+A fresh model fitted ONCE to transported examples of the original model
+has RMS 0.023059 (0.129×), using 267 kernels instead of 125, 60k exemplars,
+and 0.875 s in ReleaseSafe. No analytic target is used to train it. This
+is approximately 3.2× less error than pushing for 2.1× the kernels and a
+fit pass. The backtraced reader keeps the best accuracy but pays for flow
+integration on each read; its cost is not hidden in a claimed free warp.
+The proposed ordering `ALG1_PULLBACK_MARGIN = 1` was written before the
+run and held. No existing threshold or default was changed.
+
+The diagnostic informs ALG-2, without claiming its k sweep is complete.
+Mutation: leave training points at their source locations; a student
+trained without transport must lose the proposed advantage. The fitted
+source values, stream, exemplar count and all other settings stay fixed.
+
+ReleaseSafe G44 (k) passed. The executable mutation failed its ordering
+assertion at RMS 0.197182 (1.105× a constant), as intended; the transported
+training locations were restored. Logs: `/tmp/marl-g44k-review.log` and
+`/tmp/marl-g44k-mutation.log`. No full-suite rerun or commit for this
+additive diagnostic.
+
+
+## G45–G46 — width is a representation choice, transport has another scale (2026-09-09)
+
+Christian authorised further investigation and suggested locally chosen
+advection methods or representations. `tools/width_predict.py` records
+G45's geometry prediction and G46's initial ranking prediction before
+their measurements; the additional sharp-shell and weight-only controls
+are labelled exploratory.
+
+The core gains `Options.support_edges` (default 1): the permitted support
+half-extent and query stencil can grow independently of ownership region
+size. The initial width ceiling follows that limit; the centre trust and
+minimum width keep their old scale. The Gaussian evaluator, original
+defaults and pinned cross-repo semantics are unchanged. A query-work
+instrument calls the actual gather, without a learning event. The field
+module's pinned-width diagnostic now reads the model's configured limit.
+
+G45's smooth-blob sweep, seeds 7/19/41 and 60k matched exemplars, finds
+that doubling support with broad births buys 0.2939× population and
+0.7511× initial raw RMS. Permitting widening from the old birth width
+buys less. Quadrupled support settles at 13 kernels for all three seeds.
+But pushed swirl error rises with width: the widest kernels fit the
+initial field best and follow the nonlinear flow worst. On the existing
+two-sharp-shell target (200k exemplars, two seeds), doubled support instead
+costs 17% more error for 72% fewer kernels. Width is not changed globally.
+
+G46 probes each kernel's local deformation discrepancy and compares
+selectively backtraced contributions with matched random subsets. At
+6 of 13 corrected kernels, selected/random RMS is 0.0361 across three
+seeds. A necessary follow-up baseline — absolute weight alone — gets
+almost exactly the same result (local-error/weight RMS 0.9956). This
+fixture therefore earns importance-based selection as an accuracy signal,
+not the extra calibration work. No per-node scheduler is introduced.
+The mixture selects complete kernel contributions, preserving their
+continuous interiors rather than adding cell-face method switches.
+The existing hard support cutoff still applies.
+
+The diagnostic is not a speed claim: once a query needs a backtraced
+contribution it pays for a shared backtrace. A support bound on deformed
+contributions, or an amortised flow map, is needed to turn selection into
+runtime savings. A future selector experiment should put equally
+important components under different deformation, so importance alone
+cannot answer the experiment. These triggers are recorded in the lab
+book alongside full tables and configuration details.
+
+
+Validation for G45–G46: ReleaseSafe G17, G44 (i), G45 and G46 passed.
+Executable mutations were compiled and run: making the broad-birth arm
+use historical support produced population/RMS ratios of exactly 1 and
+failed G45's population comparison; reversing the local-error ranking
+produced selected/random RMS 1.4459 and failed G46. Both mutations were
+restored and the gates passed again. G45 (a)'s stencil/reference witness
+also covers ownership grids 4/6/8, including non-power-of-two cell widths.
+No full-suite rerun or commit for this beat. Session logs are
+`/tmp/marl-g45-restored.log`, `/tmp/marl-g46-restored.log`,
+`/tmp/marl-g45-mutation.log`, `/tmp/marl-g46-mutation.log`,
+`/tmp/marl-g17-width.log`, `/tmp/marl-g44i-width.log` and
+`/tmp/marl-g45a-grid.log`.
+
+
+Pre-commit validation (2026-09-09): the complete `zig build test` suite
+passed in ReleaseSafe, exit 0, including the legacy simulation gates and
+G44–G46. The run took about twelve minutes including compilation; the
+old three-minute estimate in the working guidance was stale. Log:
+`/tmp/marl-precommit-suite.log`. This supersedes the earlier per-beat
+notes saying no full-suite rerun had yet been performed.

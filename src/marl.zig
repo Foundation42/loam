@@ -62,9 +62,10 @@
 //! centre, and its shape is projected after every step so its cutoff box
 //! reaches at most one region edge (`h`) on every axis. That one clamp
 //! buys exactness: a query's covering kernels are owned by its own region
-//! and its 26 neighbours and by nobody else, so a 27-region gather is not
-//! an approximation of the sum over the model — it IS the sum over the
-//! model, and G17 (d) checks it against the O(N) truth.
+//! and its 26 neighbours and by nobody else at the historical default.
+//! `Options.support_edges` (G45) can explicitly enlarge that support and
+//! the corresponding gather stencil. Both paths equal the full kernel
+//! sum; G17 (d) and G45 (a) check them against the O(N) reference.
 //!
 //! Each region also carries `max_reach`, the largest cutoff box of the
 //! kernels it owns: a query whose distance to a region's cube exceeds it
@@ -417,9 +418,13 @@ pub const BirthRule = enum {
 
 pub const Options = struct {
     seed: u64 = 7,
-    /// Regions per axis over the unit cube. The region edge `h` sets the
-    /// widest kernel the gather stays exact for: σ_max = h/√CUTOFF.
+    /// Regions per axis over the unit cube: ownership and indexing.
     regions: u32 = 6,
+    /// Maximum support half-extent in region edges. One is the historical
+    /// 27-region gather; wider support visits a correspondingly wider
+    /// stencil without changing the kernel evaluator. G45 separates this
+    /// representation limit from the ownership grid. Must be positive.
+    support_edges: u32 = 1,
     /// Kernels a region may own (campaign §10: a small budget, and the
     /// saturation recorded rather than a refinement invented).
     budget: u32 = 64,
@@ -931,13 +936,20 @@ pub fn Marl(comptime C: usize) type {
             /// have gone into it. Zero and unused when the option is off.
             bias: Ch.Vec = [_]f32{0} ** C,
             bias_n: u64 = 0,
-            /// Region edge, and the widest a kernel's cutoff box may reach.
+            /// Ownership region edge; centre trust and minimum width keep
+            /// this scale even when support is allowed to extend farther.
             h: f32,
+            support_reach: f32,
             sigma_max: f32,
             sigma_min: f32,
             kernels: std.ArrayListUnmanaged(Ch.Kernel) = .{},
             regions: []Ch.Region,
             stats: Ch.Stats = .{},
+            /// Rebuilt topology may contain externally transformed kernels that
+            /// violate the learner's one-edge support contract. Preserve their
+            /// field with an ordered full gather; never shrink them to fit an
+            /// acceleration structure. G44 (i) exercises the old missed tail.
+            full_gather: bool = false,
             stream: rng.Stream,
             /// Scratch for a gather: reused, so an observation allocates nothing.
             hit: std.ArrayListUnmanaged(u32) = .{},
@@ -961,6 +973,7 @@ pub fn Marl(comptime C: usize) type {
             gen: u32 = 0,
 
             pub fn init(gpa: std.mem.Allocator, opts: Options) !Ch.Model {
+                if (opts.support_edges == 0) return error.InvalidSupportEdges;
                 const n = opts.regions * opts.regions * opts.regions;
                 const regions = try gpa.alloc(Ch.Region, n);
                 errdefer gpa.free(regions);
@@ -972,7 +985,8 @@ pub fn Marl(comptime C: usize) type {
                 errdefer gpa.free(gens);
                 @memset(gens, 0);
                 const h = 1 / @as(f32, @floatFromInt(opts.regions));
-                const sig_max = h / CUTOFF_R;
+                const support_reach = h * @as(f32, @floatFromInt(opts.support_edges));
+                const sig_max = support_reach / CUTOFF_R;
                 var ev_cells: u32 = 0;
                 var ev_count: []u32 = &.{};
                 var ev_sum: []f32 = &.{};
@@ -991,6 +1005,7 @@ pub fn Marl(comptime C: usize) type {
                     .gpa = gpa,
                     .opts = opts,
                     .h = h,
+                    .support_reach = support_reach,
                     .sigma_max = sig_max,
                     // A width may thin to a sixty-fourth of a region — the shell
                     // is a fortieth of the domain thick and a kernel that cannot
@@ -1091,26 +1106,46 @@ pub fn Marl(comptime C: usize) type {
             // ── the gather: exact, and the only place a prediction comes from ──
 
             /// Every kernel whose support CONTAINS q, appended to `self.hit`. The
-            /// clamp guarantees a kernel's box reaches at most one region edge,
-            /// so its own region and the 26 neighbours are the whole of it — this
-            /// is the sum over the model, not a truncation of it (G17 d).
+            /// clamp bounds a kernel's box by support_edges region edges.
+            /// The corresponding stencil is the whole support sum (G17 d,
+            /// G45 a). The default is the original 27-region gather.
             fn gather(self: *Ch.Model, q: [3]f32, ev: ?*Ch.Event) !void {
                 self.hit.clearRetainingCapacity();
+                if (self.full_gather) {
+                    var visited: u32 = 0;
+                    var evaluated: u32 = 0;
+                    for (self.regions) |*reg| {
+                        if (reg.own.items.len == 0) continue;
+                        visited += 1;
+                        for (reg.own.items) |ki| {
+                            evaluated += 1;
+                            if (gaussian(self.kernels.items[ki].shape(), q) > 0)
+                                try self.hit.append(self.gpa, ki);
+                        }
+                    }
+                    if (ev) |e| {
+                        e.visited = visited;
+                        e.evaluated = evaluated;
+                        e.pruned = 0;
+                    }
+                    return;
+                }
                 const r = self.opts.regions;
                 const c = [3]u32{ self.cellOf(q[0]), self.cellOf(q[1]), self.cellOf(q[2]) };
                 var visited: u32 = 0;
                 var pruned: u32 = 0;
                 var evaluated: u32 = 0;
-                var dz: i32 = -1;
-                while (dz <= 1) : (dz += 1) {
+                const radius: i32 = @intCast(@min(self.opts.support_edges, r - 1));
+                var dz: i32 = -radius;
+                while (dz <= radius) : (dz += 1) {
                     const z = @as(i32, @intCast(c[2])) + dz;
                     if (z < 0 or z >= r) continue;
-                    var dy: i32 = -1;
-                    while (dy <= 1) : (dy += 1) {
+                    var dy: i32 = -radius;
+                    while (dy <= radius) : (dy += 1) {
                         const y = @as(i32, @intCast(c[1])) + dy;
                         if (y < 0 or y >= r) continue;
-                        var dx: i32 = -1;
-                        while (dx <= 1) : (dx += 1) {
+                        var dx: i32 = -radius;
+                        while (dx <= radius) : (dx += 1) {
                             const x = @as(i32, @intCast(c[0])) + dx;
                             if (x < 0 or x >= r) continue;
                             const idx: u32 = (@as(u32, @intCast(z)) * r + @as(u32, @intCast(y))) * r + @as(u32, @intCast(x));
@@ -1143,6 +1178,15 @@ pub fn Marl(comptime C: usize) type {
             /// can compare it against a brute-force pass over the whole model.
             pub fn gatherForTest(self: *Ch.Model, q: [3]f32) !void {
                 try self.gather(q, null);
+            }
+
+            /// Instrument the same gather used by prediction, without an
+            /// observation or parameter update. Counts candidate kernels,
+            /// actual support, and nonempty regions opened/rejected.
+            pub fn gatherWork(self: *Ch.Model, q: [3]f32) !struct { evaluated: u32, touched: usize, visited: u32, pruned: u32 } {
+                var ev = std.mem.zeroes(Ch.Event);
+                try self.gather(q, &ev);
+                return .{ .evaluated = ev.evaluated, .touched = self.hit.items.len, .visited = ev.visited, .pruned = ev.pruned };
             }
 
             /// The prediction at q. Exact: the cutoff makes every kernel the
@@ -1200,7 +1244,7 @@ pub fn Marl(comptime C: usize) type {
 
             /// Project a kernel's parameters back inside what keeps the gather
             /// exact: the centre in the cube, no width below the floor, and the
-            /// cutoff box reaching at most one region edge. The reach projection
+            /// cutoff box reaching at most support_reach. The reach projection
             /// scales L, which shrinks every half-extent by the same factor and
             /// so keeps the SHAPE — an ellipsoid stays as anisotropic as the
             /// descent made it, it only stops growing past the gather.
@@ -1216,7 +1260,7 @@ pub fn Marl(comptime C: usize) type {
                 // width, and it can only ever ask for something narrower — so this
                 // floor changes no converged model and makes the arithmetic
                 // incapable of leaving the reals.
-                const lo_log = -@log(self.h); // σ ≤ h
+                const lo_log = -@log(self.support_reach); // outer bound before the support projection
                 const hi_log = -@log(self.sigma_min); // σ ≥ σ_min
                 var bit_width = false;
                 inline for (0..3) |a| {
@@ -1244,7 +1288,7 @@ pub fn Marl(comptime C: usize) type {
 
                 var s = k.shape();
                 var reach = reachOf(s);
-                if (reach > self.h) {
+                if (reach > self.support_reach) {
                     self.stats.reach_clamped += 1;
                     // L ← fL shrinks every half-extent by f. Once is exact in
                     // exact arithmetic and lands within an ulp in this one, so the
@@ -1259,7 +1303,7 @@ pub fn Marl(comptime C: usize) type {
                     // false on 0.6% of clamps — invisible, because the field said
                     // otherwise.
                     var guard: u8 = 0;
-                    while (reach > self.h and guard < 16) : (guard += 1) {
+                    while (reach > self.support_reach and guard < 16) : (guard += 1) {
                         // At least a thousandth, and that floor is the whole
                         // reason this terminates. A kernel one ulp over `h` gives
                         // f = 1 + 2⁻²³, whose log is SMALLER THAN THE ULP OF THE
@@ -1269,14 +1313,14 @@ pub fn Marl(comptime C: usize) type {
                         // within a float. Costing the boundary case a tenth of a
                         // percent of its width buys an invariant that holds
                         // exactly, which is what the gather's exactness rests on.
-                        const f = @max(1.001, reach / self.h);
+                        const f = @max(1.001, reach / self.support_reach);
                         const lf = @log(f);
                         inline for (0..3) |a| k.p[LOGD + a] += lf;
                         inline for (0..3) |a| k.p[OFF + a] *= f;
                         s = k.shape();
                         reach = reachOf(s);
                     }
-                    std.debug.assert(reach <= self.h);
+                    std.debug.assert(reach <= self.support_reach);
                 }
                 k.reach = reach;
             }
@@ -1284,7 +1328,7 @@ pub fn Marl(comptime C: usize) type {
             /// Move a centre by `d`, held to the trust region: no step may
             /// displace a kernel more than `trust` region edges, in ∞-norm. This
             /// is the whole of what makes the interference bound provable — 2h
-            /// from the clamp for where a touched kernel can already be, plus
+            /// at default support (2 * support_reach generally), plus
             /// steps · trust · h for where a step can put it — and it holds
             /// whichever optimiser is mounted.
             fn moveCentre(self: *Ch.Model, k: *Ch.Kernel, d: [3]f32) void {
@@ -1320,6 +1364,14 @@ pub fn Marl(comptime C: usize) type {
                 if (k.reach > reg.max_reach) reg.max_reach = k.reach;
             }
 
+            /// A centre outside its owner's cube also invalidates region
+            /// pruning, even when the kernel itself is narrow.
+            fn needsFullGather(self: *const Ch.Model, k: *const Ch.Kernel) bool {
+                const sh = k.shape();
+                return reachOf(sh) > self.support_reach or
+                    self.distToRegion(k.owner, sh.mu) > 0;
+            }
+
             /// Hold every kernel a region owns. The parent's contribution in a
             /// refined region is RETAINED, not relearned — which is the whole of
             /// the residual hierarchy's semantics: the child holds exactly what
@@ -1345,6 +1397,7 @@ pub fn Marl(comptime C: usize) type {
                 }
                 self.kernels.deinit(self.gpa);
                 self.kernels = kept;
+                self.full_gather = false;
                 for (self.regions) |*r| {
                     r.own.clearRetainingCapacity();
                     r.max_reach = 0;
@@ -1352,6 +1405,8 @@ pub fn Marl(comptime C: usize) type {
                 for (self.kernels.items, 0..) |*k, i| {
                     const owner = self.regionOf(.{ k.p[MU], k.p[MU + 1], k.p[MU + 2] });
                     k.owner = owner;
+                    k.reach = reachOf(k.shape());
+                    self.full_gather = self.full_gather or self.needsFullGather(k);
                     try self.regions[owner].own.append(self.gpa, @intCast(i));
                     if (k.reach > self.regions[owner].max_reach) self.regions[owner].max_reach = k.reach;
                 }
@@ -1691,11 +1746,13 @@ pub fn Marl(comptime C: usize) type {
                     r.max_reach = 0;
                 }
                 self.kernels.clearRetainingCapacity();
+                self.full_gather = false;
                 for (src.kernels.items) |*k| {
                     const mu = [3]f32{ k.p[MU], k.p[MU + 1], k.p[MU + 2] };
                     const owner = self.regionOf(mu);
                     const ki: u32 = @intCast(self.kernels.items.len);
                     try self.kernels.append(self.gpa, .{ .p = k.p, .owner = owner, .mu0 = mu, .reach = k.reach, .born_at = 0 });
+                    self.full_gather = self.full_gather or self.needsFullGather(&self.kernels.items[ki]);
                     try self.regions[owner].own.append(self.gpa, ki);
                     if (k.reach > self.regions[owner].max_reach) self.regions[owner].max_reach = k.reach;
                 }

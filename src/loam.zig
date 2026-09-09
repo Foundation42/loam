@@ -55,6 +55,10 @@ pub const cache = @import("cache.zig");
 /// consolidation refunds the capacity that history bought. Noiseless by
 /// design, so it cannot borrow MARL-18's variance explanation.
 pub const milk = @import("milk.zig");
+/// ALG-1: the MARL field algebra — operators, projection and transport
+/// over learned fields (`docs/MARL_ALGEBRA_CAMPAIGN.md`). Imports
+/// `marl.zig`, imported by neither it nor `rbf.zig`.
+pub const field = @import("field.zig");
 
 // The working surface, re-exported flat.
 pub const Domain = lattice.Domain;
@@ -94,5 +98,6 @@ test {
     _ = marble;
     _ = cache;
     _ = milk;
+    _ = field;
     _ = @import("tests.zig");
 }
