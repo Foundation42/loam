@@ -2923,4 +2923,109 @@ pub const OBS2_GAIN_MARGIN: f64 = 1;
 /// Not a measured noise estimate. Frozen in tools/obs3_predict.py.
 pub const OBS3_BIRTH_GAIN: f32 = 0.5 * 1e-4 * 1e-4;
 
+/// G52 (a): max train RMS at half the learning rate, divided by the same
+/// at the full rate, over the continued run past an accurate checkpoint.
+/// PROPOSED as a CEILING at 0.60.
+///
+/// OBS-4 (c) found that continued optimisation manufactures birth pressure
+/// on stationary noiseless data already fitted to 2.2e-7, and scoped the
+/// cause no further than "Adam/finite-precision dynamics". It is neither
+/// finite precision nor anything particular to this fixture: Adam's step
+/// is lr * mhat/(sqrt(vhat) + eps), and that ratio is dimensionless, so
+/// the step stays at lr however small the gradient becomes. A fixed-rate
+/// Adam does not converge, it wanders in a ball of radius set by lr.
+///
+/// If that is the mechanism the wander is LINEAR in lr. The bound is
+/// stated at 0.60 rather than the derived 0.5 because the map from
+/// parameter wander to train RMS is a local quadratic and only its leading
+/// term is derived.
+pub const OBS5_RATE_SCALING: f64 = 0.60;
+
+/// G52 (b), FIRST DESIGN. RMS after 300 000 further exemplars from the
+/// identical distribution, divided by the RMS at settling, under NLMS.
+/// PROPOSED as a CEILING at 1.05.
+///
+/// **Its precondition failed and it is superseded, not struck.** Measured
+/// 0.742 — so it "held", except that the model was still IMPROVING by 26%
+/// across the window it was supposed to be settled in, and its companion
+/// `OBS5_NLMS_BIRTHS` then read 0.52 against a bound of 0.10. Neither
+/// number means what it was written to mean. MARL-19 (d)'s shape, and
+/// MARL-10's reason: growth here is K0 + A*H(N), so the model improves
+/// logarithmically and forever and there may be no settled state to ask
+/// about. `OBS5_DOUBLING_NLMS` is the re-posed question.
+///
+/// NLMS's weight step is `rate_w · e · g/Σg²` and its geometry step runs
+/// through `ew = Σ_c w_c a_c`; both are LINEAR IN THE RESIDUAL, so a
+/// converged model stops moving. Adam's is not (G52 a), which is the
+/// contrast this is half of.
+///
+/// A little over one is allowed rather than exactly one because the stream
+/// is finite and a fresh draw is a fresh residual; what would refute it is
+/// a model that gets WORSE while being fed what it already knows.
+pub const OBS5_NLMS_RMS: f32 = 1.05;
+
+/// G52 (b), FIRST DESIGN. Births in the last measurement window over
+/// births in the first, under NLMS on a settled model. PROPOSED as a
+/// CEILING at 0.10.
+///
+/// **REFUTED at 0.52, and the refutation means nothing** — its companion
+/// `OBS5_NLMS_RMS` shows the model was still improving 26% across the
+/// window it was supposed to be settled in, so those births were learning.
+/// Superseded by `OBS5_DOUBLING_NLMS`, which asks the same question in a
+/// form that needs no settled state. Left standing so the failed design is
+/// findable rather than tidied away.
+///
+/// A settled model fed its own distribution has nothing left to acquire, so
+/// the birth rate should decay rather than persist. This is the number the
+/// campaign's population headlines rest on: if it does not decay, MARL-7's
+/// "capacity linear at flat accuracy", MARL-9's marginal cost and MARL-10's
+/// fitted A each carry a floor that owes nothing to the world moving.
+///
+/// Bounded scope, stated before the run: a pass says only that a settled
+/// model on a STATIONARY NOISELESS field does not manufacture capacity.
+/// MARL-13 (c) already measured the noisy case from the other side — the
+/// model births on noise, 9 923 kernels at one ray against 7 656 at
+/// sixteen — and that floor is real and stays where it is.
+pub const OBS5_NLMS_BIRTHS: f64 = 0.10;
+
+/// G52 (b): the mean ratio of one doubling's births to the previous
+/// doubling's, under MARL's NLMS default on a stationary stream. PROPOSED
+/// as a CEILING at 1.40.
+///
+/// The re-posed question, and it needs no settled state — which is what the
+/// first design needed and could not have. Under MARL-10's law the marginal
+/// cost decays as A/n, so the integral over a DOUBLING is A ln 2, a
+/// constant. An additive churn floor of c births per exemplar contributes
+/// c*n over the same doubling, which doubles each time. So one is
+/// structure, two is churn, and the shape separates them without the model
+/// ever having to stop learning.
+///
+/// 1.40 rather than something nearer one because a doubling is a coarse
+/// window and the first checkpoint is only 100 000 exemplars in, where the
+/// asymptotic law has not had long to assert itself.
+///
+/// This also re-measures MARL-10 on a STATIONARY stream. Its law was fitted
+/// on a drifting one — eighty moves, n*dK flat at 2034 — and whether it
+/// describes growth with nothing moving had never been asked.
+pub const OBS5_DOUBLING_NLMS: f64 = 1.40;
+
+/// G52 (b): the mean doubling ratio under MARL's `--optimizer adam`.
+/// PROPOSED as a FLOOR at 1.60 — a floor, because this half of the
+/// contrast asserts a FAILURE and the failure is the finding.
+///
+/// **REFUTED at 1.461, and held in every way that matters.** The three
+/// ratios are 1.408, 1.447, 1.528 — monotonically RISING toward the two an
+/// additive floor demands, where NLMS's 0.848, 0.807, 0.743 monotonically
+/// fall. The registered number asked the mean to be past 1.60 by 1.6 M
+/// exemplars and it is not yet; the SHAPE was the real claim and G52 (b)
+/// asserts that instead, because it needs no threshold.
+///
+/// The picture beside it is the one to keep: Adam adds **14 530 kernels in
+/// the last doubling alone**, reaching 47 037 against NLMS's 4 128, while
+/// its RMS does not move (0.796 to 0.845 of a constant — very slightly
+/// WORSE). Eleven times the population for eleven times the error. The
+/// campaign has called Adam "the instrument: the batch optimiser, and why
+/// it is wrong per-exemplar" since MARL-0; this is that, priced.
+pub const OBS5_DOUBLING_ADAM: f64 = 1.60;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

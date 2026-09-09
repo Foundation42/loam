@@ -87,6 +87,8 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/width_predict.py                 # G45 geometry prediction and G46 selector pre-registration
     zig build test -Dtest-filter="G47"             # ALG-2: deferred materialisation, equal-total-evidence sweep and per-fit-budget control
     python3 tools/alg2_predict.py                  # G47 pre-registration; intermediate frames are part of the measurement
+    zig build test -Dtest-filter="G52"             # OBS-5: the CHURN FLOOR — is population an instrument or is it the optimiser? ~96 s
+    python3 tools/obs5_predict.py                  # ... its pre-registration, including a precondition that failed and the question re-posed
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a

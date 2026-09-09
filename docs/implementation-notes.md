@@ -7274,3 +7274,77 @@ Full method and limitations: observational lab book OBS-4. Portable data
 in docs/data/obs4 includes 960 sensors, 144 window transitions, 1440 history
 and spatial rows, 1096 requests, 48 final reports and 6 diagnostic records.
 G51(a/b) and diagnostic(c) passed targeted ReleaseSafe. No full suite run.
+
+## OBS-5 / G52 — the churn floor: calibrating population as an instrument
+
+OBS-4(c) found that continued optimisation alone manufactures birth pressure
+on stationary noiseless data already fitted to 2.2e-7, and scoped the cause
+no further than "Adam/finite-precision dynamics". Its subject is the core
+learner, so its consequence is campaign-wide: population is a headline in
+MARL-7, MARL-9, MARL-10, MARL-20 and every occlusion phase, and the
+observational note's §12 and §31 ask population to BE an instrument.
+
+G52(a) isolates it, and it is neither finite precision nor this fixture.
+Adam's step is lr*mhat/(sqrt(vhat)+eps); that ratio is dimensionless, so the
+step stays at lr however small the gradient becomes. Fixed-rate Adam does not
+converge, it wanders in a ball of radius set by lr. MARL's own `adam` is the
+identical expression. Its NLMS default is not: `w -= rate_w*e*g/sum(g^2)`
+and the geometry step through `ew = sum_c w_c a_c` are linear in the residual
+and vanish with it.
+
+`adaptive_inferred.Model.updateAt` exposes the rate; `update` delegates at
+`RATE`, so every G50 and G51 number is bit-identical and the fixed arm
+reproduces OBS-4(c)'s 7/8/10 exactly. Mean max train RMS over three seeds is
+8.033e-4 / 2.169e-4 / 1.264e-5 at lr, lr/2, lr/4 — ratios .270 and .058
+against a registered ceiling of .60, steeper than the derived linear relation
+because below some amplitude the wander stops crossing the birth score at all
+and the maximum collapses to the checkpoint. Not fitted. A 1/t schedule holds
+the fit at 3.3e-7/3.2e-7/1.9e-7 and makes zero requests at every seed; the
+milder 1/sqrt(t) leaves six, which is why both were registered.
+
+G52(b)'s first design needed a settled model and did not have one. At 300k
+settling and four equal windows, NLMS RMS fell .01989 -> .01476 across the
+measurement — still improving 26% — so its births were learning and neither
+registered number meant what it was written to mean (RMS .742 "held" against
+1.05, births .52 failed against .10). MARL-19(d)'s shape; MARL-10's reason.
+Both thresholds are left standing and marked superseded rather than struck.
+
+Re-posed to a form needing no settled state, and registered in obs5_predict
+§(3') before it ran: under MARL-10's law the marginal cost decays as A/n, so
+the integral over a doubling is A*ln2, a constant, while an additive floor of
+c births per exemplar contributes c*n and doubles. Checkpoints 100k/200k/400k/
+800k/1600k, responsibility 3, otherwise default.
+
+NLMS doubling ratios .848 .807 .743, mean .799, FALLING — no additive floor,
+and growth on a stationary stream is slower than logarithmic, so MARL-10's
+law (fitted on a drifting stream) is an upper bound on the stationary case.
+Adam's .409/1.408 1.447 1.528, mean 1.461, RISING toward the two an additive
+floor demands. Its registered floor of 1.60 is refuted at 1.461 and the gate
+asserts the shape instead, which needs no threshold. Adam adds 14,530 kernels
+in the last doubling, reaching 47,037 against NLMS's 4,128, while its RMS
+does not move: .796 to .845 of a constant, slightly worse. Eleven times the
+population for eleven times the error.
+
+The doubling ratio excludes window 1 by definition, not by preference: it
+runs from an empty model to 100k and is the initial fit, holding 3,386 of
+NLMS's 4,128 kernels, so dividing window 2 by it compares a doubling against
+a from-scratch build. With it included the arms read .617 and 1.195; the
+correction is the harness's error, on the same footing as ALG-1's jitter
+measured in the wrong unit.
+
+Scope, registered before the run: this licenses only that under NLMS on a
+stationary noiseless field MARL does not manufacture capacity. Nothing about
+moving or noisy fields — MARL-13(c) already measured that floor from the
+other side (9,923 kernels at one ray against 7,656 at sixteen) and it stays.
+For the observational campaign, OBS-3 and OBS-4 run Adam at a fixed .003 and
+therefore sit on a wander OBS3_BIRTH_GAIN was never calibrated against; a 1/t
+schedule removes it at no cost to the fit, and whether their directional
+findings survive is a re-run.
+
+Recorded, not built: a maturity decay on MARL's rates (Kernel.updates is
+already there and nothing schedules on it) must not be built on this
+evidence. It would freeze exactly the kernels a drifting world most needs to
+move, and MARL-7 priced that. Trigger: a churn floor found under NLMS,
+measured against a drift arm in the same phase. G52(b) found none.
+
+Cost: G52 ~96 s, 80 of it Adam's 1.6M exemplars at 47,037 kernels. Not smoke.

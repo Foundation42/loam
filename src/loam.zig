@@ -59,6 +59,9 @@ pub const milk = @import("milk.zig");
 /// over learned fields (`docs/MARL_ALGEBRA_CAMPAIGN.md`). Imports
 /// `marl.zig`, imported by neither it nor `rbf.zig`.
 pub const field = @import("field.zig");
+/// OBS-5: does a settled MARL manufacture capacity? The churn floor under
+/// every population number the campaign has recorded.
+pub const churn = @import("churn.zig");
 /// ALG-2: deferred materialisation and the field read between checkpoints.
 pub const deferred = @import("deferred.zig");
 /// OBS-1: state observations through a known flow.
@@ -109,6 +112,7 @@ test {
     _ = cache;
     _ = milk;
     _ = field;
+    _ = churn;
     _ = deferred;
     _ = observed;
     _ = inferred;

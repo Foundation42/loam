@@ -86,6 +86,12 @@ pub fn endpointRms(w: [count]f32, observations: []const Observation, omega: f32)
     }
     return @sqrt(se / @as(f64, @floatFromInt(observations.len)));
 }
+/// OBS-3 and OBS-4's learning rate. A CONSTANT, and OBS-5 is about the
+/// consequence of that: Adam's step is lr * mhat/(sqrt(vhat) + eps), whose
+/// ratio is dimensionless, so the step stays at lr however small the
+/// gradient becomes. A converged fit does not stop moving.
+pub const RATE: f32 = 0.003;
+
 pub const Model = struct {
     w: [count]f32 = zero,
     active: [count]bool = .{true} ** 9 ++ .{false} ** 32,
@@ -100,7 +106,19 @@ pub const Model = struct {
         self.active[i] = true;
         self.k += 1;
     }
+    /// OBS-3 and OBS-4's step, unchanged: Adam at a FIXED rate of 0.003.
     pub fn update(self: *Model, g: [count]f32) f64 {
+        return self.updateAt(g, RATE);
+    }
+
+    /// The same step with the rate exposed, for OBS-5.
+    ///
+    /// `update` delegates here at `RATE`, so every number G50 and G51
+    /// recorded is bit-identical — the arithmetic below is theirs, moved
+    /// and not rewritten. It is separated because OBS-5's claim is that
+    /// the churn OBS-4 (c) found is Adam's SCALE-FREE STEP, which is a
+    /// statement about `lr` and cannot be made without varying it.
+    pub fn updateAt(self: *Model, g: [count]f32, lr: f32) f64 {
         var change: f64 = 0;
         for (0..count) |i| {
             if (!self.active[i]) continue;
@@ -108,7 +126,7 @@ pub const Model = struct {
             self.beta2[i] *= 0.999;
             self.m[i] = 0.9 * self.m[i] + 0.1 * g[i];
             self.v[i] = 0.999 * self.v[i] + 0.001 * g[i] * g[i];
-            const delta = 0.003 * (self.m[i] / (1 - self.beta1[i])) / (@sqrt(self.v[i] / (1 - self.beta2[i])) + 1e-8);
+            const delta = lr * (self.m[i] / (1 - self.beta1[i])) / (@sqrt(self.v[i] / (1 - self.beta2[i])) + 1e-8);
             self.w[i] -= delta;
             change += @abs(delta);
         }

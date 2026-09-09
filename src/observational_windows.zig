@@ -222,3 +222,120 @@ test "G51 (c) diagnose false birth pressure from continued updates after an accu
         }
     }
 }
+
+/// OBS-5's schedules, all of them functions of the update index alone so
+/// that an arm is one enum and not a branch inside the loop.
+const Schedule = enum {
+    fixed,
+    /// lr0 / sqrt(t / t0)
+    inv_sqrt,
+    /// lr0 / (t / t0)
+    inv,
+
+    fn rateAt(self: Schedule, lr0: f32, t: usize, t0: usize) f32 {
+        const r = @as(f32, @floatFromInt(t)) / @as(f32, @floatFromInt(t0));
+        return switch (self) {
+            .fixed => lr0,
+            .inv_sqrt => lr0 / @sqrt(r),
+            .inv => lr0 / r,
+        };
+    }
+};
+
+test "G52 (a) OBS-4's false birth pressure is Adam's SCALE-FREE STEP: linear in the rate, and a schedule removes it" {
+    // OBS-4 (c) found that continued optimisation alone manufactures birth
+    // requests on stationary noiseless data already fitted to 2.2e-7, and
+    // stopped there: "does not yet isolate which part of Adam/finite-
+    // precision dynamics causes it".
+    //
+    // It is not finite precision. Adam's step is
+    //
+    //     w -= lr * mhat / (sqrt(vhat) + eps)
+    //
+    // and mhat/sqrt(vhat) is a RATIO of the gradient's own moments, so it
+    // is dimensionless and of order one whenever eps does not dominate.
+    // The step size is therefore lr, INDEPENDENT of how small the gradient
+    // has become. That is what "adaptive" means, it is the whole point of
+    // Adam, and its textbook consequence is that Adam at a fixed rate does
+    // not converge — it wanders in a ball whose radius is set by lr.
+    //
+    // Two consequences, both registered in `tools/obs5_predict.py` before
+    // this ran, and both falsifiable in one sweep:
+    //
+    //   the wander is LINEAR IN lr, so halving lr at least halves the
+    //   train RMS the continued run reaches;
+    //
+    //   a DECAYED schedule removes the requests entirely.
+    //
+    // Two schedules, because the horizon past the checkpoint is only 3.5x
+    // its length and 1/sqrt(t) can only buy 2.12x of it. If the mild one
+    // leaves requests standing and the sharp one removes them, the
+    // mechanism is confirmed and the schedule is a tuning question; if
+    // neither does, the birth score is implicated rather than the rate,
+    // which is a different phase.
+    //
+    // The checkpoint, the step counts, the scoring cadence and the request
+    // rule are OBS-4 (c)'s exactly, so the `fixed` arm at 0.003 must
+    // reproduce its 7/8/10.
+    const t0: usize = 800;
+    const Arm = struct { label: []const u8, lr: f32, sched: Schedule };
+    const arms = [_]Arm{
+        .{ .label = "0.003   fixed (OBS-4 c)", .lr = adaptive.RATE, .sched = .fixed },
+        .{ .label = "0.0015  fixed", .lr = adaptive.RATE / 2, .sched = .fixed },
+        .{ .label = "0.00075 fixed", .lr = adaptive.RATE / 4, .sched = .fixed },
+        .{ .label = "0.003   / sqrt(t/t0)", .lr = adaptive.RATE, .sched = .inv_sqrt },
+        .{ .label = "0.003   / (t/t0)", .lr = adaptive.RATE, .sched = .inv },
+    };
+
+    std.debug.print("\n  {s:<24} {s:>6} {s:>12} {s:>12} {s:>10} {s:>9}\n", .{ "arm", "seed", "train0", "max train", "wander", "requests" });
+    var max_train: [arms.len]f64 = .{0} ** arms.len;
+    var requests: [arms.len]usize = .{0} ** arms.len;
+    for ([_]u64{ 7, 19, 41 }) |seed| {
+        const fixture = Fixture.init(seed, false);
+        const data = &fixture.data[0];
+        var checkpoint = adaptive.Model{};
+        for (0..t0) |_| {
+            const b = adaptive.batch(checkpoint.w, data, 0);
+            _ = checkpoint.update(b.g);
+        }
+        const train0 = adaptive.endpointRms(checkpoint.w, &data.train, 0);
+        for (arms, 0..) |arm, ai| {
+            var m = checkpoint;
+            var req: usize = 0;
+            var mt: f64 = 0;
+            for (t0 + 1..3601) |step| {
+                const b = adaptive.batch(m.w, data, 0);
+                if (step % 40 == 0) {
+                    req += @intFromBool(adaptive.best(&m, &b).score > thresholds.OBS3_BIRTH_GAIN);
+                    mt = @max(mt, @sqrt(b.se / data.train.len));
+                }
+                _ = m.updateAt(b.g, arm.sched.rateAt(arm.lr, step, t0));
+            }
+            // How far the parameters travelled from the checkpoint —
+            // the wander itself, rather than what it did to the error.
+            var wander: f64 = 0;
+            for (0..count) |i| {
+                if (!m.active[i]) continue;
+                const d = @as(f64, m.w[i] - checkpoint.w[i]);
+                wander += d * d;
+            }
+            wander = @sqrt(wander);
+            max_train[ai] += mt / 3;
+            requests[ai] += req;
+            std.debug.print("  {s:<24} {d:>6} {e:>12.3} {e:>12.3} {e:>10.3} {d:>9}\n", .{ arm.label, seed, train0, mt, wander, req });
+        }
+    }
+    std.debug.print("  means over three seeds: max train {e:.3} / {e:.3} / {e:.3} at lr, lr/2, lr/4 — ratio {d:.3}, {d:.3}\n", .{
+        max_train[0], max_train[1], max_train[2], max_train[1] / max_train[0], max_train[2] / max_train[1],
+    });
+    std.debug.print("  requests, summed over seeds: fixed {d} / {d} / {d}, 1-over-sqrt-t {d}, 1-over-t {d}\n", .{
+        requests[0], requests[1], requests[2], requests[3], requests[4],
+    });
+
+    // The fixed arm must still be OBS-4 (c)'s: 7 + 8 + 10.
+    try testing.expectEqual(@as(usize, 25), requests[0]);
+    try testing.expect(max_train[1] / max_train[0] < thresholds.OBS5_RATE_SCALING);
+    try testing.expect(max_train[2] / max_train[1] < thresholds.OBS5_RATE_SCALING);
+    // The registered equality, on whichever schedule reaches it.
+    try testing.expect(requests[3] == 0 or requests[4] == 0);
+}
