@@ -44,6 +44,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
+| Complexity and fresh windows | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-4; src/observational_windows.zig, G51; docs/data/obs4 |
 | Adaptive inverse births | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-3; src/adaptive_inferred.zig, G50; docs/data/obs3 |
 | Hidden potential inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-2; src/inferred.zig, G49 |
 | Observational state inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md; src/observed.zig, G48 |
@@ -99,13 +100,26 @@ held-out RMS .003332, correct/wrong-dynamics .002397, with matched work.
 cases; smaller steps pass. Recorded Richardson amendment passes unchanged
 tolerances, worst relative error 2.65e-6. Missing-position-feedback mutation
 fails 936 checks. Targeted G49(a/b) passed. Headline recovery uses f32.
-Latest beat: OBS-3 / G50, restricted candidate activation, not core MARL
+Completed OBS-3 / G50 (6ca9260), restricted candidate activation, not core MARL
 births or moving geometry. 41 shared candidates, active cap25, 4 arms.
 Correct stays K9; wrong adds16 at every seed, then requests4 more. Wrong
 adaptive/frozen RMS: train .3432, heldout1.8230. Prior coverage at every
 birth centre >=.8133. Histories and spatial records in docs/data/obs3.
 All arms share RHS/search counts; active coefficient updates differ.
-No death policy, hence no birth-death churn claim. Next control should
-vary true complexity/observation windows before broadening interpretation.
-Shared sensitivities now live in src/trajectory.zig; G49 stays unchanged.
-Targeted G49/G50 passed. Use smoke at commit; do not run full suite.
+No death policy, hence no birth-death churn claim.
+Shared sensitivities live in src/trajectory.zig; G49 stays unchanged.
+
+Latest: OBS-4 / G51, rich truth + repeated/fresh windows, 48 arms.
+Rich correct adaptive/frozen evaluation RMS .108451 (repeated), .015934
+(fresh); incoming fresh-window RMS ratio .087542 before learning. Both
+rich fresh dynamics finish K25, but wrong/correct repeat requests66/0;
+correct/wrong final eval .007673. All five prereg comparisons held.
+Crucial controls: simple correct dynamics can also birth and worsen eval;
+one correct rich repeated-data seed has13 repeated requests. K/pressure
+alone is NOT a mismatch classifier. Diagnostic G51(c): from an accurate
+step800 simple fit, continued updates cause7/8/10 false birth requests,
+holding the state causes0. No main thresholds/rates retuned. This is an
+inspection-derived mechanism diagnostic, not a validated stopping policy.
+Records in docs/data/obs4 include sensors, window-pre-update scores,
+evaluation history, coverage, requests and diagnostic. G51(a/b/c) passed
+separately; use smoke at commit, not the full suite.

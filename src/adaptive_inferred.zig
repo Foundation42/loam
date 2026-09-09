@@ -7,21 +7,21 @@ const inferred = @import("inferred.zig");
 const rng = @import("rng.zig");
 const thresholds = @import("thresholds.zig");
 const testing = std.testing;
-const count = 41;
-const cap = 25;
-const zero = [_]f32{0} ** count;
-fn shape(i: usize) marl.Shape {
+pub const count = 41;
+pub const cap = 25;
+pub const zero = [_]f32{0} ** count;
+pub fn shape(i: usize) marl.Shape {
     if (i < 9) return inferred.shape(i);
     const j = (i - 9) % 16;
     const sigma: f32 = if (i < 25) 0.14 else 0.09;
     return .{ .mu = .{ 0.2 + 0.2 * @as(f32, @floatFromInt(j % 4)), 0.2 + 0.2 * @as(f32, @floatFromInt(j / 4)), 0.5 }, .l = .{ 1 / sigma, 0, 1 / sigma, 0, 0, 1 / sigma } };
 }
-const engine = @import("trajectory.zig").Fixed(count, shape);
-const Observation = struct { x: [2]f32, y: [2]f32, steps: u32 };
+pub const engine = @import("trajectory.zig").Fixed(count, shape);
+pub const Observation = struct { x: [2]f32, y: [2]f32, steps: u32 };
 fn start(st: *rng.Stream) [2]f32 {
     return .{ 0.15 + 0.7 * st.unit(), 0.15 + 0.7 * st.unit() };
 }
-const Data = struct {
+pub const Data = struct {
     train: [32]Observation,
     held: [64]Observation,
     fn init(seed: u64) Data {
@@ -40,13 +40,13 @@ const Data = struct {
         return data;
     }
 };
-fn bin(x: [2]f32, lo: f32, hi: f32) usize {
+pub fn bin(x: [2]f32, lo: f32, hi: f32) usize {
     if (x[0] < lo or x[0] >= hi or x[1] < lo or x[1] >= hi) return 16;
     const a: usize = @intFromFloat((x[0] - lo) * 4 / (hi - lo));
     const b: usize = @intFromFloat((x[1] - lo) * 4 / (hi - lo));
     return a + 4 * b;
 }
-const Batch = struct {
+pub const Batch = struct {
     g: [count]f32 = zero,
     h: [count]f32 = zero,
     residual: [32]f32 = .{0} ** 32,
@@ -55,7 +55,7 @@ const Batch = struct {
     se: f64 = 0,
     rhs: u64 = 0,
 };
-fn batch(w: [count]f32, data: *const Data, omega: f32) Batch {
+pub fn batch(w: [count]f32, data: *const Data, omega: f32) Batch {
     var b = Batch{};
     for (data.train, 0..) |o, oi| {
         var z = engine.State(f32){ .x = o.x };
@@ -78,7 +78,7 @@ fn batch(w: [count]f32, data: *const Data, omega: f32) Batch {
     }
     return b;
 }
-fn endpointRms(w: [count]f32, observations: []const Observation, omega: f32) f64 {
+pub fn endpointRms(w: [count]f32, observations: []const Observation, omega: f32) f64 {
     var se: f64 = 0;
     for (observations) |o| {
         const z = engine.trajectory(f32, w, o.x, 0.02, o.steps, omega, false);
@@ -86,7 +86,7 @@ fn endpointRms(w: [count]f32, observations: []const Observation, omega: f32) f64
     }
     return @sqrt(se / @as(f64, @floatFromInt(observations.len)));
 }
-const Model = struct {
+pub const Model = struct {
     w: [count]f32 = zero,
     active: [count]bool = .{true} ** 9 ++ .{false} ** 32,
     m: [count]f32 = zero,
@@ -94,13 +94,13 @@ const Model = struct {
     beta1: [count]f32 = .{1} ** count,
     beta2: [count]f32 = .{1} ** count,
     k: usize = 9,
-    fn birth(self: *Model, i: usize) void {
+    pub fn birth(self: *Model, i: usize) void {
         std.debug.assert(!self.active[i] and self.k < cap);
         std.debug.assert(self.w[i] == 0 and self.m[i] == 0 and self.v[i] == 0);
         self.active[i] = true;
         self.k += 1;
     }
-    fn update(self: *Model, g: [count]f32) f64 {
+    pub fn update(self: *Model, g: [count]f32) f64 {
         var change: f64 = 0;
         for (0..count) |i| {
             if (!self.active[i]) continue;
@@ -115,8 +115,8 @@ const Model = struct {
         return change;
     }
 };
-const Candidate = struct { i: usize, score: f32 };
-fn best(m: *const Model, b: *const Batch) Candidate {
+pub const Candidate = struct { i: usize, score: f32 };
+pub fn best(m: *const Model, b: *const Batch) Candidate {
     var result = Candidate{ .i = 9, .score = 0 };
     for (9..count) |i| {
         if (m.active[i] or b.h[i] <= 0) continue;

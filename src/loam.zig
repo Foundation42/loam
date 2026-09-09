@@ -67,6 +67,8 @@ pub const observed = @import("observed.zig");
 pub const inferred = @import("inferred.zig");
 /// OBS-3: matched-budget candidate births for inverse fitting.
 pub const adaptive_inferred = @import("adaptive_inferred.zig");
+/// OBS-4: true fine structure and fresh observation-window controls.
+pub const observational_windows = @import("observational_windows.zig");
 
 // The working surface, re-exported flat.
 pub const Domain = lattice.Domain;
@@ -111,5 +113,6 @@ test {
     _ = observed;
     _ = inferred;
     _ = adaptive_inferred;
+    _ = observational_windows;
     _ = @import("tests.zig");
 }

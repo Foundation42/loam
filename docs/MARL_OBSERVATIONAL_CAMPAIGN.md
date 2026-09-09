@@ -345,3 +345,156 @@ retaining the directional research predictions as explicit results.
 
 Validation: targeted G49 and G50 passed; all 12 smoke tests passed
 (about 3 s execution plus 12 s compilation). No full regression run.
+
+## OBS-4 / G51 — useful growth, fresh evidence, and optimiser-induced pressure
+
+OBS-3's standing conclusion remains: **under this restricted birth policy,
+wrong dynamics use more already-covered basis functions to fit the training
+observations, while making unseen predictions worse.** OBS-4 tests the
+limits of extending that statement to a diagnostic.
+
+### Pre-registration and full factorial
+
+`tools/obs4_predict.py` freezes 48 arms: simple/rich truth × repeated/fresh
+windows × correct/wrong dynamics × frozen/adaptive allocation × three seeds.
+Rich truth adds +.025 at candidate 30 and -.025 at candidate 35: width .09,
+centres (.4,.4) and (.6,.6). These shapes are outside the initial coarse
+span but in the candidate dictionary. This is deliberately representable
+fine structure, not arbitrary field discovery.
+
+Each of three windows receives OBS-3's **1200-update budget**. All paired
+arms therefore run 3600 updates, carrying coefficients, active set and
+Adam state forward. The first 400 global updates are the only birth
+warmup; score cutoff, 40-update birth cadence, candidate dictionary and
+active cap 25 are unchanged. Frozen controls get the same extra iterations.
+Every arm evaluates 3,686,400 learning RHS calls and 151,142,400 kernel
+contributions, consuming 115,200 endpoint-loss terms. Active coefficient
+update counts are recorded separately and need not match. This remains
+restricted candidate activation, not the original MARL online learner.
+
+Every fresh window contains 16 independently sampled initial positions,
+with endpoints at .16/.48. Repeated controls reuse window zero. A **new,
+independent 64-start evaluation set** remains fixed across all windows and
+never enters updates, birth scores or stopping decisions. Coordinates are
+shared between simple/rich truth and the compared dynamics/allocation
+arms; only ground-truth labels change with true field complexity. G51(a)
+checks concrete training/evaluation sample disjointness and that changing
+evaluation labels cannot change a learning batch or candidate score.
+
+Score the incoming window and fixed evaluation set before any updates,
+then again after the window. This tests transfer across initial-condition
+samples of a stationary field. It is not free-running long-horizon
+simulation, newly learned physics, or a temporally changing potential.
+Sensors use the same finer reference integration as OBS-3.
+
+### Useful growth is now observed
+
+The first registered comparison required rich, correct, repeated-evidence
+adaptive arms to acquire kernels and improve **both** training and
+independent evaluation error over frozen controls. It holds: 47 births
+across seeds, training RMS ratio **.061355**, evaluation ratio **.108451**.
+The correct model now benefits from capacity acquisition rather than merely
+having no need for it.
+
+Pooled RMS over seeds:
+
+| truth / evidence | dynamics | frozen train | adaptive train | frozen evaluation | adaptive evaluation |
+|---|---|---:|---:|---:|---:|
+| rich / repeated | correct | .025552 | .001568 | .055682 | .006039 |
+| rich / repeated | wrong | .035558 | .007470 | .079176 | .144677 |
+| rich / fresh | correct | .022501 | .000087 | .040954 | .000653 |
+| rich / fresh | wrong | .035741 | .019147 | .066338 | .085045 |
+
+For fresh rich evidence, adaptive correct evaluation RMS is **.015934×**
+the frozen control. Its pooled incoming-window RMS, measured **before**
+learning windows 1 and 2, is **.087542×** the frozen control. Correct/wrong
+adaptive final evaluation RMS is **.007673**. These three registered
+comparisons hold as well. Both true fine components are activated at every
+seed, but many additional components are activated too: no minimal-basis
+recovery claim follows.
+
+### Final K is insufficient; the window history separates these arms
+
+Both rich fresh adaptive models finish at **K=25 at every seed**. Their
+paths to that count differ:
+
+| window | correct K by seed | correct incoming RMS | correct evaluation after | wrong incoming RMS | wrong evaluation after |
+|---|---|---:|---:|---:|---:|
+| 0 | 14 / 12 / 19 | .039581 | .018437 | .047763 | .123950 |
+| 1 | 18 / 20 / 23 | .003679 | .001666 | .092985 | .110759 |
+| 2 | 25 / 25 / 25 | .001723 | .000653 | .096396 | .085045 |
+
+Wrong dynamics already reach K=25 in the first window. Across all three
+windows they request 78/80/80 interventions; correct dynamics request
+17/16/17. A repeated cross-window request means the **same candidate
+location and scale** was requested in an earlier window. Wrong dynamics
+produce 35/13/18 such events (**66 total**); correct dynamics produce zero.
+That fifth registered comparison holds. Requests for an active candidate
+are not reconsidered by this birth policy; these repeated requests occur
+for still-inactive candidates after saturation. They are unresolved
+pressure, not birth–death churn or a new birth at the same active kernel.
+
+Wrong dynamics' evaluation error does improve after later fresh windows,
+from .123950 to .085045, despite remaining far worse than correct dynamics.
+Thus “wrong dynamics never improve held-out prediction” would be false.
+The comparison is with matched controls and the transfer history, not a
+universal monotonicity rule.
+
+### The simple control prevents a premature detector claim
+
+On the simple field, correct dynamics also make unnecessary births under
+the longer optimisation schedule and new sample draws:
+
+| correct simple dynamics | frozen evaluation RMS | adaptive evaluation RMS | adaptive final K by seed |
+|---|---:|---:|---|
+| repeated evidence | .000167 | .001457 | 18 / 25 / 22 |
+| fresh evidence | .000518 | .001851 | 18 / 22 / 23 |
+
+Moreover, one **correct rich repeated-evidence** seed makes 13 cross-window
+repeat requests. Repeat pressure is therefore not exclusive to wrong
+physics even within this small factorial. The five registered comparisons
+hold, but the control results rule out a broader reading of them.
+
+A diagnostic amendment was recorded before its run, **after inspecting the
+main results**. The earliest observed simple-field birth request was at
+step 1160; choose an explicitly inspection-derived step-800 checkpoint and
+compare continued updates with holding that state fixed through step 3600.
+Births are disabled in both diagnostic arms, while candidate pressure is
+still scored every 40 updates. This is not an independently validated
+stopping rule, nor a change to the main experiment's policy.
+
+| seed | checkpoint train RMS | maximum train RMS with continued updates | requests with continued updates | requests while held fixed |
+|---|---:|---:|---:|---:|
+| 7 | 2.20e-7 | 6.44e-4 | 7 | 0 |
+| 19 | 2.35e-7 | 7.37e-4 | 8 | 0 |
+| 41 | 1.92e-7 | 1.03e-3 | 10 | 0 |
+
+The held states remain bitwise unchanged. Continued optimisation alone is
+sufficient to create false birth pressure on stationary, noiseless data
+already fitted accurately. This isolates an optimiser-related mechanism;
+it does not yet isolate which part of Adam/finite-precision dynamics causes
+it or establish a replacement learning-rate policy. No threshold or main
+arm was retuned after seeing this result.
+
+### Preserved records and limits
+
+`docs/data/obs4/` contains 960 sensor rows, 144 window transitions, 1440
+histories and spatial snapshots, 1096 request events, 48 final reports and
+six diagnostic records. `tools/obs4_report.py` extracts complete logs into
+LF-terminated CSVs. Spatial records include source counts alongside source
+residual SSE, so an unobserved bin cannot be mistaken for a well-explained
+one, plus independent predicted-path visit counts. Every request records
+pre-intervention coverage, local residual energy, sensitivity score,
+location/scale and previous candidate/site/window requests. Minimum
+pre-request active Gaussian coverage remains .8133.
+
+The operational picture now has at least three causes of structural
+pressure: genuine missing capacity, compensation for wrong dynamics, and
+continued optimiser updates disturbing an already good fit. Useful growth
+and compensatory growth separate strongly on this rich-field fixture, but
+neither final K nor repeat requests alone is a reliable classifier. The
+representation remains an instrument whose readings require controls for
+learning dynamics, observational support and the allowed model class.
+
+Validation: targeted G51(a/b) and diagnostic G51(c) passed. All 12 smoke
+tests passed (about 3 s execution plus 12 s compilation); no full suite.

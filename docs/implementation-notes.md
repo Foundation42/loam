@@ -7241,3 +7241,36 @@ Portable CSVs in docs/data/obs3 preserve 360 histories/spatial snapshots,
 The shared trajectory engine moved to src/trajectory.zig. Targeted G49
 still matches prior results; G50's zero-weight birth, dormant-candidate,
 fine sensitivity, masking, capacity and work contracts passed.
+
+
+## OBS-4 — useful growth transfers; optimisation can also demand false repairs (2026-09-09)
+
+G51 runs the preregistered simple/rich × repeated/fresh × correct/wrong ×
+frozen/adaptive factorial, three seeds, three 1200-update windows. Rich
+truth adds two fine components absent from the initial nine-kernel span.
+Incoming windows are scored BEFORE updates; a new disjoint fixed 64-start
+evaluation set never enters learning or birth decisions. All arms share
+3,686,400 learning RHS calls and 151,142,400 kernel evaluations. Capacity,
+scoring policy, optimizer and candidate geometry are unchanged.
+
+All five directional hypotheses hold. Rich correct adaptive/frozen RMS:
+repeated training .061355, evaluation .108451; fresh evaluation .015934;
+incoming fresh windows .087542. Correct/wrong rich fresh adaptive final
+evaluation ratio .007673. Both finish K25, yet wrong/correct cross-window
+repeat requests are 66/0. This separates useful from compensatory growth
+on this fixture, but not through final population alone.
+
+The controls defeat a stronger classifier interpretation. Simple correct
+models acquire unnecessary candidates and worsen evaluation; one correct
+rich repeated-data seed makes 13 cross-window repeat requests. A separately
+recorded post-inspection diagnostic holds an accurate step 800 simple model
+or continues coefficient updates, with births disabled. Continued updates
+produce 7/8/10 above-threshold requests; held state produces 0 and stays
+bitwise fixed. Continued optimisation itself can create structural
+pressure. The diagnostic's checkpoint was chosen after seeing results;
+it is not a proposed or independently validated stopping policy.
+
+Full method and limitations: observational lab book OBS-4. Portable data
+in docs/data/obs4 includes 960 sensors, 144 window transitions, 1440 history
+and spatial rows, 1096 requests, 48 final reports and 6 diagnostic records.
+G51(a/b) and diagnostic(c) passed targeted ReleaseSafe. No full suite run.
