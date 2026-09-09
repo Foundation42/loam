@@ -2908,4 +2908,9 @@ pub const ALG2_INTERIOR_MARGIN: f64 = 1;
 /// fresh fits when the same 240k observations must fund all of them.
 pub const ALG2_FINAL_MARGIN: f64 = 1;
 
+/// OBS-1 / G48: known-flow state corrections beat both the unchanged
+/// prior and updates at untransformed coordinates on held-out future
+/// observations. Directional prediction frozen in tools/obs1_predict.py.
+pub const OBS1_GAIN_MARGIN: f64 = 1;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

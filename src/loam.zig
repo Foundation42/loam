@@ -61,6 +61,8 @@ pub const milk = @import("milk.zig");
 pub const field = @import("field.zig");
 /// ALG-2: deferred materialisation and the field read between checkpoints.
 pub const deferred = @import("deferred.zig");
+/// OBS-1: state observations through a known flow.
+pub const observed = @import("observed.zig");
 
 // The working surface, re-exported flat.
 pub const Domain = lattice.Domain;
@@ -102,5 +104,6 @@ test {
     _ = milk;
     _ = field;
     _ = deferred;
+    _ = observed;
     _ = @import("tests.zig");
 }

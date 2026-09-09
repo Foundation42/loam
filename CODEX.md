@@ -44,6 +44,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
+| Observational state inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md; src/observed.zig, G48 |
 | Current field experiments | docs/MARL_ALGEBRA_CAMPAIGN.md, sections 5b/5c |
 | Latest measured decisions | tail of docs/implementation-notes.md |
 | MARL learner, support, gather | src/marl.zig; G17 and G45 |
@@ -68,7 +69,7 @@ Completed baseline commit: b53ea5a, field algebra and G44–G46.
 - G46 selective pullback beats random selection, but weight-only ranking
   matches the local-error estimator here. No measured scheduler speedup.
 
-Current beat: ALG-2 / G47, recorded in lab book section 5c.
+Completed ALG-2 / G47 (d7870d0), recorded in lab book section 5c.
 - Immutable checkpoint teacher; cheap pushed view and accurate pullback
   reads between fresh fits. Never train on the cheap view or analytic truth.
 - 40-step swirl, seeds 7/19/41, 240k total fitting examples: mean cheap
@@ -84,3 +85,10 @@ Current beat: ALG-2 / G47, recorded in lab book section 5c.
   which passed 12/12 tests in 18.85 s including compilation (~3 s run).
 - Remaining research: long-horizon behaviour, conservation, support
   discovery and actual scheduling costs. These are future beats.
+
+Latest beat: OBS-1 / G48, docs/MARL_OBSERVATIONAL_CAMPAIGN.md.
+Known-flow scalar observations update the source MARL at backtraced
+coordinates. Corrected/prior held-out RMS .12553; wrong-coordinate
+updates worsen error and grow ~900 kernels. Targeted G48(a/b) passed.
+This is fixed-flow state inference, not hidden-force reconstruction.
+Next candidate: short-window trajectory sensitivities with fixed basis.

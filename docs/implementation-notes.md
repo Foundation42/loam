@@ -7159,3 +7159,23 @@ Validation: the new default smoke target passed 12/12 tests in 18.85 s
 including compilation; its main test executable took about 3 s. The count
 includes the module registration test and both CLI tests. No second full
 suite was launched after changing the build target.
+
+
+## OBS-1 — evidence follows the preimage (2026-09-09)
+
+G48 opens docs/MARL_OBSERVATIONAL_CAMPAIGN.md. For a flow independent of
+MARL parameters, the derivative of M_theta(Phi_-t(x)) is MARL's existing
+parameter derivative at the preimage. `observed.assimilate` uses that
+coordinate for observe, retaining the learner's responsibility and births.
+It mutates an owned source state and invalidates its earlier views.
+
+Three seeds, displaced initial state, 30k delayed scalar observations:
+pooled held-out corrected/prior RMS 0.12553; corrected/wrong-coordinate
+0.04884; corrected/source-oracle 1.00950. Corrected models add 2–5 kernels;
+wrong-coordinate updates grow roughly 900 and make error worse. The two
+pre-registered directional predictions hold; thresholds are unchanged.
+G48(b) pins a delayed weight derivative and manual-update equivalence.
+Both targeted ReleaseSafe gates passed. This does not learn dynamics;
+rotating held-out probes makes the future score another view of the same
+state error. Full methods, limitations and next experiment are in the
+new lab book. The user's observational design note was read, not edited.
