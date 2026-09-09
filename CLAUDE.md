@@ -89,6 +89,8 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/alg2_predict.py                  # G47 pre-registration; intermediate frames are part of the measurement
     zig build test -Dtest-filter="G52"             # OBS-5: the CHURN FLOOR — is population an instrument or is it the optimiser? ~96 s
     python3 tools/obs5_predict.py                  # ... its pre-registration, including a precondition that failed and the question re-posed
+    zig build test -Dtest-filter="G53"             # OBS-6: OBS-4's factorial under OBS-5's schedule — the control clears, 74 spurious births -> 0. ~120 s
+    python3 tools/obs6_predict.py                  # ... its pre-registration; the null is registered FIRST and the obvious version of it is useless
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a

@@ -1,5 +1,6 @@
 //! OBS-4: fine truth and untouched pre-update transfer across sensor windows.
 const std = @import("std");
+const builtin = @import("builtin");
 const adaptive = @import("adaptive_inferred.zig");
 const inferred = @import("inferred.zig");
 const marl = @import("marl.zig");
@@ -58,7 +59,35 @@ const Report = struct {
     rhs: u64 = 0,
     coefficient_updates: u64 = 0,
 };
-fn run(seed: u64, rich: bool, fresh: bool, omega: f32, allow_birth: bool, fixture: *const Fixture) !Report {
+/// OBS-6's schedule. `.none` is OBS-3 and OBS-4's fixed rate, so G50 and
+/// G51 are untouched; `.inv` is `lr0 * min(1, t0/t)` with `t0` the step
+/// births become possible at.
+///
+/// Both halves are read off this harness rather than chosen. Births are
+/// gated on `step > BIRTH_WARMUP`, so that is the moment the birth signal
+/// starts being READ: decaying before it slows learning over readings
+/// nobody uses, and decaying after leaves the wander inside the window that
+/// matters. And 1/t rather than 1/sqrt(t) because G52 (a) measured both on
+/// this fixture — the milder schedule left six requests standing across
+/// three seeds where 1/t left zero.
+pub const Sched = enum {
+    none,
+    inv,
+
+    pub fn rateAt(self: Sched, step: usize) f32 {
+        return switch (self) {
+            .none => adaptive.RATE,
+            .inv => adaptive.RATE * @min(1, @as(f32, @floatFromInt(BIRTH_WARMUP)) /
+                @as(f32, @floatFromInt(step))),
+        };
+    }
+};
+
+/// Updates before a birth may be requested — OBS-4's `step > 400`, named
+/// so that OBS-6's schedule can be derived from it instead of repeating it.
+pub const BIRTH_WARMUP: usize = 400;
+
+fn run(seed: u64, rich: bool, fresh: bool, omega: f32, allow_birth: bool, fixture: *const Fixture, sched: Sched, verbose: bool) !Report {
     var model = adaptive.Model{};
     var report = Report{};
     var request_count = [_]usize{0} ** count;
@@ -82,7 +111,7 @@ fn run(seed: u64, rich: bool, fresh: bool, omega: f32, allow_birth: bool, fixtur
             const b = adaptive.batch(model.w, data, omega);
             report.rhs += b.rhs;
             const candidate = adaptive.best(&model, &b);
-            if (allow_birth and step > 400 and step % 40 == 0 and candidate.score > thresholds.OBS3_BIRTH_GAIN) {
+            if (allow_birth and step > BIRTH_WARMUP and step % 40 == 0 and candidate.score > thresholds.OBS3_BIRTH_GAIN) {
                 const i = candidate.i;
                 const sh = adaptive.shape(i);
                 const site = (i - 9) % 16;
@@ -100,7 +129,7 @@ fn run(seed: u64, rich: bool, fresh: bool, omega: f32, allow_birth: bool, fixtur
                     ws += phi;
                 }
                 const accepted = model.k < adaptive.cap;
-                std.debug.print("OBS4_REQUEST,{d},{d},{d},{d:.1},{d},{d},{d},{d},{d},{d},{d},{d},{e},{e},{e},{e},{e},{e},{e},{e}\n", .{ seed, @intFromBool(rich), @intFromBool(fresh), omega, wi, step, i, @intFromBool(accepted), request_count[i], site_count[site], @intFromBool(repeated), model.k, sh.mu[0], sh.mu[1], 1 / sh.l[0], cov, rs / @max(ws, 1e-30), b.g[i], b.h[i], candidate.score });
+                if (verbose) std.debug.print("OBS4_REQUEST,{d},{d},{d},{d:.1},{d},{d},{d},{d},{d},{d},{d},{d},{e},{e},{e},{e},{e},{e},{e},{e}\n", .{ seed, @intFromBool(rich), @intFromBool(fresh), omega, wi, step, i, @intFromBool(accepted), request_count[i], site_count[site], @intFromBool(repeated), model.k, sh.mu[0], sh.mu[1], 1 / sh.l[0], cov, rs / @max(ws, 1e-30), b.g[i], b.h[i], candidate.score });
                 report.requests += 1;
                 report.repeated_cross_window += @intFromBool(repeated);
                 request_count[i] += 1;
@@ -108,7 +137,7 @@ fn run(seed: u64, rich: bool, fresh: bool, omega: f32, allow_birth: bool, fixtur
                 window_mask[i] |= @as(u8, 1) << @intCast(wi);
                 if (accepted) model.birth(i) else report.denied += 1;
             }
-            if (local_step % 120 == 0) {
+            if (verbose and local_step % 120 == 0) {
                 const ev = adaptive.endpointRms(model.w, &data.held, omega);
                 std.debug.print("OBS4_HISTORY,{d},{d},{d},{d:.1},{d},{d},{d},{d},{e},{e},{e},{d},{d},{d},{e},{d},{d},{d}\n", .{ seed, @intFromBool(rich), @intFromBool(fresh), omega, @intFromBool(allow_birth), wi, step, model.k, @sqrt(b.se / data.train.len), ev, candidate.score, report.requests, report.denied, report.repeated_cross_window, change, report.rhs, report.rhs * count, report.coefficient_updates });
                 std.debug.print("OBS4_SPATIAL,{d},{d},{d},{d:.1},{d},{d},{d}", .{ seed, @intFromBool(rich), @intFromBool(fresh), omega, @intFromBool(allow_birth), wi, step });
@@ -119,7 +148,7 @@ fn run(seed: u64, rich: bool, fresh: bool, omega: f32, allow_birth: bool, fixtur
                 change = 0;
             }
             report.coefficient_updates += model.k;
-            change += model.update(b.g);
+            change += model.updateAt(b.g, sched.rateAt(step));
             try testing.expect(model.k <= adaptive.cap);
             for (model.w, model.active) |w, active| {
                 try testing.expect(std.math.isFinite(w));
@@ -129,12 +158,12 @@ fn run(seed: u64, rich: bool, fresh: bool, omega: f32, allow_birth: bool, fixtur
         report.train = adaptive.endpointRms(model.w, &data.train, omega);
         report.eval = adaptive.endpointRms(model.w, &data.held, omega);
         try testing.expect(std.math.isFinite(report.train) and std.math.isFinite(report.eval));
-        std.debug.print("OBS4_WINDOW,{d},{d},{d},{d:.1},{d},{d},{d},{d},{e},{e},{e},{e},{d},{d},{d}\n", .{ seed, @intFromBool(rich), @intFromBool(fresh), omega, @intFromBool(allow_birth), wi, k_before, model.k, incoming, report.train, eval_before, report.eval, report.requests - requests_before, report.denied - denied_before, report.repeated_cross_window - repeated_before });
+        if (verbose) std.debug.print("OBS4_WINDOW,{d},{d},{d},{d:.1},{d},{d},{d},{d},{e},{e},{e},{e},{d},{d},{d}\n", .{ seed, @intFromBool(rich), @intFromBool(fresh), omega, @intFromBool(allow_birth), wi, k_before, model.k, incoming, report.train, eval_before, report.eval, report.requests - requests_before, report.denied - denied_before, report.repeated_cross_window - repeated_before });
     }
     report.k = model.k;
     try testing.expectEqual(@as(u64, 3_686_400), report.rhs);
     if (!allow_birth) try testing.expectEqual(@as(usize, 9), model.k);
-    std.debug.print("OBS4_FINAL,{d},{d},{d},{d:.1},{d},{d},{d},{d},{d},{e},{e},{e},{d},{d},{d},{d:.3}\n", .{ seed, @intFromBool(rich), @intFromBool(fresh), omega, @intFromBool(allow_birth), report.k, report.requests, report.denied, report.repeated_cross_window, report.incoming_sse, report.train, report.eval, report.rhs, report.rhs * count, report.coefficient_updates, @as(f64, @floatFromInt(timer.read())) / 1e9 });
+    if (verbose) std.debug.print("OBS4_FINAL,{d},{d},{d},{d:.1},{d},{d},{d},{d},{d},{e},{e},{e},{d},{d},{d},{d:.3}\n", .{ seed, @intFromBool(rich), @intFromBool(fresh), omega, @intFromBool(allow_birth), report.k, report.requests, report.denied, report.repeated_cross_window, report.incoming_sse, report.train, report.eval, report.rhs, report.rhs * count, report.coefficient_updates, @as(f64, @floatFromInt(timer.read())) / 1e9 });
     return report;
 }
 
@@ -172,7 +201,7 @@ test "G51 (b) useful structural growth and transfer to fresh observation windows
         const fixture = Fixture.init(seed, rich);
         fixture.print(seed, rich);
         for ([_]bool{ false, true }) |fresh| for ([_]f32{ 0, 0.3 }, 0..) |omega, oi| for ([_]bool{ false, true }, 0..) |births, ai| {
-            const r = try run(seed, rich, fresh, omega, births, &fixture);
+            const r = try run(seed, rich, fresh, omega, births, &fixture, .none, true);
             if (rich and omega == 0 and !fresh) {
                 repeated_train[ai] += r.train * r.train;
                 repeated_eval[ai] += r.eval * r.eval;
@@ -338,4 +367,166 @@ test "G52 (a) OBS-4's false birth pressure is Adam's SCALE-FREE STEP: linear in 
     try testing.expect(max_train[2] / max_train[1] < thresholds.OBS5_RATE_SCALING);
     // The registered equality, on whichever schedule reaches it.
     try testing.expect(requests[3] == 0 or requests[4] == 0);
+}
+
+/// Everything OBS-6 compares between the two schedules, accumulated over
+/// the same 48-cell factorial G51 (b) runs.
+const Sweep = struct {
+    /// rich, correct, repeated evidence, by [frozen, adaptive]
+    repeated_train: [2]f64 = .{ 0, 0 },
+    repeated_eval: [2]f64 = .{ 0, 0 },
+    /// rich, correct, fresh evidence, by [frozen, adaptive]
+    fresh_eval: [2]f64 = .{ 0, 0 },
+    incoming: [2]f64 = .{ 0, 0 },
+    /// rich, fresh, adaptive, by [correct, wrong]
+    adaptive_eval: [2]f64 = .{ 0, 0 },
+    /// cross-window repeat requests over the WHOLE factorial, by
+    /// [correct, wrong] — the control's number, not just the rich cell's
+    repeats: [2]usize = .{ 0, 0 },
+    /// OBS-4's control: SIMPLE field, correct dynamics, where no extra
+    /// capacity is called for at all. [repeated, fresh] × [frozen, adaptive]
+    simple_eval: [2][2]f64 = .{.{ 0, 0 }} ** 2,
+    /// The null: frozen-allocation final train RMS, split by whether the
+    /// dynamics are CORRECT. Pooling the two hides the answer — under wrong
+    /// dynamics the fit is limited by mis-specification and no learning
+    /// rate can move it, so a pooled null is dominated by arms that cannot
+    /// respond to the thing being tested. Measured pooled it read 1.0000,
+    /// which is a true number about the wrong quantity.
+    frozen_train: [2]f64 = .{ 0, 0 },
+    /// Births in the control cells (simple field, correct dynamics), where
+    /// there is nothing to buy. Printed because a ratio of exactly 1.000
+    /// between the adaptive and frozen arms means they are the SAME RUN,
+    /// and that has to be visible rather than inferred.
+    control_births: usize = 0,
+    births: usize = 0,
+    seconds: f64 = 0,
+
+    fn ratio(a: f64, b: f64) f64 {
+        return @sqrt(a / b);
+    }
+};
+
+fn sweep(sched: Sched) !Sweep {
+    var s = Sweep{};
+    var timer = try std.time.Timer.start();
+    for ([_]u64{ 7, 19, 41 }) |seed| for ([_]bool{ false, true }) |rich| {
+        const fixture = Fixture.init(seed, rich);
+        for ([_]bool{ false, true }, 0..) |fresh, fi| for ([_]f32{ 0, 0.3 }, 0..) |omega, oi| for ([_]bool{ false, true }, 0..) |births, ai| {
+            const r = try run(seed, rich, fresh, omega, births, &fixture, sched, false);
+            if (!births) s.frozen_train[oi] += r.train * r.train;
+            s.repeats[oi] += r.repeated_cross_window;
+            if (rich and omega == 0 and !fresh) {
+                s.repeated_train[ai] += r.train * r.train;
+                s.repeated_eval[ai] += r.eval * r.eval;
+                if (births) s.births += r.k - 9;
+            }
+            if (rich and omega == 0 and fresh) {
+                s.fresh_eval[ai] += r.eval * r.eval;
+                s.incoming[ai] += r.incoming_sse;
+            }
+            if (rich and fresh and births) s.adaptive_eval[oi] += r.eval * r.eval;
+            if (!rich and omega == 0) {
+                s.simple_eval[fi][ai] += r.eval * r.eval;
+                if (births) s.control_births += r.k - 9;
+            }
+        };
+    };
+    s.seconds = @as(f64, @floatFromInt(timer.read())) / 1e9;
+    return s;
+}
+
+test "G53 does the birth signal survive its own calibration? OBS-4's factorial under OBS-5's schedule" {
+    // OBS-5 established that OBS-4's false birth pressure is Adam's
+    // SCALE-FREE STEP, and that a 1/t schedule removes it at no cost to the
+    // fit. OBS-3 and OBS-4 ran at a fixed rate, so `OBS3_BIRTH_GAIN` —
+    // which decides what counts as a birth request in both — was calibrated
+    // against a signal sitting on a wander nobody had measured.
+    //
+    // This runs OBS-4's factorial unchanged in every other respect, twice,
+    // and asks what survives. `tools/obs6_predict.py` was frozen first.
+    //
+    // The order below is the order it is registered in, and the first is
+    // load-bearing: a decayed rate could improve every birth number for the
+    // stupidest possible reason, by learning less. MARL-20's two-nulls
+    // discipline, and if the null fails everything after it is void.
+    const none = try sweep(.none);
+    const inv = try sweep(.inv);
+
+    // (2) THE NULL. Frozen allocation, so coefficients are the only thing
+    // that can move: did the schedule cost the fit?
+    const null_ratio = Sweep.ratio(inv.frozen_train[0], none.frozen_train[0]);
+    const null_wrong = Sweep.ratio(inv.frozen_train[1], none.frozen_train[1]);
+    std.debug.print("\n  G53 [{s}] the null — frozen-allocation train RMS, scheduled over fixed: {d:.4} on CORRECT dynamics, {d:.4} on wrong ({d:.1} s + {d:.1} s)\n", .{
+        @tagName(builtin.mode), null_ratio, null_wrong, none.seconds, inv.seconds,
+    });
+    std.debug.print("  {s:>18}  correct {e:.3} -> {e:.3}   wrong {e:.3} -> {e:.3}\n", .{
+        "frozen train RMS", @sqrt(none.frozen_train[0] / 12), @sqrt(inv.frozen_train[0] / 12),
+        @sqrt(none.frozen_train[1] / 12), @sqrt(inv.frozen_train[1] / 12),
+    });
+
+    // (3) OBS-4's five, under each schedule.
+    for ([_]struct { l: []const u8, s: Sweep }{ .{ .l = "fixed 0.003", .s = none }, .{ .l = "1/t schedule", .s = inv } }) |a| {
+        const w = a.s;
+        const useful = w.births > 0 and w.repeated_train[1] < w.repeated_train[0] and w.repeated_eval[1] < w.repeated_eval[0];
+        std.debug.print("  {s:<14} births {d:>3} {s:<8} train {d:.6} eval {d:.6} | fresh {d:.6} {s:<8} | incoming {d:.6} {s:<8} | correct/wrong {d:.6} {s:<8} | repeats {d}/{d} {s}\n", .{
+            a.l, w.births, if (useful) "HELD" else "REFUTED",
+            Sweep.ratio(w.repeated_train[1], w.repeated_train[0]),
+            Sweep.ratio(w.repeated_eval[1], w.repeated_eval[0]),
+            Sweep.ratio(w.fresh_eval[1], w.fresh_eval[0]), if (w.fresh_eval[1] < w.fresh_eval[0]) "HELD" else "REFUTED",
+            Sweep.ratio(w.incoming[1], w.incoming[0]), if (w.incoming[1] < w.incoming[0]) "HELD" else "REFUTED",
+            Sweep.ratio(w.adaptive_eval[0], w.adaptive_eval[1]), if (w.adaptive_eval[0] < w.adaptive_eval[1]) "HELD" else "REFUTED",
+            w.repeats[0], w.repeats[1], if (w.repeats[1] > w.repeats[0]) "HELD" else "REFUTED",
+        });
+    }
+
+    // (4) THE CONTROL. Simple field, correct dynamics: adaptive allocation
+    // has nothing to buy, so any excess over frozen is the instrument.
+    std.debug.print("  {s:<14} {s:>10} {s:>12} {s:>12} {s:>10}\n", .{ "control", "evidence", "frozen eval", "adaptive eval", "ratio" });
+    var control_gain: [2]f64 = .{ 0, 0 };
+    for ([_][]const u8{ "repeated", "fresh" }, 0..) |lab, fi| {
+        const n_ratio = Sweep.ratio(none.simple_eval[fi][1], none.simple_eval[fi][0]);
+        const i_ratio = Sweep.ratio(inv.simple_eval[fi][1], inv.simple_eval[fi][0]);
+        control_gain[fi] = i_ratio / n_ratio;
+        std.debug.print("  {s:<14} {s:>10} fixed {e:>12.3} {e:>14.3} {d:>10.3}\n", .{ "simple correct", lab, @sqrt(none.simple_eval[fi][0] / 3), @sqrt(none.simple_eval[fi][1] / 3), n_ratio });
+        std.debug.print("  {s:<14} {s:>10}   1/t {e:>12.3} {e:>14.3} {d:>10.3}   scheduled/fixed {d:.3}\n", .{ "", lab, @sqrt(inv.simple_eval[fi][0] / 3), @sqrt(inv.simple_eval[fi][1] / 3), i_ratio, control_gain[fi] });
+    }
+    const correct_fall = @as(f64, @floatFromInt(inv.repeats[0] + 1)) / @as(f64, @floatFromInt(none.repeats[0] + 1));
+    const wrong_fall = @as(f64, @floatFromInt(inv.repeats[1] + 1)) / @as(f64, @floatFromInt(none.repeats[1] + 1));
+    std.debug.print("  control births (simple field, correct dynamics, nothing to buy): fixed {d}, 1/t {d}\n", .{ none.control_births, inv.control_births });
+    std.debug.print("  repeat requests over the whole factorial: correct {d} -> {d} ({d:.3}), wrong {d} -> {d} ({d:.3})\n", .{
+        none.repeats[0], inv.repeats[0], correct_fall, none.repeats[1], inv.repeats[1], wrong_fall,
+    });
+
+    // The null first, because nothing after it means anything otherwise.
+    //
+    // The pooled figure passes at 0.9999 and is nearly uninformative: it is
+    // dominated by cells where the fit is limited by the MODEL CLASS — the
+    // rich field's two components outside the nine-kernel span, and the
+    // wrong dynamics — and no learning rate can move those. Sharpening it
+    // from "all frozen arms" to "frozen arms under correct dynamics" only
+    // swapped one source of mis-specification for the other; both read
+    // 1.702e-2 -> 1.702e-2 and 3.035e-2 -> 3.035e-2.
+    //
+    // The cell where the RATE is the binding constraint is simple field,
+    // correct dynamics, frozen allocation — a target the model class
+    // contains exactly. There the null does not merely pass, it INVERTS:
+    // 1.669e-4 -> 4.609e-7 and 5.177e-4 -> 4.380e-7, better by 360x and
+    // 1180x. Fixed-rate Adam was hovering, exactly as G52 (a) measured, and
+    // the schedule lets it converge. That is asserted below and it is the
+    // one that matters.
+    try testing.expect(null_ratio < thresholds.OBS6_FIT_NULL);
+    try testing.expect(null_wrong < thresholds.OBS6_FIT_NULL);
+    for (0..2) |fi| try testing.expect(inv.simple_eval[fi][0] < none.simple_eval[fi][0]);
+    // OBS-4's five, still standing under the schedule.
+    try testing.expect(inv.births > 0);
+    try testing.expect(inv.repeated_train[1] < inv.repeated_train[0]);
+    try testing.expect(inv.repeated_eval[1] < inv.repeated_eval[0]);
+    try testing.expect(inv.fresh_eval[1] < inv.fresh_eval[0]);
+    try testing.expect(inv.incoming[1] < inv.incoming[0]);
+    try testing.expect(inv.adaptive_eval[0] < inv.adaptive_eval[1]);
+    try testing.expect(inv.repeats[1] > inv.repeats[0]);
+    // The control clearing, and the separation widening.
+    try testing.expect(control_gain[0] < thresholds.OBS6_CONTROL_CLEARS);
+    try testing.expect(control_gain[1] < thresholds.OBS6_CONTROL_CLEARS);
+    try testing.expect(wrong_fall > correct_fall);
 }

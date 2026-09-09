@@ -660,3 +660,119 @@ G52 (b) did not find one, so the trigger has not fired.
 
 Cost: G52 is ~96 s, of which Adam's 1.6 M exemplars at 47 037 kernels are
 80. Not a smoke check. `python3 tools/obs5_predict.py` for the derivations.
+
+## OBS-6 / G53 — the birth signal, recalibrated
+
+OBS-5 established that OBS-4's false birth pressure is Adam's scale-free
+step, and that a `1/t` schedule removes it at no cost to the fit. OBS-3 and
+OBS-4 ran at a **fixed** 0.003, so `OBS3_BIRTH_GAIN` — which decides what
+counts as a birth request in both — was calibrated against a signal sitting
+on a wander nobody had measured. OBS-4 said as much without knowing the
+cause:
+
+> Repeat pressure is therefore not exclusive to wrong physics even within
+> this small factorial. The five registered comparisons hold, but the
+> control results rule out a broader reading of them.
+
+G53 runs OBS-4's 48-cell factorial unchanged in every other respect, twice,
+and asks what survives. `tools/obs6_predict.py` was frozen first. G51 (b)
+reproduces bit-identically under `Sched.none`, so nothing was disturbed.
+
+### The schedule is read off the harness, not chosen
+
+$$lr_t = lr_0 \cdot \min(1, t_0/t), \qquad t_0 = 400$$
+
+Births are gated on `step > 400` in OBS-4's own `run`, so 400 is the moment
+the birth signal starts being *read*: decaying earlier slows learning over
+readings nobody uses, decaying later leaves the wander inside the window
+that matters. `1/t` and not `1/√t` because G52 (a) measured both here — the
+milder schedule left six requests standing where `1/t` left zero. Total RHS
+calls and coefficient updates are unchanged, so OBS-4's equal-budget
+contract holds with no new assertion.
+
+### The null, and why the obvious version of it is useless
+
+A decayed rate could improve every birth number for the stupidest possible
+reason — by learning less. Registered first, and it took two attempts to
+measure anything:
+
+| frozen-allocation train RMS | fixed 0.003 | 1/t | ratio |
+|---|---:|---:|---:|
+| pooled over the factorial | 2.4e-2 | 2.4e-2 | 1.0000 |
+| correct dynamics only | 1.702e-2 | 1.702e-2 | 0.9999 |
+| **simple field, correct, frozen — repeated** | **1.669e-4** | **4.609e-7** | **0.0028** |
+| **simple field, correct, frozen — fresh** | **5.177e-4** | **4.380e-7** | **0.0008** |
+
+The first two pass and say almost nothing: they are dominated by cells where
+the fit is limited by the **model class** — the rich field's two components
+outside the nine-kernel span, and the wrong dynamics — and no learning rate
+can move those. Sharpening from "all frozen arms" to "frozen arms under
+correct dynamics" swapped one source of mis-specification for another.
+
+The cell where the *rate* is the binding constraint is the simple field
+under correct dynamics with allocation frozen — a target the model class
+contains exactly. **There the null does not merely pass, it inverts: the
+schedule is better by 360× and 1180×.** Fixed-rate Adam was hovering,
+exactly as G52 (a) measured directly, and the schedule lets it converge.
+
+### All five OBS-4 comparisons hold, and hold harder
+
+| | births | repeated train | repeated eval | fresh eval | incoming | correct/wrong | repeats correct/wrong |
+|---|---:|---:|---:|---:|---:|---:|---|
+| fixed 0.003 | 47 | .061355 | .108451 | .015934 | .087542 | .007673 | 13 / 354 |
+| **1/t** | **16** | **.003700** | **.021985** | **.004521** | .161477 | **.002229** | **0 / 362** |
+
+Every one still HELD, and four of the five ratios improve by factors of 3.5
+to 16.6 — **on a third of the births**. Two thirds of what OBS-4 counted as
+useful growth on the rich field was the optimiser's wander, and removing it
+made every accuracy comparison better.
+
+The one that moved the wrong way is `incoming` (.0875 → .1615, still well
+under one). The adaptive arm's advantage on incoming-window SSE shrank,
+which is what less transferred capacity should do, and it is reported
+rather than explained.
+
+### The control clears completely, and that is the finding
+
+OBS-4's control is what stopped its result becoming a detector: on the
+**simple** field, where correct dynamics need no extra capacity at all,
+adaptive allocation made the model *worse*.
+
+| simple, correct dynamics | frozen eval | adaptive eval | ratio |
+|---|---:|---:|---:|
+| repeated, fixed 0.003 | 1.669e-4 | 1.457e-3 | 8.73 |
+| repeated, **1/t** | 4.609e-7 | 4.609e-7 | **1.000** |
+| fresh, fixed 0.003 | 5.177e-4 | 1.851e-3 | 3.58 |
+| fresh, **1/t** | 4.380e-7 | 4.380e-7 | **1.000** |
+
+A ratio of exactly one because the two arms are **the same run**: births in
+the control cells go **74 → 0**. With nothing to buy, the scheduled model
+buys nothing. And across the whole factorial, cross-window repeat requests
+go **correct 13 → 0** while **wrong 354 → 362** — untouched.
+
+    OBS-4's caution was about the instrument, not about the claim.
+
+On this fixture, with the optimiser's wander removed, repeat pressure
+separates wrong dynamics from correct perfectly: 0 against 362.
+
+### What is still not claimed
+
+The schedule is not proposed as a default for anything. MARL's own learner
+does not use Adam by default and G52 (b) showed its NLMS default has no
+floor to fix. This is a correction to two observational phases' instrument,
+on one fixture, with a model class that contains the truth on the simple
+field and demonstrably does not on the rich one. Whether a mismatch
+detector built on repeat pressure generalises past that is untested and
+stays untested here — OBS-3's original claim boundary (no death policy, so
+continued rejected requests are pressure and not churn; the true field
+inside the initial span) is unchanged by any of this.
+
+What *has* changed is that OBS-3's and OBS-4's headline can now be stated
+without the hedge the control forced on it, for this fixture:
+
+> Under this birth policy and a converging schedule, wrong dynamics
+> activate more already-covered basis functions, fit training observations
+> better, and generalise worse — and correct dynamics do not.
+
+Cost: G53 is ~120 s, two full factorials. Not a smoke check.
+`python3 tools/obs6_predict.py` for the derivations.

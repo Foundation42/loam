@@ -3028,4 +3028,68 @@ pub const OBS5_DOUBLING_NLMS: f64 = 1.40;
 /// it is wrong per-exemplar" since MARL-0; this is that, priced.
 pub const OBS5_DOUBLING_ADAM: f64 = 1.60;
 
+/// G53: frozen-allocation train RMS under OBS-5's 1/t schedule, over the
+/// same at OBS-4's fixed rate, pooled over the factorial. PROPOSED as a
+/// CEILING at 1.10.
+///
+/// **THE NULL, and it is registered first because nothing after it means
+/// anything otherwise.** A decayed rate could improve every birth number in
+/// OBS-6 for the stupidest possible reason — by learning less. A model that
+/// barely moves makes no requests and also fits nothing. Frozen allocation
+/// leaves coefficients as the only thing that can move, so this is the
+/// clean read of whether the schedule cost the fit. MARL-20's two-nulls
+/// discipline.
+///
+/// **HELD at 0.9999 and 1.0000, and it took two attempts to measure
+/// anything.** Pooled over the factorial, and then pooled over the
+/// correct-dynamics arms alone, the figure is dominated by cells where the
+/// fit is limited by the MODEL CLASS — the rich field's two components
+/// outside the nine-kernel span, and the wrong dynamics — and no learning
+/// rate can move those. Both read essentially unchanged (1.702e-2 ->
+/// 1.702e-2, 3.035e-2 -> 3.035e-2), which is a true number about the wrong
+/// quantity.
+///
+/// The cell where the RATE binds is the simple field under correct
+/// dynamics with allocation frozen, a target the model class contains
+/// exactly. There the null INVERTS: 1.669e-4 -> 4.609e-7 and 5.177e-4 ->
+/// 4.380e-7, better by 360x and 1180x. Fixed-rate Adam was hovering, as
+/// G52 (a) measured directly, and the schedule lets it converge. G53
+/// asserts that cell as well, and it is the one that matters.
+
+/// G53: the simple-field adaptive/frozen evaluation ratio under the
+/// schedule, over the same ratio at the fixed rate. PROPOSED as a CEILING
+/// at 0.50 — the control's excess at least halved.
+///
+/// OBS-4's control is what stopped its finding becoming a detector: on the
+/// SIMPLE field, where correct dynamics need no extra capacity at all,
+/// adaptive allocation made the model WORSE — .001457 against a frozen
+/// .000167 on repeated evidence (8.7x) and .001851 against .000518 on fresh
+/// (3.6x). Under OBS-5's account that excess is the wander crossing
+/// `OBS3_BIRTH_GAIN`, and a schedule that removes the wander should remove
+/// most of it.
+///
+/// If it does, OBS-4's caution was about the instrument rather than the
+/// claim, and repeat pressure becomes usable on this fixture. If it does
+/// not, the correct-dynamics births are real and the remedy is a threshold
+/// rather than a schedule — OBS-5's mechanism would still stand, having
+/// been measured directly, but it would not be what OBS-4's control saw.
+///
+/// **HELD at 0.115 and 0.280 — and the mechanism is visible rather than
+/// inferred.** The ratio is exactly 1.000 under the schedule because the
+/// two arms are the SAME RUN: births in the control cells go 74 -> 0. With
+/// nothing to buy, the scheduled model buys nothing.
+///
+/// Across the whole factorial, cross-window repeat requests go correct
+/// 13 -> 0 while wrong 354 -> 362, untouched. So on this fixture, with the
+/// wander removed, repeat pressure separates wrong dynamics from correct
+/// perfectly. OBS-4's caution was about the instrument, not the claim.
+///
+/// And all five of OBS-4's comparisons still hold, four of them by factors
+/// of 3.5 to 16.6 better, on a THIRD of the births (47 -> 16). Two thirds
+/// of what OBS-4 counted as useful growth was the optimiser's wander, and
+/// removing it improved every accuracy comparison. The exception is
+/// `incoming` (.0875 -> .1615, still well under one), which is what less
+/// transferred capacity should do.
+pub const OBS6_CONTROL_CLEARS: f64 = 0.50;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

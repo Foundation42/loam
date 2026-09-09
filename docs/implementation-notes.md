@@ -7348,3 +7348,56 @@ move, and MARL-7 priced that. Trigger: a churn floor found under NLMS,
 measured against a drift arm in the same phase. G52(b) found none.
 
 Cost: G52 ~96 s, 80 of it Adam's 1.6M exemplars at 47,037 kernels. Not smoke.
+
+## OBS-6 / G53 — the birth signal, recalibrated
+
+OBS-3 and OBS-4 ran Adam at a fixed .003, so OBS3_BIRTH_GAIN — which decides
+what counts as a birth request in both — was calibrated against a signal
+sitting on the wander OBS-5 measured. G53 reruns OBS-4's 48-cell factorial
+unchanged in every other respect, twice, under Sched.none and Sched.inv.
+G51(b) reproduces bit-identically under .none, so nothing was disturbed:
+births 47, .061355, .108451, .015934, .087542, .007673, repeats 0/66.
+
+The schedule is lr0*min(1, t0/t) with t0 = 400, both halves read off the
+harness. Births are gated on step > 400, so that is when the birth signal
+starts being read; decaying earlier slows learning over readings nobody
+uses. 1/t and not 1/sqrt(t) because G52(a) measured both here — the milder
+one left six requests standing where 1/t left zero. RHS calls and
+coefficient updates are unchanged, so the equal-budget contract holds.
+
+The null took two attempts to measure anything. Pooled over the factorial,
+then over correct-dynamics arms alone, it reads .9999 and 1.0000 — dominated
+by cells where the fit is limited by the MODEL CLASS (the rich field's two
+components outside the nine-kernel span; the wrong dynamics) and no rate can
+move those: 1.702e-2 -> 1.702e-2 and 3.035e-2 -> 3.035e-2. The cell where
+the rate binds is simple field, correct dynamics, frozen allocation, whose
+target the model class contains exactly. There the null INVERTS: 1.669e-4 ->
+4.609e-7 and 5.177e-4 -> 4.380e-7, better by 360x and 1180x. Fixed-rate Adam
+was hovering as G52(a) measured; the schedule lets it converge. Both the
+pooled figures and that cell are asserted.
+
+All five OBS-4 comparisons hold, four of them 3.5x to 16.6x better, on a
+THIRD of the births: 47 -> 16, train .061355 -> .003700, eval .108451 ->
+.021985, fresh .015934 -> .004521, correct/wrong .007673 -> .002229. Two
+thirds of what OBS-4 counted as useful growth on the rich field was the
+optimiser's wander, and removing it improved every accuracy comparison. The
+exception is incoming, .087542 -> .161477, still well under one — what less
+transferred capacity should do, reported and not explained.
+
+The control clears completely. On the simple field under correct dynamics,
+where there is nothing to buy, adaptive/frozen eval goes 8.73 -> 1.000 and
+3.58 -> 1.000 — exactly one because the two arms are the same run: control
+births go 74 -> 0. Across the whole factorial, cross-window repeat requests
+go correct 13 -> 0 while wrong 354 -> 362, untouched. OBS-4's caution was
+about the instrument and not about the claim, and on this fixture repeat
+pressure now separates wrong from correct perfectly.
+
+Not claimed: the schedule is not a default for anything. MARL's learner does
+not use Adam by default and G52(b) showed its NLMS default has no floor to
+fix. OBS-3's original claim boundary is unchanged — no death policy, so
+rejected requests are pressure and not churn; the true field lies inside the
+initial nine-kernel span on the simple field and demonstrably not on the
+rich one. Whether a detector built on repeat pressure generalises past this
+fixture stays untested.
+
+Cost: G53 ~120 s, two full factorials. Not smoke.
