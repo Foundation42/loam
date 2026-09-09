@@ -7104,3 +7104,58 @@ G44–G46. The run took about twelve minutes including compilation; the
 old three-minute estimate in the working guidance was stale. Log:
 `/tmp/marl-precommit-suite.log`. This supersedes the earlier per-beat
 notes saying no full-suite rerun had yet been performed.
+
+
+## ALG-2 — fewer materialisations, with the intervening reads measured (2026-09-09)
+
+G47 (`src/deferred.zig`; pre-registration `tools/alg2_predict.py`) sweeps
+checkpoint intervals 1/2/5/10/20/40 over the standing 40-step swirl, seeds
+7/19/41. Every arm spends 240k training examples after the common initial
+60k fit. Targets come only from the previous checkpoint model. Between
+fits, a cheap pushed model and a coordinate pullback into the checkpoint
+remain readable. The cheap model never becomes the teacher.
+
+Mean per-frame cheap-view RMS / constant is
+0.4794/0.2438/0.1341/0.0989/0.1097/0.1960: interval 10 wins at each seed.
+Final-only scoring would choose interval 40 (0.0777 versus 0.1508 at 10).
+Pullback mean error decreases to 0.0524 at 40, paid by 19.5 pending RK4
+steps per query versus 4.5 at 10. The two pre-registered comparisons hold;
+no threshold was retuned.
+
+The pre-planned 60k-per-fit control gives every-step fitting ten times the
+primary budget. Its mean error improves to 0.2278, but still exceeds
+interval 10's 0.0989 at one tenth the evidence. Both undertraining and
+repeated materialisation contribute in this experiment. See lab book §5c
+for tables, costs, sampling measure and conservation limitations.
+
+The first checkpoint identity check found a two-ULP copy discrepancy:
+reseedFrom rebuilds region lists in kernel-index order, while learning
+can rehome kernels in another order. The experiment's clone preserves
+that order; core reseeding semantics are unchanged. G47 also checks
+actual observation counts, quarter-turn pullback and zero-step identity.
+Targeted ReleaseSafe G47 (a), (b), and (c) passed. Christian subsequently
+replaced the full-suite-per-commit rule with smoke checks and roughly
+daily full regressions; see the workflow entry below.
+
+
+## Testing workflow — smoke by default (2026-09-09)
+
+Christian: "We need a sniff test, not a full regression suite." `zig build test` now selects nine existing contract gates: loam publication/guards,
+mixed-gauge seam continuity, the cross-repo Gaussian pin, MARL kernel and
+gradient pins, gather correctness after learning, held-out learning gain,
+transported support, and deferred coordinate reads. It also runs the two
+existing CLI grammar/ladder tests. `-Dtest-filter` still replaces that
+selection with an affected gate. Research sweeps and their thresholds
+remain unchanged under the explicit `zig build test-full` target.
+
+Normal commits use smoke plus affected gates. Full runs are roughly daily
+or justified by a broad change, not automatically every commit; no daily
+scheduler was installed. The second full run today was cancelled (exit
+130) after this instruction, not recorded as passing. The earlier full
+suite at b53ea5a passed. CODEX.md is the compact recovery guide, with
+AGENTS.md pointing to it; it supersedes CLAUDE.md for Codex recovery.
+
+Validation: the new default smoke target passed 12/12 tests in 18.85 s
+including compilation; its main test executable took about 3 s. The count
+includes the module registration test and both CLI tests. No second full
+suite was launched after changing the build target.

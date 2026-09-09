@@ -59,6 +59,8 @@ pub const milk = @import("milk.zig");
 /// over learned fields (`docs/MARL_ALGEBRA_CAMPAIGN.md`). Imports
 /// `marl.zig`, imported by neither it nor `rbf.zig`.
 pub const field = @import("field.zig");
+/// ALG-2: deferred materialisation and the field read between checkpoints.
+pub const deferred = @import("deferred.zig");
 
 // The working surface, re-exported flat.
 pub const Domain = lattice.Domain;
@@ -99,5 +101,6 @@ test {
     _ = cache;
     _ = milk;
     _ = field;
+    _ = deferred;
     _ = @import("tests.zig");
 }

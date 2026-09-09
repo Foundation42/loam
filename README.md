@@ -199,7 +199,9 @@ zig build run -- --steps 40 --cut 0.5 --trace run.txt   # CUT after the fronts a
 zig build run -- --scene junction --steps 40    # a bud junction: the child collars into its parent at its own radius; --collar 0 is the hard union
 zig build run -- --scene coil --steps 80        # a coiling tendril: hard along its own recent chain, collared where its turns touch
 python3 -m unittest discover -s py/tests    # after zig build
-zig build test                              # the gates
+zig build test                              # fast smoke checks (normal commit check)
+zig build test -Dtest-filter="G47 (c)"        # one affected gate
+zig build test-full                         # all research/regression gates; expensive, roughly daily
 ```
 
 Fixed dt is the only clock: `--dt-ms 1000` is one fed second per step,

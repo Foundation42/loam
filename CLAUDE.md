@@ -1,5 +1,8 @@
 # Working in loam
 
+For Codex, [CODEX.md](CODEX.md) supersedes this file for workflow and
+recovery, at Christian's request. Read its targeted map first.
+
 ## Running tests — the default is to run NOTHING
 
 Pick a gate because the change can break the thing it watches, never to
@@ -7,7 +10,8 @@ feel reassured. Chris has asked for this in every sibling repo; a suite
 run per edit makes the harness the activity rather than the work.
 
     zig build test -Dtest-filter=straddling   # one gate: 17 s to compile ReleaseSafe, then seconds
-    zig build test                            # full suite, ~12 min ReleaseSafe with G44–G46 — before a commit
+    zig build test                            # smoke checks: normal commit check, alongside affected gates
+    zig build test-full                       # full regression/research suite: roughly daily, not every commit
     zig build test -Dtest-optimize=Debug -Dtest-filter=…   # the other regime: 2 s to compile, slower to run
     zig build test -Dtest-optimize=ReleaseFast              # the delta, when Christian asks for it
     zig build verify-dump                     # loam-run writes a dump, the struple PYTHON port reads it
@@ -81,10 +85,13 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G45"             # support width independent of ownership: blob sweep, sharp-shell control, exact wider gather
     zig build test -Dtest-filter="G46"             # selective transport: local-error probes vs random and weight-only selection; accuracy diagnostic, not a speed claim
     python3 tools/width_predict.py                 # G45 geometry prediction and G46 selector pre-registration
+    zig build test -Dtest-filter="G47"             # ALG-2: deferred materialisation, equal-total-evidence sweep and per-fit-budget control
+    python3 tools/alg2_predict.py                  # G47 pre-registration; intermediate frames are part of the measurement
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
-run a gate when you have changed what it watches, the lot once before a
-commit. What is NOT cheap is downstream — matryoshka will read the tree,
+run a gate when you have changed what it watches, smoke checks before a
+commit, and the full suite roughly daily or for a specific broad concern.
+Christian superseded the every-commit full-suite rule on 2026-09-09. What is NOT cheap is downstream — matryoshka will read the tree,
 the summaries and the sampling contract the way it reads spindrift's
 population, and once it does, anything a host reads (`Snapshot`,
 `Summary`, `Brick` layout, the C seam, the dump) puts its GPU sweep in
@@ -99,7 +106,7 @@ Rules that hold whatever you picked:
   gate prints names its mode (`@tagName(builtin.mode)`), never assumes
   it. `loam-run` is unaffected: Debug is its measuring regime,
   `--phases` prints wall-clock per phase, and the numbers in the ledger
-  state which build they came from. One suite per commit, not per edit.
+  state which build they came from. Smoke plus affected gates per commit; full suite roughly daily.
 - One GPU gate at a time, when a sibling repo's are involved.
 
 ## MARL is not the sim

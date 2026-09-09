@@ -114,17 +114,32 @@ pub fn build(b: *std.Build) void {
     py_test.step.dependOn(b.getInstallStep());
     b.step("py-test", "Run the Python tests over libloam.so and loam-run").dependOn(&py_test.step);
 
-    // Tests: src/loam.zig pulls in the gates from src/tests.zig, built
-    // at `test_optimize`. `-Dtest-filter=<substring>` runs only matching
-    // tests; every timing a gate prints names its mode.
+    // Normal development/commit check: a small set of existing contract
+    // witnesses, not the research sweeps. An explicit filter replaces it.
+    // The full regression suite is opt-in (roughly daily, not per commit).
     const tm = if (test_optimize == optimize) m else modules(b, target, test_optimize, false);
     const tests = b.addTest(.{ .root_module = tm.loam });
     if (b.option([]const u8, "test-filter", "Only run tests whose name contains this")) |f| {
         tests.filters = b.allocator.dupe([]const u8, &.{f}) catch @panic("OOM");
+    } else {
+        tests.filters = &.{
+            "P1.1: a hand-placed blob",
+            "P1.2: a value straddling",
+            "the set reads the same bits rill's evaluator reads",
+            "G17 (a)", // kernel pin
+            "G17 (b)", // learning gradient
+            "G17 (c)", // gather after learning
+            "G17 (e)", // held-out learning gain, with disabled-learner mutation
+            "G44 (i)", // transformed support
+            "G47 (c)", // deferred read
+        };
     }
     const run_tests = b.addRunArtifact(tests);
-    const test_step = b.step("test", "Run the gates (ReleaseSafe; -Dtest-optimize=Debug for the other regime)");
+    const test_step = b.step("test", "Run smoke checks (or -Dtest-filter); ReleaseSafe by default");
     test_step.dependOn(&run_tests.step);
+    const full_tests = b.addTest(.{ .root_module = tm.loam });
+    const full_step = b.step("test-full", "Run ALL regression/research gates (expensive; roughly daily)");
+    full_step.dependOn(&b.addRunArtifact(full_tests).step);
     const test_run_mod = b.createModule(.{
         .root_source_file = b.path("src/run.zig"),
         .target = target,
@@ -133,12 +148,16 @@ pub fn build(b: *std.Build) void {
     test_run_mod.addImport("loam", tm.loam);
     test_run_mod.addImport("common", tm.common);
     const run_tests_exe = b.addTest(.{ .root_module = test_run_mod });
-    test_step.dependOn(&b.addRunArtifact(run_tests_exe).step);
+    const run_cli_tests = b.addRunArtifact(run_tests_exe);
+    test_step.dependOn(&run_cli_tests.step);
+    full_step.dependOn(&run_cli_tests.step);
     const marl_test_mod = b.createModule(.{
         .root_source_file = b.path("src/marl_run.zig"),
         .target = target,
         .optimize = test_optimize,
     });
     marl_test_mod.addImport("loam", tm.loam);
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = marl_test_mod })).step);
+    const marl_cli_tests = b.addRunArtifact(b.addTest(.{ .root_module = marl_test_mod }));
+    test_step.dependOn(&marl_cli_tests.step);
+    full_step.dependOn(&marl_cli_tests.step);
 }

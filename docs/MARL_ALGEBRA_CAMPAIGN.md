@@ -3,7 +3,7 @@
 **Operators, projection and transport over learned fields**\
 **Project:** Loam / Matryoshka\
 **Design note:** `docs/MARL_Field_Algebra.md` (Christian, September 2026)\
-**Status:** ALG-1 measured; G45–G46 investigate support width and selective transport\
+**Status:** ALG-1 and ALG-2 measured; G45–G46 investigate support width and selective transport\
 **Date:** Wednesday 9 September 2026
 
 ------------------------------------------------------------------------
@@ -849,6 +849,98 @@ on where the backtraced contributions can matter, or amortised/local flow
 maps. That is separate work, triggered by an accuracy signal that beats
 the cheap importance baseline on a heterogeneous fixture. No production
 scheduler, node variants or default changes were introduced.
+
+------------------------------------------------------------------------
+
+## 5c. ALG-2 — deferred materialisation through the whole trajectory (G47)
+
+**Pre-registration:** `tools/alg2_predict.py`, written before the sweep.
+The 40-step swirl, seeds 7/19/41, historical support width, 60k exemplars
+for the common initial fit, and **240k exemplars total** for subsequent
+materialisations. Intervals are 1/2/5/10/20/40; each interval divides the
+horizon. Every fit starts a fresh model and learns from the previous
+immutable checkpoint, never the pushed approximation and never analytic
+target values. All arms consume the same exemplar stream but place those
+examples at their own checkpoint times.
+
+`src/deferred.zig` separates two reads between checkpoints:
+
+- A cheap model pushed by local flow Jacobians.
+- A `Pullback` read that backtraces into the last checkpoint. Its model
+  must remain alive and unchanged; the current MARL reader still owns
+  mutable scratch, so this is a serial surface, not snapshot publication.
+
+At a checkpoint both represent the newly materialised model. The first
+run caught an actual copy discrepancy here: `reseedFrom` preserves kernel
+parameters but rebuilds per-region lists in kernel-index order. Learning
+can rehome kernels into another order. G47's checkpoint copy preserves
+the original summation order too; a two-ULP mismatch then disappears and
+zero-pending-flow readings agree bitwise. The core reseeding contract is
+unchanged.
+
+**Measurement:** 128 common local probes at every published frame, not
+just the final fit; average per-frame RMS divided by that frame's
+constant-predictor RMS. Direct errors against the accurately transported
+original model are also recorded, separating original fit error from
+later evolution error. Final uniform whole-cube RMS and whole-space
+kernel mass are reported separately. RK4 query-step counts expose the
+pullback's read cost. Fit time includes transporting training locations;
+reported total time also includes diagnostic probe scoring, so it is not
+a runtime-only benchmark. Peak live kernel count includes old checkpoint,
+cheap view, student and its new cheap copy, not merely the final payload.
+
+**Equal-total-evidence results**, means over three seeds:
+
+| interval | fits | exemplars / fit | cheap mean / constant | pullback mean / constant | final / constant |
+|---|---:|---:|---:|---:|---:|
+| 1 | 40 | 6 000 | 0.4794 | 0.4794 | 0.6975 |
+| 2 | 20 | 12 000 | 0.2438 | 0.2434 | 0.4446 |
+| 5 | 8 | 30 000 | 0.1341 | 0.1316 | 0.2572 |
+| 10 | 4 | 60 000 | **0.0989** | 0.0885 | 0.1508 |
+| 20 | 2 | 120 000 | 0.1097 | 0.0657 | 0.1196 |
+| 40 | 1 | 240 000 | 0.1960 | **0.0524** | **0.0777** |
+
+The proposed interior optimum holds, with interval 10 best at each seed.
+Its mean cheap-view error is about half the best endpoint's, and about
+one fifth of fitting every step. The final-only measurement would have
+selected interval 40, which is why intermediate frames are part of the
+gate. The other prediction holds too: final k40/k1 error is 0.1114.
+
+Accurate reads are a different trade: they benefit from fewer fits and
+pay for longer backtraces. Mean pending RK4 steps per read are
+0/0.5/2/4.5/9.5/19.5 for these intervals. Both accurate and cheap views
+remain queryable between materialisations; the approximate view is not
+fed back as a teacher.
+
+**Pre-planned training-budget control, G47 (b).** Give every fit 60k
+examples, matching the initial fit, with intervals 1/10/40. This deliberately
+uses unequal total evidence:
+
+| interval | total exemplars | cheap mean / constant | final / constant | mean fitting seconds |
+|---|---:|---:|---:|---:|
+| 1 | 2 400 000 | 0.2278 | 0.4031 | 31.46 |
+| 10 | 240 000 | 0.0989 | 0.1508 | 2.78 |
+| 40 | 60 000 | 0.1970 | 0.1177 | 0.86 |
+
+Extra evidence roughly halves the every-step error, so undertraining each
+fresh fit explains part of the primary result. It does not erase it:
+every-step fitting still loses to interval 10 on both mean and final
+error while consuming ten times its examples. Repeated materialisation
+remains costly for this learner and fixture; this is not a theorem about
+all projection methods. Timings include fitting and sample transport.
+
+G47 (a) checks actual observed exemplar counts and bitwise checkpoint
+agreement. G47 (c) checks a quarter-turn pullback of a known Gaussian,
+including an omitted-backtrace mutation that returns zero at the same
+query, and zero-step identity. All three targeted ReleaseSafe gates passed.
+
+No global default is changed and ten is not a universal cadence. This
+is one smooth, time-independent, incompressible fixture and a declared
+sampling measure (the advected initial four-width ball). Checkpoint
+training remains synchronous. Long-horizon stability, general support
+discovery and explicit conservation remain separate questions; for
+example interval 10 retains 0.892/0.963/0.778 of initial whole-space
+kernel mass at the three seeds.
 
 ------------------------------------------------------------------------
 

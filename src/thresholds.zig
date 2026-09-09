@@ -2899,4 +2899,13 @@ pub const ALG_WIDTH_RMS_ALLOWANCE: f64 = 1.25;
 /// cancellation between kernels is a possible refutation.
 pub const ALG_SELECTOR_MARGIN: f64 = 1;
 
+/// ALG-2 / G47, PROPOSED before the sweep: at equal total fitting
+/// evidence, one of intervals 2/5/10/20 beats both endpoints 1/40 in mean
+/// per-frame cheap-view error. Three seeds; tools/alg2_predict.py records
+/// the resource constraint and the distinction from final-frame error.
+pub const ALG2_INTERIOR_MARGIN: f64 = 1;
+/// At the final checkpoint, fitting once should beat forty successive
+/// fresh fits when the same 240k observations must fund all of them.
+pub const ALG2_FINAL_MARGIN: f64 = 1;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
