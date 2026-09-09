@@ -7179,3 +7179,31 @@ Both targeted ReleaseSafe gates passed. This does not learn dynamics;
 rotating held-out probes makes the future score another view of the same
 state error. Full methods, limitations and next experiment are in the
 new lab book. The user's observational design note was read, not edited.
+
+
+## OBS-2 — trajectory endpoints infer a frozen potential (2026-09-09)
+
+G49 (`src/inferred.zig`, `tools/obs2_predict.py`) learns nine fixed Gaussian
+coefficients from 32 endpoints on 16 short trajectories. Velocity is
+-gradient(P), not acceleration. True potential lies in this basis;
+observations are noiseless. Headline computation is f32. Synthetic
+endpoints use finer integration than prediction. Three seeds, matched
+observations, K=9 and 400 full-batch updates in each arm.
+
+Correct/prior pooled held-out endpoint RMS .003332, correct/wrong-dynamics
+.002397; potential-gradient error/prior .003826. Wrong dynamics add a
+prescribed rotational velocity that no scalar potential can cancel
+everywhere. Its training error improves, but held-out improvement is mixed
+and remains far worse than the correct arm. Both use 409600 RHS calls
+and 3686400 kernel evaluations per seed, about .025 s fitting per arm.
+This isolates coefficient inference; it does not test adaptive births.
+
+The f64 sensitivity audit covers all weights, 3 starts/seeds, 4 lengths
+and 3 perturbation sizes. Original all-raw-differences-pass prediction is
+REFUTED: four failures at h=.001, none at .0001/.00001. The preregistered
+amendment adds Richardson cancellation without changing tolerances;
+all 972 comparisons pass, worst relative error 2.65e-6, with derivatives
+spanning 3.14e-8 to .8264. Omitting position feedback fails 936 raw checks.
+This mutation exposes the Hessian term in temporal credit assignment.
+G49(a) and (b) pass targeted ReleaseSafe. Full method and limitations are
+in docs/MARL_OBSERVATIONAL_CAMPAIGN.md. No full suite was launched.

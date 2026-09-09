@@ -2912,5 +2912,11 @@ pub const ALG2_FINAL_MARGIN: f64 = 1;
 /// prior and updates at untransformed coordinates on held-out future
 /// observations. Directional prediction frozen in tools/obs1_predict.py.
 pub const OBS1_GAIN_MARGIN: f64 = 1;
+/// OBS-2 / G49: f64 midpoint trajectory coefficient derivative audit.
+/// Frozen before measurement; relative comparison has an absolute floor.
+pub const OBS2_GRAD_REL: f64 = 1e-3;
+pub const OBS2_GRAD_ABS: f64 = 1e-9;
+/// Directional held-out trajectory and field-gradient recovery predictions.
+pub const OBS2_GAIN_MARGIN: f64 = 1;
 
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

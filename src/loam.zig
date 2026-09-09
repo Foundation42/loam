@@ -63,6 +63,8 @@ pub const field = @import("field.zig");
 pub const deferred = @import("deferred.zig");
 /// OBS-1: state observations through a known flow.
 pub const observed = @import("observed.zig");
+/// OBS-2: fixed-geometry trajectory sensitivities and potential inference.
+pub const inferred = @import("inferred.zig");
 
 // The working surface, re-exported flat.
 pub const Domain = lattice.Domain;
@@ -105,5 +107,6 @@ test {
     _ = field;
     _ = deferred;
     _ = observed;
+    _ = inferred;
     _ = @import("tests.zig");
 }

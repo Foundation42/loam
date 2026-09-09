@@ -44,6 +44,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
+| Hidden potential inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-2; src/inferred.zig, G49 |
 | Observational state inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md; src/observed.zig, G48 |
 | Current field experiments | docs/MARL_ALGEBRA_CAMPAIGN.md, sections 5b/5c |
 | Latest measured decisions | tail of docs/implementation-notes.md |
@@ -86,9 +87,16 @@ Completed ALG-2 / G47 (d7870d0), recorded in lab book section 5c.
 - Remaining research: long-horizon behaviour, conservation, support
   discovery and actual scheduling costs. These are future beats.
 
-Latest beat: OBS-1 / G48, docs/MARL_OBSERVATIONAL_CAMPAIGN.md.
-Known-flow scalar observations update the source MARL at backtraced
-coordinates. Corrected/prior held-out RMS .12553; wrong-coordinate
-updates worsen error and grow ~900 kernels. Targeted G48(a/b) passed.
-This is fixed-flow state inference, not hidden-force reconstruction.
-Next candidate: short-window trajectory sensitivities with fixed basis.
+Completed OBS-1 / G48 (ea22c84): fixed-flow observations update the source
+MARL at the preimage. Corrected/prior RMS .12553; wrong coordinates grow
+~900 kernels, but spatial footprint confounds mismatch interpretation.
+
+Latest beat: OBS-2 / G49; docs/MARL_OBSERVATIONAL_CAMPAIGN.md.
+Frozen 9-kernel potential inferred from trajectory endpoints. Correct/prior
+held-out RMS .003332, correct/wrong-dynamics .002397, with matched work.
+972 f64 sensitivity checks: raw large-step FD prediction refuted in four
+cases; smaller steps pass. Recorded Richardson amendment passes unchanged
+tolerances, worst relative error 2.65e-6. Missing-position-feedback mutation
+fails 936 checks. Targeted G49(a/b) passed. Headline recovery uses f32.
+Next: adaptive mismatch diagnostics; record pre-update residuals, coverage,
+birth location/scale and work. K=9 is frozen here, so no proliferation claim.
