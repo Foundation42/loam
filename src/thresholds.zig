@@ -3461,4 +3461,47 @@ pub const OBS10_CROSSOVER_WIN: f64 = 0.90;
 ///     the spectrum sizes the set; the TARGET chooses the members
 pub const OBS10_TARGET_WINS: f64 = 1.0;
 
+/// G58: the synthesised basis's RMS over the target-selected basis's, at
+/// equal cardinality. PROPOSED as a CEILING at 0.80.
+///
+/// Christian's hypothesis: synthesised representatives should dominate
+/// selected ones where redundancy is DISTRIBUTED across several
+/// individually imperfect kernels. Warm-started from OBS-10's winner, so
+/// the comparison is exactly "selection" against "selection then
+/// refinement" and a win cannot be an accident of initialisation.
+///
+/// The threshold that matters is separate and reported rather than
+/// asserted: whether a consolidated basis at a QUARTER fewer kernels beats
+/// the FULL one. If it does, consolidation is not compression with a loss —
+/// it is a strictly better representation at strictly lower cost, and
+/// "sleep" stops being a metaphor.
+///
+/// **REFUTED at 0.887 / 0.850 / 0.893 on held-out probes.** The direction
+/// holds at every fraction and consistently; the magnitude does not. G58
+/// asserts the direction and the threshold below instead.
+///
+/// The measurement needed two corrections before it meant anything. The
+/// descent first won by LEAVING THE FAMILY — sigma was bounded per axis but
+/// the ellipsoid's infinity-norm reach was not, so 359 of 468 kernels
+/// outgrew the gather and the arm read a thirty-fold "win"; the registered
+/// null caught it. And it was then scored on the probes it was FITTED ON,
+/// which flatters synthesis enormously because the baseline only gets a
+/// weight refit there: train 0.00227 against held-out 0.05376.
+pub const OBS11_SYNTHESIS: f64 = 0.80;
+
+/// G58: the synthesised basis at a QUARTER fewer kernels, over the FULL
+/// basis's refit, both on held-out probes. PROPOSED as a CEILING at 1.0 —
+/// no worse than the basis it came from, with a quarter of it gone.
+///
+/// Registered in `tools/obs11_predict.py` §(4) as the threshold Christian
+/// named: "if the distilled arm wins at equal cardinality, then you have
+/// demonstrated something qualitatively stronger than pruning — consolidation
+/// can improve basis QUALITY, not merely reduce basis SIZE."
+///
+/// **HELD, and at HALF the kernels rather than a quarter**: 0.053762 with
+/// 468 and 0.053951 with 311, against the full 623's 0.057213. A
+/// consolidated basis is strictly better than the overcomplete one it was
+/// built from, on data neither saw.
+pub const OBS11_BETTER_THAN_FULL: f64 = 1.0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

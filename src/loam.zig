@@ -68,6 +68,9 @@ pub const law = @import("law.zig");
 /// OBS-9: one residualisation, three faces — birth, operator inference and
 /// distillation are the same operation with different arguments.
 pub const novelty = @import("novelty.zig");
+/// OBS-11: synthesis — the third stage, where a consolidated basis is
+/// FITTED rather than selected from its ancestors.
+pub const consolidate = @import("consolidate.zig");
 /// ALG-2: deferred materialisation and the field read between checkpoints.
 pub const deferred = @import("deferred.zig");
 /// OBS-1: state observations through a known flow.
@@ -121,6 +124,7 @@ test {
     _ = churn;
     _ = law;
     _ = novelty;
+    _ = consolidate;
     _ = deferred;
     _ = observed;
     _ = inferred;

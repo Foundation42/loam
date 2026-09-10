@@ -1323,3 +1323,102 @@ cross-region overlap at the faces is neglected — shown here not to matter
 for the criterion, but untested for the *budgeting*.
 
 Cost: G57 is ~40 s. `python3 tools/obs10_predict.py` for the derivations.
+
+## OBS-11 / G58 — synthesis, and the threshold where sleep stops being a metaphor
+
+Christian's three-stage decomposition, with the third stage built:
+
+    geometry     -> how many dimensions exist
+    objective    -> which dimensions matter
+    distillation -> how to synthesise a better basis for them
+
+`src/consolidate.zig` warm-starts from OBS-10's winner and lets the chosen
+kernels **move** — every parameter, through `marl.gradOne`, so the result is
+a set of kernels in MARL's own family. The comparison is then exactly
+*selection* against *selection then refinement*, and a win cannot be an
+accident of where new elements were placed.
+
+### Two corrections before the measurement meant anything
+
+**The descent first won by leaving the family.** σ was bounded per axis but
+the ellipsoid's ∞-norm *reach* was not — off-diagonals can make the cutoff
+box far larger than any single width — so **359 of 468 kernels outgrew the
+gather** and the arm read a thirty-fold win. The registered null caught it,
+and `marl.Model.clamp`'s reach projection fixed it: 0 over reach at every
+fraction thereafter.
+
+**And it was then scored on the probes it was fitted on.** `refine`
+optimises ten parameters per kernel against the points it is handed, so
+scoring there is training on the test set — and it flatters synthesis
+enormously, because the baseline only gets a weight refit on the same
+points. Train 0.00227 against held-out 0.05376. Two disjoint probe sets now,
+OBS-4's discipline: fixed evaluation data never enters learning.
+
+### Held out, the result is smaller and real
+
+| pruned | kept | selected | **synthesised** | sel/full | syn/sel |
+|---|---:|---:|---:|---:|---:|
+| 25% | 468 | 0.060584 | **0.053762** | 1.059 | **0.887** |
+| 50% | 311 | 0.063476 | **0.053951** | 1.110 | **0.850** |
+| 75% | 155 | 0.074707 | **0.066711** | 1.306 | **0.893** |
+
+Full basis, 623 kernels: **0.057213** held out.
+
+The registered 0.80 is **refuted** — synthesis buys 11–15%, not 20% — but
+the direction holds at every fraction and consistently.
+
+### The threshold Christian named: HELD, and at half
+
+    distilled, 468 kernels   0.053762
+    distilled, 311 kernels   0.053951
+    FULL basis, 623 kernels  0.057213
+
+**A consolidated basis is strictly better than the overcomplete one it was
+built from, on data neither saw — at half the kernels.** Not compression
+with a loss. Consolidation improves basis *quality*, not merely reduces
+basis *size*.
+
+    the system takes an overcomplete daytime representation and wakes with
+    a smaller, better-conditioned, more task-aligned basis
+
+That is the threshold, and it is crossed.
+
+### The conditional did not separate
+
+Christian's hypothesis was conditional: synthesis should dominate *where
+redundancy is distributed across several individually imperfect kernels*,
+measured before any fitting by
+
+$$\text{spread} = 1 - E_{\text{sel}}/E_{\text{opt}}$$
+
+Registered at ≥2× more gain in the top third by spread than the bottom.
+**Measured 1.24×** — the right sign, nowhere near the margin. Two honest
+reasons and neither is a defence: spread is small on this fixture
+(0.003–0.117, because at light prunes the selected members already capture
+nearly everything), and probes are attributed to clusters by which region
+owns them, which is crude where supports cross faces. The hypothesis is not
+refuted so much as **untested at adequate contrast**, and a fixture with
+deliberately clustered redundancy would test it properly.
+
+### The honest limit
+
+Synthesis at 468 kernels has **4 680 free parameters against 4 096 fit
+probes** — more parameters than points. It overfits hard (train 0.0023,
+held 0.0538) and the 11–15% is what survives that. There is obvious
+headroom in more probes or a regulariser, and equally the possibility that
+a better-posed fit changes the ranking. Reported rather than tuned.
+
+### Myopia, recorded and not addressed
+
+Christian: *your current target-selection rule is still choosing according
+to the present target; if the system is dynamic, that makes consolidation
+potentially myopic.* Right, and untouched. The objective here is one static
+target. Widening it to a replay measure $Y = \{y_t, y_{t-1}, \dots\}$, or to
+the prediction residual over a recent window, is the next axis and OBS-11
+deliberately does not take it — so that synthesis is measured before the
+objective is generalised.
+
+    the measure defines WHERE, the spectrum defines HOW MUCH,
+    the objective defines WHAT TO PRESERVE
+
+Cost: G58 is ~50 s. `python3 tools/obs11_predict.py` for the derivations.

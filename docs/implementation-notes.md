@@ -7641,3 +7641,49 @@ separate. Cross-region overlap is shown not to matter for the criterion and
 is untested for the budgeting.
 
 Validation: G57 and G57(b) pass ReleaseSafe; smoke set clean. G57 ~40 s.
+
+## OBS-11 / G58 — synthesis, and where sleep stops being a metaphor
+
+src/consolidate.zig builds Christian's third stage: budget from r_eff,
+members from the target-conditioned residual, and then the chosen kernels
+are allowed to MOVE — every parameter, through marl.gradOne, so the result
+stays in MARL's family. Warm-started from OBS-10's winner on purpose, so the
+comparison is exactly selection against selection-then-refinement.
+
+Two corrections before the measurement meant anything. The descent first won
+by LEAVING THE FAMILY: sigma was bounded per axis but the ellipsoid's
+infinity-norm reach was not, so 359 of 468 kernels outgrew the gather and
+the arm read a thirty-fold win. The registered null caught it and
+marl.Model.clamp's reach projection fixed it (0 over reach thereafter). It
+was then scored on the probes it was FITTED ON, which flatters synthesis
+enormously because the baseline only gets a weight refit there: train
+.00227 against held-out .05376. Two disjoint probe sets now.
+
+Held out: syn/sel is .887/.850/.893 at a quarter, a half and three quarters
+pruned. The registered .80 is REFUTED — synthesis buys 11-15%, not 20% —
+but the direction holds at every fraction.
+
+The threshold HELD and at half rather than a quarter: distilled 468 kernels
+.053762 and 311 kernels .053951 against the FULL 623's .057213, all held
+out. A consolidated basis is strictly better than the overcomplete one it
+was built from, on data neither saw, at half the kernels. Consolidation
+improves basis QUALITY, not merely reduces basis SIZE.
+
+The conditional did not separate. spread = 1 - E_sel/E_opt was registered to
+give the top third at least 2x the gain of the bottom; measured 1.24x —
+right sign, nowhere near the margin. Spread is small on this fixture
+(.003-.117) and probes are attributed to clusters by owning region, which is
+crude where supports cross faces. Untested at adequate contrast rather than
+refuted; a fixture with deliberately clustered redundancy would test it.
+
+Honest limit: synthesis at 468 kernels has 4,680 free parameters against
+4,096 fit probes — more parameters than points — and overfits hard. The
+11-15% is what survives that. Headroom in more probes or a regulariser, and
+equally the possibility that a better-posed fit changes the ranking.
+
+Myopia recorded and not addressed: the objective is one static target, and
+widening it to a replay measure or a recent-window residual is the next
+axis, deliberately not taken so synthesis is measured before the objective
+is generalised.
+
+Validation: G58 passes ReleaseSafe; smoke set clean. G58 ~50 s.
