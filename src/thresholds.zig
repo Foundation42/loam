@@ -3572,4 +3572,47 @@ pub const OBS13_REGROWTH: f64 = 1.5;
 /// observations are legitimately its to reuse.
 pub const OBS14_SELF_SLEEP: f32 = 0.99;
 
+/// G62 (b): the correlation between contribution-weighted readiness and
+/// post-sleep gain, across a wake-length sweep. PROPOSED as a FLOOR at 0.5.
+///
+/// Christian's refinement of OBS-14: the lineage data does not say
+/// consolidation degrades, it says consolidation quality depends on the
+/// MATURITY of the population being consolidated — wake, birth burst,
+/// settling, consolidation window, rather than a fixed cadence.
+///
+/// R = 1 - sum w_i [u_i < u_min] / sum w_i, contribution-weighted because a
+/// post-wake population is heterogeneous and a mean update count averages
+/// away exactly the thing that matters.
+///
+/// If this holds, "do not sleep too soon" stops being an observation and
+/// becomes a policy with a measurable trigger — and it un-confounds the
+/// ratchet test, since a lineage compared at a FIXED cadence is comparing
+/// consolidations of populations at different maturities.
+///
+/// **REFUTED at -0.72 — the correlation runs the OTHER WAY.** The better
+/// the model going in, the more the sleep hurt it. And readiness was never
+/// the discriminating variable: it sits at .98-.999 across the whole sweep.
+///
+/// The `after` column is what says why. Post-sleep RMS is roughly FLAT at
+/// .067-.101 however good the model was, while `before` runs .106 down to
+/// .048 — so the gain is positive only where the model was worse than a
+/// ceiling the sleep itself imposes. That ceiling is the REPLAY RING: half
+/// of 781 kernels is 390, at ten parameters each, so 3 900 free parameters
+/// were being fitted against 2 048 points.
+///
+/// Widening the ring at the last checkpoint, same model and same budget:
+///
+///     ring    points/param    after     gain
+///     2048            0.53   .07478   -.5594
+///     8192            2.10   .04545   +.0523
+///    32768            8.40   .02186   +.5442
+///
+/// So there IS a consolidation window and it is set by EVIDENCE PER
+/// PARAMETER, not by population maturity. At eight points per parameter,
+/// consolidation more than halves the held-out error at half the kernels.
+/// G56 (a) found the same principle one level down — you cannot ask about
+/// redundancy with fewer samples than functions — and this is it again, per
+/// parameter rather than per function.
+pub const OBS15_READINESS: f64 = 0.5;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

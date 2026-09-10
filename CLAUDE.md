@@ -107,6 +107,8 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/obs13_predict.py                 # ... its pre-registration; the child regrows past the parent and still loses
     zig build test -Dtest-filter="G61"             # OBS-14: the LINEAGE — sleep must consolidate against REPLAY, which reverses OBS-13. ~120 s
     python3 tools/obs14_predict.py                 # ... its pre-registration; a design error found before any code was written
+    zig build test -Dtest-filter="G62"             # OBS-15: the consolidation window is EVIDENCE PER PARAMETER, not maturity. ~5 min
+    python3 tools/obs15_predict.py                 # ... its pre-registration; the readiness correlation came out -0.72, the wrong sign
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a

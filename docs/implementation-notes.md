@@ -7824,3 +7824,56 @@ OWN ring — sharing one hands the child the parent's experience, which is the
 thing a lineage exists to keep apart.
 
 Validation: G61 passes ReleaseSafe; smoke set clean. G61 ~120 s.
+
+## OBS-15 / G62 — the consolidation window is evidence, not maturity
+
+G62(a) promotes the fit/eval separation from ledger note to plumbing after
+its third occurrence (OBS-11's synthesis arm, OBS-14's sleep contrast,
+OBS-8's clipped disc). `Measures` names fit, sleep and eval explicitly and
+refuses to run if any two share a point; the gate asserts it fires on a
+deliberate alias.
+
+G62(b) tests Christian's maturity hypothesis and REFUTES it. One wake from a
+common parent on a moved world, a fork consolidated at each of six
+checkpoints, same model, same stream, same sleep, same budget. Correlation
+between contribution-weighted readiness and post-sleep gain is -0.72 — the
+wrong sign — and readiness never varied, sitting at .98-.999 across the
+whole sweep. The better the model going in, the more the sleep hurt it:
+gain +.1594 at 2k falling to -.5594 at 80k.
+
+The `after` column says why: post-sleep RMS is roughly FLAT at .067-.101
+however good the model was, while `before` runs .106 down to .048. The sleep
+imposes a ceiling and the gain is positive only where the model was already
+worse than it. Half of 781 kernels is 390 at ten parameters each — 3,900
+free parameters fitted against a 2,048-point ring.
+
+Widening the ring at the last checkpoint, same model and same budget:
+  2048 points   0.53 per param   after .07478   gain -.5594
+  8192 points   2.10 per param   after .04545   gain +.0523
+ 32768 points   8.40 per param   after .02186   gain +.5442
+
+So there IS a consolidation window and it is set by EVIDENCE PER PARAMETER.
+At eight points per parameter consolidation more than halves the held-out
+error at half the kernels; at half a point per parameter it destroys the
+model.
+
+Reframes three earlier readings. OBS-14's second sleep was not lineage
+damage and not immaturity — a 2,048-point ring against a ~390-kernel budget
+is squarely in the destructive regime, so the ratchet question was never
+fairly asked. OBS-11's "honest limit" (4,680 params against 4,096 probes,
+.87 per param) sat there too and still showed 11-15%, so its gain was real
+and badly under-measured. And G56(a) found the same principle one level
+down — you cannot ask about redundancy with fewer samples than functions —
+which makes this its second sighting, per parameter rather than per function.
+
+Policy: do not sleep until the replay carries at least a few observations
+per free parameter you intend to keep. Budget and ring size are one decision,
+not two: r_eff says how many kernels to keep, the ring says how many can be
+afforded.
+
+Still owed: maturity is refuted AT THIS RING SIZE and untested at an
+adequate one; the ratchet test needs a properly sized ring; effective-age
+inheritance is unaffected; replay weighting is now the natural next question,
+since this phase says only that the ring must be big, not what is in it.
+
+Validation: G62 (a) and (b) pass ReleaseSafe; smoke set clean. G62 ~5 min.

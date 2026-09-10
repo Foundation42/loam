@@ -1134,3 +1134,237 @@ test "G61 the lineage: is the wake/sleep cycle a ratchet, or damage accumulating
     try testing.expect(r_rep < r_self);
     try testing.expect(parent.kernels.items.len > 0 and child.kernels.items.len > 0);
 }
+
+// ── OBS-15: the guardrail, and readiness ──────────────────────────────
+
+/// The three measures an optimisation experiment runs under, named
+/// explicitly and checked for aliasing.
+///
+/// **Promoted from a ledger note after its third occurrence.** OBS-11's
+/// synthesis arm was scored on the probes it was fitted on (train 0.00227
+/// against a held-out 0.05376); OBS-14's sleep-target contrast read a
+/// fourteen-fold "improvement" that was really 0.855x; and OBS-8's disc was
+/// a different error of the same family — a measure that was not what its
+/// name said. Christian: *every optimisation experiment must name separate
+/// fit and evaluation measures explicitly, and reject the experiment if any
+/// alias unintentionally.*
+///
+/// That is boring plumbing and it is exactly the kind that prevents
+/// spectacular nonsense.
+pub const Measures = struct {
+    /// What a descent optimises against.
+    fit: []const [3]f32,
+    /// What a consolidation preserves.
+    sleep: []const [3]f32,
+    /// What the result is scored on. Must touch neither of the others.
+    eval: []const [3]f32,
+
+    pub fn check(self: Measures) !void {
+        try disjoint(self.eval, self.fit);
+        try disjoint(self.eval, self.sleep);
+    }
+
+    fn disjoint(a: []const [3]f32, b: []const [3]f32) !void {
+        // Exact coincidence, because these are drawn from streams and a
+        // shared point means a shared DRAW, not a near miss.
+        for (a) |p| {
+            for (b) |q| {
+                if (std.meta.eql(p, q)) return error.MeasuresAlias;
+            }
+        }
+    }
+};
+
+/// How much of a model's OUTPUT rests on kernels too young to have settled.
+///
+/// Christian's scalar, and the reason it is contribution-weighted: a
+/// post-wake population is heterogeneous — old kernels, newly born ones,
+/// partly adapted ones — so a mean update count averages away exactly the
+/// thing that matters.
+///
+///     R = 1 − Σ wᵢ·[uᵢ < u_min] / Σ wᵢ
+///
+/// One is a fully settled model; zero is one whose every contributing
+/// kernel is new.
+pub fn readiness(m: *const marl.Model, u_min: u32) f64 {
+    var tot: f64 = 0;
+    var young: f64 = 0;
+    for (m.kernels.items) |*k| {
+        const w = @abs(@as(f64, k.weightsConst()[0]));
+        tot += w;
+        if (k.updates < u_min) young += w;
+    }
+    if (!(tot > 0)) return 1;
+    return 1 - young / tot;
+}
+
+/// Coefficient of variation of the update counts — the heterogeneity a
+/// mean hides, reported beside the readiness it explains.
+pub fn updateSpread(m: *const marl.Model) f64 {
+    const n = m.kernels.items.len;
+    if (n == 0) return 0;
+    var s: f64 = 0;
+    for (m.kernels.items) |*k| s += @floatFromInt(k.updates);
+    const mean = s / @as(f64, @floatFromInt(n));
+    if (!(mean > 0)) return 0;
+    var q: f64 = 0;
+    for (m.kernels.items) |*k| {
+        const d = @as(f64, @floatFromInt(k.updates)) - mean;
+        q += d * d;
+    }
+    return @sqrt(q / @as(f64, @floatFromInt(n))) / mean;
+}
+
+test "G62 (a) the guardrail fires on an aliased measure" {
+    // A guardrail that cannot fail is decoration. Two sets drawn from
+    // different streams pass; the same set named twice does not.
+    const gpa = testing.allocator;
+    const a = try marl.probes(gpa, 1, 256);
+    defer {
+        gpa.free(a.p);
+        gpa.free(a.y);
+    }
+    const b = try marl.probes(gpa, 2, 256);
+    defer {
+        gpa.free(b.p);
+        gpa.free(b.y);
+    }
+    const c = try marl.probes(gpa, 3, 256);
+    defer {
+        gpa.free(c.p);
+        gpa.free(c.y);
+    }
+    try (Measures{ .fit = a.p, .sleep = b.p, .eval = c.p }).check();
+    try testing.expectError(error.MeasuresAlias, (Measures{ .fit = a.p, .sleep = b.p, .eval = a.p }).check());
+    try testing.expectError(error.MeasuresAlias, (Measures{ .fit = a.p, .sleep = c.p, .eval = c.p }).check());
+    std.debug.print("\n  G62 (a) [{s}] three distinct measures pass; fit/eval and sleep/eval aliases are refused by name\n", .{@tagName(builtin.mode)});
+}
+
+test "G62 (b) when is a population ready to be rewritten?" {
+    // Christian's refinement of OBS-14: the lineage data does not say
+    // consolidation degrades, it says consolidation quality depends on the
+    // MATURITY of the population being consolidated.
+    //
+    //     wake -> birth burst -> settling -> consolidation window
+    //
+    // One wake trajectory from a common parent on a MOVED world, with a
+    // fork consolidated at each checkpoint. Same model, same stream, same
+    // sleep, same budget — only the amount of settling differs.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    // The ring is allocated large and SLICED for the sweep below, because
+    // the phase's own result turned on its size.
+    const RING: usize = 2048;
+    const BIG: usize = 32768;
+
+    var st = rng.Stream.region(1234, 0x4f31_3557, 0); // "O15W"
+    var warm = try Replay.init(gpa, RING);
+    defer warm.deinit(gpa);
+    var p0 = try marl.Model.init(gpa, o);
+    defer p0.deinit();
+    try wake(&p0, 20_000, &warm, &st);
+
+    // The world moves, and the wake begins.
+    var moved = marl.TruthParams{};
+    moved.shift = .{ 0, -0.10, 0 };
+    p0.opts.truth = moved;
+    const ho = try marl.probesOf(gpa, moved, 31337, 4096);
+    defer {
+        gpa.free(ho.p);
+        gpa.free(ho.y);
+    }
+
+    var ring = try Replay.init(gpa, BIG);
+    defer ring.deinit(gpa);
+    var ws = rng.Stream.region(99, 0x5741_4b45, 0);
+
+    std.debug.print("\n  G62 (b) [{s}] one wake, a fork consolidated at each checkpoint\n", .{@tagName(builtin.mode)});
+    std.debug.print("  {s:>7} {s:>7} {s:>6} {s:>6} {s:>6} {s:>6} {s:>9} {s:>9} {s:>8}\n", .{ "wake", "kernels", "R16", "R64", "R256", "cv", "before", "after", "gain" });
+
+    const marks = [_]u64{ 2_000, 5_000, 10_000, 20_000, 40_000, 80_000 };
+    var gains: [marks.len]f64 = undefined;
+    var reads: [marks.len]f64 = undefined;
+    var seen: u64 = 0;
+    for (marks, 0..) |mark, mi| {
+        try wake(&p0, mark - seen, &ring, &ws);
+        seen = mark;
+
+        // The measures, named and checked before anything is optimised.
+        try (Measures{ .fit = ring.x[0..RING], .sleep = ring.x[0..RING], .eval = ho.p }).check();
+
+        reads[mi] = readiness(&p0, 64);
+        const before = try p0.rms(ho.p, ho.y, null);
+        var fork = try sleepOn(gpa, &p0, ring.x[0..RING], ring.y[0..RING], p0.kernels.items.len / 2);
+        defer fork.deinit();
+        fork.opts.truth = moved;
+        const after = try fork.rms(ho.p, ho.y, null);
+        gains[mi] = 1 - @as(f64, after) / @as(f64, before);
+        std.debug.print("  {d:>7} {d:>7} {d:>6.3} {d:>6.3} {d:>6.3} {d:>6.2} {d:>9.5} {d:>9.5} {d:>8.4}\n", .{
+            mark, p0.kernels.items.len, readiness(&p0, 16), reads[mi], readiness(&p0, 256),
+            updateSpread(&p0), before, after, gains[mi],
+        });
+    }
+
+    // Does readiness order the gain? Spearman would need a rank routine;
+    // the plain correlation over six points is enough to say whether the
+    // two move together, and the table is printed so it can be read.
+    var mr: f64 = 0;
+    var mg: f64 = 0;
+    for (reads, gains) |r, g| {
+        mr += r / marks.len;
+        mg += g / marks.len;
+    }
+    var num: f64 = 0;
+    var dr: f64 = 0;
+    var dg: f64 = 0;
+    for (reads, gains) |r, g| {
+        num += (r - mr) * (g - mg);
+        dr += (r - mr) * (r - mr);
+        dg += (g - mg) * (g - mg);
+    }
+    const corr = if (dr > 0 and dg > 0) num / @sqrt(dr * dg) else 0;
+    const crossed = gains[0] < 0 and gains[marks.len - 1] > 0;
+    std.debug.print("  readiness against gain: correlation {d:.4}; the sweep {s}\n", .{
+        corr, if (crossed) "CROSSES ZERO — there is a consolidation window" else "does not cross zero",
+    });
+
+    // **REFUTED, and the `after` column says why.** The post-sleep RMS is
+    // roughly FLAT at 0.067–0.101 however good the model was going in,
+    // while `before` runs 0.106 down to 0.048. So the gain is positive only
+    // where the model was worse than a ceiling the sleep itself imposes —
+    // and readiness, saturated at 0.98–0.999 across the whole sweep, was
+    // never the discriminating variable.
+    //
+    // The ceiling is the REPLAY RING. Half of 781 kernels is 390, at ten
+    // parameters each: 3 900 free parameters fitted against 2 048 points.
+    // The consolidation is massively overparameterised and generalises to
+    // wherever that lands it. OBS-11 flagged the same limit as honest and
+    // did not chase it; here it dominates.
+    //
+    // Which is Christian's conditioning question, deferred twice and now
+    // arriving on its own: is the win limited by VARIANCE? More points.
+    std.debug.print("  the ring, at the last checkpoint ({d} kernels, {d} after sleep):\n", .{ p0.kernels.items.len, p0.kernels.items.len / 2 });
+    std.debug.print("  {s:>8} {s:>9} {s:>9} {s:>8} {s:>10}\n", .{ "ring", "params", "after", "gain", "pts/param" });
+    const before_last = try p0.rms(ho.p, ho.y, null);
+    const keep = p0.kernels.items.len / 2;
+    var lifted = false;
+    for ([_]usize{ 2048, 8192, 32768 }) |n| {
+        try (Measures{ .fit = ring.x[0..n], .sleep = ring.x[0..n], .eval = ho.p }).check();
+        var fork = try sleepOn(gpa, &p0, ring.x[0..n], ring.y[0..n], keep);
+        defer fork.deinit();
+        fork.opts.truth = moved;
+        const after = try fork.rms(ho.p, ho.y, null);
+        const g = 1 - @as(f64, after) / @as(f64, before_last);
+        if (n == 32768 and g > gains[marks.len - 1]) lifted = true;
+        std.debug.print("  {d:>8} {d:>9} {d:>9.5} {d:>8.4} {d:>10.2}\n", .{
+            n, keep * marl.PARAMS, after, g,
+            @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(keep * marl.PARAMS)),
+        });
+    }
+
+    // The registered numbers are REFUTED and left standing, marked. What is
+    // asserted is the diagnosis: more replay lifts the ceiling.
+    try testing.expect(lifted);
+}

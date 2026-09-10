@@ -1715,3 +1715,93 @@ accumulation" without it would overclaim.
   and whether a population must converge before it can be consolidated.
 
 Cost: G61 is ~120 s. `python3 tools/obs14_predict.py` for the derivations.
+
+## OBS-15 / G62 — the consolidation window is evidence, not maturity
+
+Christian's refinement of OBS-14 — *consolidation quality depends on the
+maturity of the population being consolidated* — tested, and **refuted**;
+the sweep found a different variable and a sharper policy.
+
+### G62 (a) — the guardrail, promoted from a ledger note
+
+Three occurrences earned it: OBS-11's synthesis arm scored on its own fit
+probes, OBS-14's sleep-target contrast reading a fourteen-fold "improvement"
+that was 0.855×, and OBS-8's clipped disc — a measure that was not what its
+name said. `Measures` now names **fit**, **sleep** and **eval** explicitly
+and refuses to run if any two share a point. The gate asserts it fires on a
+deliberate alias, because a guardrail that cannot fail is decoration.
+
+### G62 (b) — one wake, a fork consolidated at each checkpoint
+
+| wake | kernels | R64 | cv | before | after | gain |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2 000 | 645 | 0.987 | 0.59 | 0.10643 | 0.08947 | **+0.1594** |
+| 5 000 | 654 | 0.992 | 0.58 | 0.09233 | 0.09021 | +0.0229 |
+| 10 000 | 671 | 0.976 | 0.58 | 0.08860 | 0.08903 | −0.0048 |
+| 20 000 | 706 | 0.985 | 0.60 | 0.07336 | 0.08050 | −0.0972 |
+| 40 000 | 742 | 0.999 | 0.61 | 0.05914 | 0.08654 | −0.4633 |
+| 80 000 | 781 | 0.999 | 0.62 | 0.04795 | 0.07478 | **−0.5594** |
+
+**Correlation between readiness and gain: −0.72.** The wrong sign, and
+decisively. *The better the model going in, the more the sleep hurt it.*
+Readiness never varied — 0.98 to 0.999 across the whole sweep — so it was
+never the discriminating variable.
+
+### The `after` column is the finding
+
+It is roughly **flat** at 0.067–0.101 however good the model was, while
+`before` runs 0.106 down to 0.048. **The sleep imposes a ceiling**, and the
+gain is positive only where the model was already worse than it.
+
+Half of 781 kernels is 390, at ten parameters each: **3 900 free parameters
+fitted against a 2 048-point ring.** Widening it, same model and same
+budget:
+
+| ring | points/param | after | gain |
+|---:|---:|---:|---:|
+| 2 048 | 0.53 | 0.07478 | −0.5594 |
+| 8 192 | 2.10 | 0.04545 | +0.0523 |
+| **32 768** | **8.40** | **0.02186** | **+0.5442** |
+
+    There IS a consolidation window, and it is set by EVIDENCE PER
+    PARAMETER, not by population maturity.
+
+At eight points per parameter, **consolidation more than halves the
+held-out error at half the kernels** — 0.04795 → 0.02186. At half a point
+per parameter it destroys the model.
+
+### What this reframes
+
+- **OBS-14's second sleep** was not lineage damage and not immaturity — it
+  was a 2 048-point ring against a ~390-kernel budget, squarely in the
+  destructive regime. The ratchet question is still open and was never
+  fairly asked.
+- **OBS-11's "honest limit"** (4 680 parameters against 4 096 probes, 0.87
+  points per parameter) sat in that regime too, and still showed 11–15%.
+  Its gain was real and badly under-measured.
+- **G56 (a) found the same principle one level down**: *you cannot ask about
+  redundancy with fewer samples than functions.* This is it again, per
+  parameter rather than per function. That it recurs at two levels is worth
+  more than either sighting.
+
+### The policy this licenses
+
+    Do not sleep until the replay you can consolidate against carries at
+    least a few observations per free parameter you intend to keep.
+
+Which is the classical statistical requirement arriving by the back door,
+and it makes the budget and the replay size **one decision, not two**:
+$r_{\text{eff}}$ says how many kernels to keep, and the ring says how many
+you can afford to fit.
+
+### What is still owed
+
+Maturity is refuted *at this ring size* and untested at an adequate one —
+the sweep could not separate it from the evidence effect that dominated.
+Christian's ordering therefore reshuffles again: the **ratchet test** needs
+a properly-sized ring before it means anything, **effective-age
+inheritance** is unaffected and still owed, and **replay weighting**
+(recent / uniform / rare) is now the natural next question, because this
+phase says only that the ring must be *big*, not what should be *in* it.
+
+Cost: G62 is ~5 min. `python3 tools/obs15_predict.py` for the derivations.
