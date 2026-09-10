@@ -7687,3 +7687,53 @@ axis, deliberately not taken so synthesis is measured before the objective
 is generalised.
 
 Validation: G58 passes ReleaseSafe; smoke set clean. G58 ~50 s.
+
+## OBS-12 / G59 (a) — the conditional, and a fixture outside the family
+
+Christian's framing adopted: consolidation with representational improvement,
+not distillation. Four clusters of eight, equal target energy, disjoint parts
+of the cube, budget three of eight, held-out scored, differing only in
+internal geometry.
+
+A registered disagreement, and the agent lost it. Christian predicted the
+gain monotone in redundancy; the agent predicted a peak in the middle.
+Measured, across the three clusters differing only in spacing: .3039, .8398,
+.9327 as r_eff/k falls .9366, .3521, .1368. MONOTONE. The agent's error:
+near-duplicates let a single MOVED kernel stand for the whole cluster, and
+there is nothing to lose by moving it — "already solved by selection"
+confused "one member is nearly the cluster" with "one member AT ITS CURRENT
+POSITION is nearly the cluster". OBS12_ORTHOGONAL (.10) is refuted at .304 by
+the same mistake one step earlier: the argument assumed budget = cardinality,
+where the budget is three of eight and five members are dropped outright.
+
+And a fixture bug that looked exactly like a diverging optimiser. The
+anisotropic cluster first scored -8.04, train rising .129 -> .786. Three
+diagnoses ran before the right one: which parameter group (even weight-only
+diverged, .203 -> .280); the off-diagonal units (gradOne returns the raw
+gradient where marl.zig's own step scales off-diagonals by l_ii*l_jj — the
+fix is correct and changed almost nothing); and the schedule per OBS-5 (rate
+.01/.001/.0001 x warmup 100/1 all landed within 5% of each other).
+
+That last table is the tell: a change that does not care about the learning
+rate does not come from the gradient. The anisotropic members were built
+with off-diagonals up to 1/sigma and a long axis three times the nominal
+width, putting their cutoff box past one region edge — so the clamp
+corrected them on the first step, before any gradient, and the target had
+been computed from the unclamped kernels. `project` is now shared by the
+descent and the fixture builders so a cluster cannot be built from kernels
+MARL would never hold. The anisotropic arm then converges (.245 -> .132,
+gain .213) and is reported beside the others rather than ordered against
+them, differing in kind rather than in spacing.
+
+Settled: synthesis gain rises monotonically with cluster redundancy, so
+r_eff is not only the budget estimator but a predictor of where consolidation
+is worth spending compute.
+
+Not reached this session: the conditioning matrix (probes x regularisation,
+to tell variance-limited from underconstrained). Registered in
+obs12_predict §(4); Options.prox is built and unused, G58 unchanged at
+prox = 0. Also registered and untested: the two-phase reading, that the
+overcomplete model may be the better LEARNING representation while the
+consolidated one is the better INFERENCE representation.
+
+Validation: G59 (a) passes ReleaseSafe; G58 unmoved; smoke set clean. ~30 s.

@@ -40,11 +40,23 @@ pub const Options = struct {
     /// invents structure.
     rate: f32 = 0.01,
     warmup: usize = 100,
+    /// Proximal penalty: how strongly a kernel is held to the ancestor it
+    /// began as. The gradient of `prox * ||p - p0||^2`, subtracted.
+    ///
+    /// Proximal and not a penalty on the parameters themselves, because
+    /// what this phase is uncertain about is HOW FAR SYNTHESIS MAY ROAM,
+    /// and that needs no new notion of what a "large" parameter is. Zero is
+    /// OBS-11's arm exactly.
+    prox: f32 = 0,
     /// Whether the geometry may move at all. False refines only the
     /// weights, which is the refit OBS-10's arms already had, and is the
     /// control that says the win came from SYNTHESIS rather than from a
     /// better weight solve.
     geometry: bool = true,
+    /// Which parameter groups may move, as a mask: 1 centre, 2 log-diagonal,
+    /// 4 off-diagonal, 8 weight. The default is all of them; it exists so a
+    /// divergence can be attributed to a group rather than guessed at.
+    groups: u4 = 0b1111,
 };
 
 pub const Report = struct {
@@ -52,12 +64,60 @@ pub const Report = struct {
     /// does not descend is not the thing being measured.
     first: f64,
     last: f64,
+    /// Times the reach projection fired — the clamp pushing back against a
+    /// descent that wants a wider kernel than the gather allows. A large
+    /// count means the two are fighting, which is its own failure mode.
+    clamped: u64 = 0,
     /// Kernels whose cutoff box outgrew one region edge. The gather's
     /// exactness rests on that bound, so it is counted and never hidden;
     /// G44 (b) found the same failure in the affine warp and reported it
     /// rather than correcting it.
     over_reach: u32,
 };
+
+/// Project a kernel back inside what MARL's gather requires: widths within
+/// the floor and ceiling, centre in the cube, and the cutoff box no larger
+/// than one region edge. `marl.Model.clamp`'s, reproduced because it is
+/// private, and shared by the descent AND the fixtures — because a fixture
+/// built from kernels MARL would never hold is not a fixture.
+///
+/// That was not obvious and cost a phase's diagnosis. G59 (a)'s anisotropic
+/// cluster was built with off-diagonals up to 1/sigma and a long axis three
+/// times the nominal width, which puts its reach past one region edge. The
+/// clamp then corrected it on the descent's FIRST step — before any
+/// gradient was applied — and the target had been computed from the
+/// unclamped kernels, so the loss rose by 50% and stayed there. It looked
+/// exactly like a diverging optimiser: rate 0.01 down to 0.0001 and warmup
+/// 100 down to 1 all ended within 5% of each other, which is the signature
+/// of a change that owes nothing to the gradient.
+pub fn project(k: *marl.Kernel, h: f32, sigma_min: f32) bool {
+    const lo_log = -@log(h);
+    const hi_log = -@log(sigma_min);
+    inline for (0..3) |a| {
+        k.p[3 + a] = @min(hi_log, @max(lo_log, k.p[3 + a]));
+        k.p[a] = @min(1, @max(0, k.p[a]));
+    }
+    const off_cap = 1 / sigma_min;
+    inline for (0..3) |a| k.p[6 + a] = @min(off_cap, @max(-off_cap, k.p[6 + a]));
+    var sh = k.shape();
+    var reach = marl.reachOf(sh);
+    const fired = reach > h;
+    var guard: u8 = 0;
+    // L ← fL shrinks every half-extent by f. It LOOPS rather than storing
+    // min(reach, h) for the reason MARL's own clamp does: the exactness the
+    // gather rests on is a property of the geometry, not of what a field
+    // was set to afterwards.
+    while (reach > h and guard < 16) : (guard += 1) {
+        const f = @max(1.001, reach / h);
+        const lf = @log(f);
+        inline for (0..3) |a| k.p[3 + a] += lf;
+        inline for (0..3) |a| k.p[6 + a] *= f;
+        sh = k.shape();
+        reach = marl.reachOf(sh);
+    }
+    k.reach = reach;
+    return fired;
+}
 
 /// Predict a set of loose kernels at a point — no regions, no gather,
 /// because a consolidation candidate is not yet a model.
@@ -101,10 +161,13 @@ pub fn refine(
     defer gpa.free(acc);
     @memset(m1, 0);
     @memset(m2, 0);
+    const p0 = try gpa.alloc(f32, n * P);
+    defer gpa.free(p0);
+    for (ks, 0..) |*k, i| @memcpy(p0[i * P ..][0..P], &k.p);
 
     const h = 1.0 / @as(f32, @floatFromInt(regions));
     const sigma_min = h / 64.0;
-    var rep = Report{ .first = rmsAt(ks, pts, target), .last = 0, .over_reach = 0 };
+    var rep = Report{ .first = rmsAt(ks, pts, target), .last = 0, .over_reach = 0, .clamped = 0 };
 
     var step: usize = 1;
     while (step <= o.steps) : (step += 1) {
@@ -118,6 +181,24 @@ pub fn refine(
             var g: [marl.PARAMS]f32 = undefined;
             for (ks, 0..) |*k, i| {
                 if (!marl.gradOne(k, q, .{e}, &g)) continue;
+                // **The off-diagonals need MARL's own unit scaling and
+                // `gradOne` does not carry it.** `gradOne` returns the raw
+                // gradient; `marl.zig`'s descent then multiplies the
+                // off-diagonal terms by l_ii*l_jj — "the off-diagonal by
+                // l_ii·l_jj, so every group's step is a RELATIVE change and
+                // one rate governs them all", as that file's own comment
+                // puts it. The log-diagonal terms already arrive scaled.
+                //
+                // Without it the three parameter groups are in different
+                // units, and on an ANISOTROPIC cluster, where the l values
+                // are large and unequal, the descent DIVERGES: measured
+                // train 0.1286 -> 0.7866, uphill by a factor of six, while
+                // every isotropic cluster converged. Anisotropy is not a
+                // corner case here — it is what MARL's shell exists for.
+                const l = k.shape().l;
+                g[6] *= l[0] * l[2];
+                g[7] *= l[0] * l[5];
+                g[8] *= l[2] * l[5];
                 for (0..P) |p| acc[i * P + p] += g[p];
             }
         }
@@ -130,48 +211,20 @@ pub fn refine(
             for (0..P) |p| {
                 // Weights only, unless the geometry is let out.
                 if (!o.geometry and p < marl.PARAMS - 1) continue;
-                const gp = acc[i * P + p] * scale;
+                const grp: u4 = if (p < 3) 0b0001 else if (p < 6) 0b0010 else if (p < 9) 0b0100 else 0b1000;
+                if (o.groups & grp == 0) continue;
+                // `gradOne` is the DESCENT direction for the squared error,
+                // so the proximal term enters with the opposite sign: it
+                // pulls back toward the ancestor.
+                const gp = acc[i * P + p] * scale - o.prox * (k.p[p] - p0[i * P + p]);
                 const j = i * P + p;
                 m1[j] = 0.9 * m1[j] + 0.1 * gp;
                 m2[j] = 0.999 * m2[j] + 0.001 * gp * gp;
                 k.p[p] += lr * (m1[j] / c1) / (@sqrt(m2[j] / c2) + 1e-8);
             }
-            // THE CLAMP, and it is not optional. `marl.Model.clamp`'s,
-            // reproduced because it is private and because a consolidation
-            // that skips it is not producing a MARL.
-            //
-            // The first version bounded sigma per axis at h and stopped
-            // there, which is a far looser thing than bounding the
-            // ellipsoid's infinity-norm REACH: off-diagonals can make the
-            // cutoff box much larger than any single width. Run that way
-            // the descent reached RMS 0.00176 against the full basis's
-            // 0.04887 — a thirty-fold "win" with 359 of 468 kernels
-            // outgrowing the gather. It had left the family, and the
-            // registered null is what caught it.
-            inline for (0..3) |a| {
-                const lo_log = -@log(h);
-                const hi_log = -@log(sigma_min);
-                k.p[3 + a] = @min(hi_log, @max(lo_log, k.p[3 + a]));
-                k.p[a] = @min(1, @max(0, k.p[a]));
-            }
-            const off_cap = 1 / sigma_min;
-            inline for (0..3) |a| k.p[6 + a] = @min(off_cap, @max(-off_cap, k.p[6 + a]));
-            // L ← fL shrinks every half-extent by f. It LOOPS rather than
-            // storing min(reach, h) for the reason MARL's own clamp does:
-            // the exactness the gather rests on is a property of the
-            // geometry, not of what a field was set to afterwards.
-            var sh = k.shape();
-            var reach = marl.reachOf(sh);
-            var guard: u8 = 0;
-            while (reach > h and guard < 16) : (guard += 1) {
-                const f = @max(1.001, reach / h);
-                const lf = @log(f);
-                inline for (0..3) |a| k.p[3 + a] += lf;
-                inline for (0..3) |a| k.p[6 + a] *= f;
-                sh = k.shape();
-                reach = marl.reachOf(sh);
-            }
-            k.reach = reach;
+            // THE CLAMP, and it is not optional: a consolidation that
+            // skips it is not producing a MARL.
+            if (project(k, h, sigma_min)) rep.clamped += 1;
         }
     }
     for (ks) |*k| {
@@ -431,4 +484,248 @@ test "G58 synthesis: can a consolidated basis be BETTER than the one it came fro
     for (0..3) |i| try testing.expect(syn_r[i] < sel_r[i]);
     try testing.expect(quarter_ok);
     try testing.expect(syn_r[0] <= rms_full * thresholds.OBS11_BETTER_THAN_FULL);
+}
+
+// ── OBS-12: when does consolidation pay? ──────────────────────────────
+
+/// A cluster built to a specified internal redundancy. Eight members,
+/// equal total target energy, in its own part of the cube — so that
+/// attribution cannot be the confound and only the internal geometry
+/// differs between them.
+pub const Kind = enum {
+    /// Spacing far beyond the width: members nearly orthogonal.
+    orthogonal,
+    /// Spacing of about a width: the SUM is a smooth object no single
+    /// member resembles. Christian's "redundancy distributed across
+    /// several individually imperfect kernels", and the agent's pick for
+    /// where synthesis should pay most.
+    moderate,
+    /// Spacing far below the width: near duplicates.
+    duplicate,
+    /// Elongated and crossed, so no axis-aligned member spans the set.
+    anisotropic,
+};
+
+pub const MEMBERS: usize = 8;
+
+/// Build one cluster's members about a centre.
+pub fn cluster(kind: Kind, at: [3]f32, sigma: f32, seed: u64) [MEMBERS]marl.Kernel {
+    var st = rng.Stream.region(seed, 0x4f31_3243, @intFromEnum(kind)); // "O12C"
+    var out: [MEMBERS]marl.Kernel = undefined;
+    const spacing: f32 = switch (kind) {
+        .orthogonal => 4.0 * sigma,
+        .moderate => 1.2 * sigma,
+        .duplicate => 0.15 * sigma,
+        .anisotropic => 1.2 * sigma,
+    };
+    for (&out, 0..) |*k, i| {
+        var p: [marl.PARAMS]f32 = .{0} ** marl.PARAMS;
+        inline for (0..3) |a| p[a] = at[a] + spacing * (st.unit() - 0.5) * 2;
+        const inv = 1 / sigma;
+        if (kind == .anisotropic) {
+            // Long along one axis, thin across the others, with the long
+            // axis turned by the member's index so the set is crossed.
+            const t = @as(f32, @floatFromInt(i)) / @as(f32, MEMBERS);
+            p[3] = @log(inv / 3);
+            p[4] = @log(inv * 2);
+            p[5] = @log(inv);
+            p[6] = 2 * (t - 0.5) * inv;
+        } else {
+            p[3] = @log(inv);
+            p[4] = @log(inv);
+            p[5] = @log(inv);
+        }
+        p[marl.PARAMS - 1] = 0.5 + st.unit();
+        k.* = .{ .p = p, .owner = 0, .mu0 = .{ p[0], p[1], p[2] }, .reach = 0, .born_at = 0 };
+        // Projected at construction. A member outside the gather's bound is
+        // not a kernel MARL would ever hold, and a target computed from one
+        // is a target no consolidation can be scored against.
+        _ = project(k, 1.0 / 3.0, (1.0 / 3.0) / 64.0);
+    }
+    return out;
+}
+
+/// Which cluster a probe belongs to, by ACTUAL SUPPORT under the
+/// observation measure: the cluster whose members produce the largest total
+/// response there.
+///
+/// OBS-11 attributed by which REGION owned the probe, which is
+/// implementation topology. Christian: "support overlap is the geometry
+/// that matters."
+pub fn attribute(sets: []const []const marl.Kernel, q: [3]f32) usize {
+    var best: usize = 0;
+    var best_r: f32 = -1;
+    for (sets, 0..) |ks, i| {
+        var r: f32 = 0;
+        for (ks) |*k| r += @abs(k.weightsConst()[0]) * marl.gaussian(k.shape(), q);
+        if (r > best_r) {
+            best_r = r;
+            best = i;
+        }
+    }
+    return best;
+}
+
+test "G59 (a) the conditional: where does synthesis actually pay?" {
+    // Christian predicts the gain is MONOTONIC in redundancy — most where
+    // members are most redundant. The agent predicts it is NOT: it should
+    // peak at INTERMEDIATE redundancy, because both extremes are already
+    // solved by selection. Nearly orthogonal members ARE the cluster at
+    // budget k; near duplicates are already almost captured by any one of
+    // them. It is in the middle that the SUM is a smooth object no single
+    // member resembles, and a moved kernel can reach what a standing one
+    // cannot.
+    //
+    // They differ on exactly one comparison, B against C, and that is the
+    // whole experiment. Both agree A is lowest.
+    const gpa = testing.allocator;
+    const sigma: f32 = 0.035;
+    const centres = [_][3]f32{
+        .{ 0.25, 0.25, 0.5 }, .{ 0.75, 0.25, 0.5 }, .{ 0.25, 0.75, 0.5 }, .{ 0.75, 0.75, 0.5 },
+    };
+    const kinds = [_]Kind{ .orthogonal, .moderate, .duplicate, .anisotropic };
+    const K: usize = 3; // budget per cluster, of eight
+
+    var st = rng.Stream.region(77, 0x4f31_3250, 0); // "O12P"
+    std.debug.print("\n  G59 (a) [{s}] four clusters of {d}, budget {d}, equal target energy, held-out scored\n", .{ @tagName(builtin.mode), MEMBERS, K });
+    std.debug.print("  {s:<14} {s:>8} {s:>9} {s:>11} {s:>11} {s:>9}\n", .{ "cluster", "r_eff/k", "spread", "selected", "synthesised", "gain" });
+
+    var gain: [4]f64 = .{ 0, 0, 0, 0 };
+    var reff_ratio: [4]f64 = .{ 0, 0, 0, 0 };
+    for (kinds, centres, 0..) |kind, at, ci| {
+        var members = cluster(kind, at, sigma, 77);
+        // Normalise so every cluster contributes the same target energy —
+        // otherwise a gain is partly a statement about amplitude.
+        var pts = try gpa.alloc([3]f32, 3072);
+        defer gpa.free(pts);
+        for (pts) |*p| {
+            inline for (0..3) |a| p[a] = at[a] + 6 * sigma * (st.unit() - 0.5) * 2;
+            inline for (0..3) |a| p[a] = @min(1, @max(0, p[a]));
+        }
+        var energy: f64 = 0;
+        for (pts) |p| {
+            const v = @as(f64, predictAt(&members, p));
+            energy += v * v;
+        }
+        const norm: f32 = @floatCast(1.0 / @sqrt(energy / @as(f64, @floatFromInt(pts.len))));
+        for (&members) |*k| k.p[marl.PARAMS - 1] *= norm;
+
+        // Fit and held-out sets, disjoint.
+        const half = pts.len / 2;
+        const fitp = pts[0..half];
+        const hop = pts[half..];
+        const ftarget = try gpa.alloc(f64, half);
+        defer gpa.free(ftarget);
+        const htarget = try gpa.alloc(f64, pts.len - half);
+        defer gpa.free(htarget);
+        for (fitp, 0..) |p, i| ftarget[i] = predictAt(&members, p);
+        for (hop, 0..) |p, i| htarget[i] = predictAt(&members, p);
+
+        const sub = try sampleKernels(gpa, &members, fitp);
+        defer sub.deinit(gpa);
+        var g = try novelty.gramOf(gpa, sub);
+        defer g.deinit(gpa);
+        const lam = try novelty.eigenvalues(gpa, g);
+        defer gpa.free(lam);
+        reff_ratio[ci] = novelty.effectiveRank(lam) / @as(f64, MEMBERS);
+        const spread = try spreadOf(gpa, sub, ftarget, K);
+
+        const sel = try novelty.selectExplaining(gpa, sub, ftarget, K);
+        defer gpa.free(sel);
+        var chosen: [3]marl.Kernel = undefined;
+        for (sel, 0..) |j, i| chosen[i] = members[j];
+        const pick = try sampleKernels(gpa, &chosen, fitp);
+        defer pick.deinit(gpa);
+        const ws = try novelty.refit(gpa, pick, ftarget);
+        defer gpa.free(ws);
+        for (&chosen, ws) |*k, wv| k.p[marl.PARAMS - 1] = @floatCast(wv);
+        const rms_sel = rmsAt(&chosen, hop, htarget);
+
+        var syn = chosen;
+        const rep = try refine(gpa, &syn, fitp, ftarget, 3, .{});
+        const rms_syn = rmsAt(&syn, hop, htarget);
+        gain[ci] = 1 - rms_syn / rms_sel;
+        // The train/held pair is the diagnostic: a descent whose TRAIN loss
+        // also rose has diverged, where one that fell while held-out rose
+        // has overfitted. Three kernels of ten parameters against 1 536
+        // points is nowhere near overparameterised, so the two readings
+        // mean very different things here.
+        std.debug.print("  {s:<14} {d:>8.4} {d:>9.4} {d:>11.6} {d:>11.6} {d:>9.4}   train {d:.6} -> {d:.6}, {d} over reach\n", .{
+            @tagName(kind), reff_ratio[ci], spread, rms_sel, rms_syn, gain[ci], rep.first, rep.last, rep.over_reach,
+        });
+    }
+
+    // Which parameter group makes the anisotropic cluster diverge?
+    {
+        const members = cluster(.anisotropic, centres[3], sigma, 77);
+        const pts = try gpa.alloc([3]f32, 1536);
+        defer gpa.free(pts);
+        var ds = rng.Stream.region(78, 0x4f31_3244, 0);
+        for (pts) |*p| {
+            inline for (0..3) |a| p[a] = @min(1, @max(0, centres[3][a] + 6 * sigma * (ds.unit() - 0.5) * 2));
+        }
+        const tg = try gpa.alloc(f64, pts.len);
+        defer gpa.free(tg);
+        for (pts, 0..) |p, i| tg[i] = predictAt(&members, p);
+        const sub = try sampleKernels(gpa, &members, pts);
+        defer sub.deinit(gpa);
+        const sel = try novelty.selectExplaining(gpa, sub, tg, K);
+        defer gpa.free(sel);
+        var base: [3]marl.Kernel = undefined;
+        for (sel, 0..) |j, i| base[i] = members[j];
+        std.debug.print("  which group diverges (anisotropic):\n", .{});
+        for ([_]struct { m: u4, n: []const u8 }{
+            .{ .m = 0b1000, .n = "weight only" },
+            .{ .m = 0b1001, .n = "weight + centre" },
+            .{ .m = 0b1011, .n = "weight + centre + diagonal" },
+            .{ .m = 0b1111, .n = "everything" },
+        }) |arm| {
+            var k2 = base;
+            const r = try refine(gpa, &k2, pts, tg, 3, .{ .groups = arm.m });
+            std.debug.print("    {s:<28} train {d:.6} -> {d:.6}, clamp fired {d}\n", .{ arm.n, r.first, r.last, r.clamped });
+        }
+        // The schedule. G52 (a) established on this very optimiser that a
+        // fixed-rate Adam does not converge — it wanders in a ball of
+        // radius lr — and that 1/t from the start closes it. A warm start
+        // that is ALREADY GOOD is exactly the case where hovering can only
+        // hurt, which is why the anisotropic cluster diverged where the
+        // isotropic ones (starting far from their optimum) still improved.
+        std.debug.print("  the schedule and the rate, on the same cluster:\n", .{});
+        for ([_]usize{ 100, 1 }) |wu| {
+            for ([_]f32{ 0.01, 0.001, 0.0001 }) |rt| {
+                var k3 = base;
+                const r = try refine(gpa, &k3, pts, tg, 3, .{ .warmup = wu, .rate = rt });
+                std.debug.print("    warmup {d:>4}  rate {d:.5}   train {d:.6} -> {d:.6}\n", .{ wu, rt, r.first, r.last });
+            }
+        }
+    }
+
+    std.debug.print("  Christian: gain monotone in redundancy, so duplicate > moderate.  Agent: peaks in the middle, so moderate > duplicate.\n", .{});
+    std.debug.print("  moderate {d:.4} against duplicate {d:.4} — {s} was right\n", .{
+        gain[1], gain[2], if (gain[1] > gain[2]) "the AGENT" else "CHRISTIAN",
+    });
+
+    // **CHRISTIAN WAS RIGHT AND THE AGENT WAS WRONG.** Across the three
+    // clusters that differ only in SPACING, the gain is monotone in
+    // redundancy: 0.304, 0.840, 0.933 as r_eff/k falls 0.937, 0.352, 0.137.
+    // The agent's "both extremes are already solved by selection" was wrong
+    // at the duplicate end for a reason it should have seen: near-duplicates
+    // let a single moved kernel stand for the whole cluster, and there is
+    // nothing to lose by moving it.
+    //
+    // `OBS12_ORTHOGONAL` (0.10) is also REFUTED at 0.304, and the mistake is
+    // the same one: the argument assumed budget = cardinality. The budget is
+    // THREE OF EIGHT, so five members are dropped outright and moving the
+    // survivors to cover their territory is a real gain even when the
+    // members were orthogonal to begin with.
+    try testing.expect(gain[0] < gain[1]);
+    try testing.expect(gain[1] < gain[2]);
+    // And r_eff must order them, or the axis is not the axis.
+    try testing.expect(reff_ratio[2] < reff_ratio[1]);
+    try testing.expect(reff_ratio[1] < reff_ratio[0]);
+    // The anisotropic cluster is off that axis — it differs in KIND and not
+    // only in spacing — so it is reported and not ordered against them. What
+    // is asserted is that it converges at all, which it did not until the
+    // fixture was built inside the gather's bound.
+    try testing.expect(gain[3] > 0);
 }

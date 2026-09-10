@@ -3504,4 +3504,34 @@ pub const OBS11_SYNTHESIS: f64 = 0.80;
 /// built from, on data neither saw.
 pub const OBS11_BETTER_THAN_FULL: f64 = 1.0;
 
+/// G59 (a): the synthesis gain on a cluster of NEARLY ORTHOGONAL members.
+/// PROPOSED as a CEILING at 0.10.
+///
+/// The one thing both competing predictions agree on. At budget k the
+/// members of an orthogonal cluster ARE the cluster — there is no subspace
+/// a moving kernel can reach that a standing one cannot — so a gain here
+/// would mean the descent is buying something other than a better
+/// decomposition, and the whole conditional would be measuring the
+/// optimiser.
+///
+/// Christian predicts the gain is MONOTONIC in redundancy (duplicate >
+/// moderate > orthogonal); the agent predicts it PEAKS IN THE MIDDLE
+/// (moderate > duplicate), because near-duplicates are already almost
+/// captured by any one member and there is little left to recover. They
+/// differ on exactly one comparison and the gate prints who was right.
+///
+/// **CHRISTIAN WAS RIGHT.** Across the three clusters differing only in
+/// spacing the gain is monotone in redundancy — 0.304, 0.840, 0.933 as
+/// r_eff/k falls 0.937, 0.352, 0.137. The agent's "both extremes are
+/// already solved by selection" fails at the duplicate end: near-duplicates
+/// let a single MOVED kernel stand for the whole cluster, and there is
+/// nothing to lose by moving it.
+///
+/// **And this number is REFUTED at 0.304**, by the same mistake one step
+/// earlier: the argument assumed budget = cardinality. The budget is three
+/// of eight, so five members are dropped outright and moving the survivors
+/// to cover their territory is a real gain even among orthogonal members.
+/// Not asserted; the gate asserts the ordering instead.
+pub const OBS12_ORTHOGONAL: f64 = 0.10;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

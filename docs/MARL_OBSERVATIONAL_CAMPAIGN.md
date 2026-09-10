@@ -1422,3 +1422,104 @@ objective is generalised.
     the objective defines WHAT TO PRESERVE
 
 Cost: G58 is ~50 s. `python3 tools/obs11_predict.py` for the derivations.
+
+## OBS-12 / G59 (a) — the conditional, on a fixture built to be brutal about it
+
+Christian's sharpened framing, adopted: **consolidation with representational
+improvement**, not distillation. OBS-11 showed redundancy was not dead
+weight — it was useful during acquisition and suboptimal as the final
+representation.
+
+This phase tests the conditional he attached to it, on a fixture designed so
+it cannot hide: four clusters, eight members each, equal total target
+energy, in disjoint parts of the cube, differing only in internal geometry.
+Budget three of eight everywhere, so the pruning fraction is identical.
+Every arm scored on held-out probes.
+
+### A registered disagreement, and the agent lost it
+
+Christian: the gain is **monotonic** in redundancy. The agent: it should
+**peak in the middle**, because both extremes are already solved by
+selection — orthogonal members *are* the cluster, near-duplicates are
+already captured by any one of them.
+
+| cluster | r_eff/k | spread | selected | synthesised | **gain** |
+|---|---:|---:|---:|---:|---:|
+| orthogonal | 0.9366 | 0.2946 | 0.603250 | 0.419910 | 0.3039 |
+| moderate | 0.3521 | 0.0185 | 0.150215 | 0.024065 | 0.8398 |
+| duplicate | 0.1368 | 0.0000 | 0.005015 | 0.000338 | **0.9327** |
+| anisotropic | 0.5459 | 0.0726 | 0.307557 | 0.241921 | 0.2134 |
+
+**Monotone, exactly as predicted.** 0.304 → 0.840 → 0.933 as r_eff/k falls
+0.937 → 0.352 → 0.137.
+
+The agent's error is worth naming because it recurs: *near-duplicates let a
+single MOVED kernel stand for the whole cluster, and there is nothing to
+lose by moving it.* The "already solved by selection" intuition confused
+"one member is nearly the cluster" with "one member at its current position
+is nearly the cluster".
+
+And `OBS12_ORTHOGONAL` — registered at ≤0.10, measured **0.304** — fails by
+the same mistake one step earlier: the argument assumed budget =
+cardinality. The budget is three of eight, so five members are dropped
+outright and moving the survivors over their territory is a real gain even
+among orthogonal members.
+
+`r_eff` orders the clusters correctly, which is the axis holding.
+
+### And a fixture bug that looked exactly like a diverging optimiser
+
+The anisotropic cluster first scored **−8.04** — synthesised RMS 0.916
+against selected 0.101, with the *training* loss rising 0.129 → 0.786. Three
+diagnoses were run before the right one:
+
+- **Which parameter group?** Even *weight-only* diverged (0.203 → 0.280).
+- **The off-diagonal units?** `gradOne` returns the raw gradient where
+  `marl.zig`'s own step scales the off-diagonals by $l_{ii}l_{jj}$. Fixing
+  that is correct and changed almost nothing.
+- **The schedule, per OBS-5?** Rate 0.01 / 0.001 / 0.0001 and warmup 100 /
+  1 all landed within 5% of each other.
+
+**That last table is the tell.** A change that does not care about the
+learning rate does not come from the gradient. The anisotropic members were
+built with off-diagonals up to $1/\sigma$ and a long axis three times the
+nominal width, which puts their cutoff box past one region edge — so the
+clamp corrected them on the descent's *first step*, before any gradient, and
+the target had been computed from the unclamped kernels.
+
+**The fixture was outside MARL's own family.** `project` is now shared by
+the descent and the fixture builders, so a cluster cannot be constructed
+from kernels MARL would never hold. The anisotropic arm then converges
+(0.245 → 0.132) and gains 0.213.
+
+It is reported beside the other three rather than ordered against them: it
+differs in *kind*, not only in spacing, so it is off the redundancy axis.
+
+### What this settles, and what it does not
+
+**Settled**: synthesis gain rises monotonically with cluster redundancy, on
+a fixture built to separate the cases. So `r_eff` is not only the budget
+estimator — it is also a *predictor of where consolidation is worth spending
+compute*, which is the criterion OBS-10 wanted and OBS-11 could not measure.
+
+**Not settled**: the conditioning matrix. Christian's second test —
+probes × regularisation, to tell "limited by variance" from
+"underconstrained parameterisation" — is registered in
+`tools/obs12_predict.py` §(4) and **was not reached this session**.
+`Options.prox` is built and unused, and G58's arm is unchanged at
+`prox = 0`. That is the next beat, and the outcome he flagged as most
+interesting is registered so it cannot be claimed after the fact: *if the
+full basis improves less than the consolidated one as observations
+increase, consolidation is acting as structural regularisation rather than
+numerical compression.*
+
+**Also registered and untested**: the two-phase reading — that the
+overcomplete model may be the better *learning* representation while the
+consolidated one is the better *inference* representation, with redundancy
+as scaffolding rather than defect. Testing it means resuming learning from
+a consolidated model against resuming from the overcomplete one, which is
+MARL-18's wake/sleep loop with a better consolidation step and a phase of
+its own.
+
+Cost: G59 (a) is ~30 s. `python3 tools/obs12_predict.py` for the
+derivations.

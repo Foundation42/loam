@@ -101,6 +101,8 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/obs10_predict.py                 # ... its pre-registration; the span-driven selector loses to RANDOM and the clustering was not why
     zig build test -Dtest-filter="G58"             # OBS-11: SYNTHESIS — a consolidated basis beats the overcomplete one it came from, at HALF the kernels. ~50 s
     python3 tools/obs11_predict.py                 # ... its pre-registration; the null caught a descent that won by leaving the kernel family
+    zig build test -Dtest-filter="G59"             # OBS-12: the CONDITIONAL — synthesis gain is monotone in cluster redundancy. ~30 s
+    python3 tools/obs12_predict.py                 # ... a registered disagreement the agent LOST, and a conditioning matrix still unrun
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a
