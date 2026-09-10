@@ -1623,3 +1623,95 @@ size. Two things follow, neither built here:
 late**. Which makes the sixth line's objective the next thing to widen.
 
 Cost: G60 is ~90 s. `python3 tools/obs13_predict.py` for the derivations.
+
+## OBS-14 / G61 — the lineage, and a correction to OBS-13
+
+Christian's three-way split, adopted: consolidation can preserve or destroy
+**span**, **placement**, and **training state**. And his sentence for it:
+*redundancy is not just extra capacity — it can be stored adaptation.*
+
+### A design error found before any code, and it changes OBS-13's result
+
+OBS-13 consolidated the child against **the parent's own predictions**, so
+the child would not start life knowing what its parent had to learn. That
+was right about the cheating and wrong about the consequence — and the
+consequence is only visible once sleep has to run twice.
+
+**A student fitting its teacher's output can at best match it.** MARL-19
+measured exactly that: on a noiseless field a sleep is a pure loss, a copy
+costs 1.179×, no student beats its teacher on both axes. A lineage built on
+sleep-on-self can only decay.
+
+OBS-11's consolidation *did* improve on its basis — and the reason is that
+its target was the truth on probes. Which is not cheating either, once
+named properly: **the truth on probes is what a replay buffer holds.** A
+model's own observations are legitimately its to reuse.
+
+Measured, held out on probes neither arm saw:
+
+| sleep target | before | after | |
+|---|---:|---:|---|
+| the model's own output | 0.06926 | 0.07005 | **1.011×** — no gain, MARL-19 |
+| **replay** | 0.06926 | **0.05920** | **0.855×**, at half the kernels |
+
+### And that reverses OBS-13's headline
+
+| | OBS-13 (sleep on self) | **OBS-14 (sleep on replay)** |
+|---|---:|---:|
+| child/parent after a 60 000-exemplar wake | 1.195 | **0.9391** |
+
+**The consolidated child now wins the wake.** OBS-13 concluded redundancy
+was scaffolding and the agent's "the child keeps up" lost; with the sleep
+target corrected, the child does not merely keep up — it leads throughout.
+
+So OBS-13's finding was an artefact of the wrong sleep target. What survives
+of it is the *mechanism*, which was measured and is still true: a child
+whose kernels arrive with `updates = 0` pays for youth. Replay-sleep does
+not remove that, it just starts the child from a better basis than
+self-sleep could.
+
+### The lineage
+
+    stage               P kern   P RMS   P upd    C kern   C RMS   C upd     C/P
+    gen 0 post-sleep       631  0.13382      0       315  0.12867      0  0.9615
+    gen 1 post-wake        768  0.05326   1241       791  0.05002   1031  0.9391
+    gen 2 post-sleep       383  0.05884      0       396  0.06054      0  1.0288
+
+    gap trajectory: 0.9615 -> 0.9391 -> 1.0288
+
+**Not a ratchet on this run.** The child leads after the first sleep and
+through the wake, and loses its lead at the second sleep.
+
+But the reading is qualified, and the qualification is visible in the table:
+**the second sleep hurt both lineages** (parent 0.05326 → 0.05884, child
+0.05002 → 0.06054), where the first helped. The difference is what was slept
+on — gen 0 halved a population converged over 20 000 exemplars, gen 2 halved
+one that had just birthed heavily during a wake and had `updates` spread
+very unevenly across it.
+
+    the damage may be about sleeping too soon after a wake, not about
+    lineage decay
+
+That is a distinct hypothesis with an obvious test — vary the wake length
+before the second sleep — and it is not run here. Calling this "damage
+accumulation" without it would overclaim.
+
+### What is now established, and what is next
+
+- **Sleep must consolidate against replay, not against itself.** Measured
+  contrast, 0.855 against 1.011. This is Christian's replay measure in its
+  minimal form, arriving a phase early because OBS-14 could not be
+  interpreted without it. The λ-weighted mixture over current, recent and
+  rare stays where he put it.
+- **A consolidated model is a better place to learn from**, at half the
+  kernels — which is the opposite of OBS-13 and the same as OBS-11.
+- **Training-state inheritance is still owed**, and is now better motivated:
+  every post-sleep row shows `upd = 0`, and Christian's own caution about
+  Adam moments applies — an inherited effective age
+  $u_{\text{child}} = \sum_i \alpha_i u_i / \sum_i \alpha_i$ weighted by
+  ancestor contribution is defensible where transplanting moment vectors is
+  not.
+- **The second sleep's cost needs its own phase**: wake length before sleep,
+  and whether a population must converge before it can be consolidated.
+
+Cost: G61 is ~120 s. `python3 tools/obs14_predict.py` for the derivations.

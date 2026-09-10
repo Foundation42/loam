@@ -916,3 +916,221 @@ test "G60 wake: was the discarded freedom useful plasticity, or clutter?" {
     // And the regrowth question.
     try testing.expect(regrowth > thresholds.OBS13_REGROWTH);
 }
+
+/// What a model has actually seen — the minimal replay buffer.
+///
+/// OBS-14's design correction. OBS-13 consolidated against the model's OWN
+/// OUTPUT, on the grounds that handing it the truth would be cheating. That
+/// is right about the cheating and wrong about the consequence: a student
+/// fitting its teacher can at best MATCH it, and MARL-19 measured that a
+/// sleep on a noiseless field is a pure loss. A lineage built on it can
+/// only decay.
+///
+/// OBS-11's consolidation improved on the basis it came from because its
+/// target was the truth on probes — which is not cheating either, once
+/// named properly: **the truth on probes is what a replay buffer holds.** A
+/// model's own observations are legitimately its to reuse.
+pub const Replay = struct {
+    x: [][3]f32,
+    y: []f64,
+    n: usize = 0,
+
+    pub fn init(gpa: std.mem.Allocator, cap: usize) !Replay {
+        return .{ .x = try gpa.alloc([3]f32, cap), .y = try gpa.alloc(f64, cap) };
+    }
+    pub fn deinit(self: Replay, gpa: std.mem.Allocator) void {
+        gpa.free(self.x);
+        gpa.free(self.y);
+    }
+    /// A ring: the most recent `cap` observations, so a consolidation sees
+    /// the measure the model has most lately been living under.
+    pub fn push(self: *Replay, q: [3]f32, v: f64) void {
+        const i = self.n % self.x.len;
+        self.x[i] = q;
+        self.y[i] = v;
+        self.n += 1;
+    }
+    pub fn filled(self: Replay) usize {
+        return @min(self.n, self.x.len);
+    }
+};
+
+/// Stream `n` exemplars of the model's current truth, keeping the last
+/// `buf.len` in the replay ring. The model's own `stream_n` with the
+/// observations retained.
+pub fn wake(m: *marl.Model, n: u64, buf: *Replay, st: *rng.Stream) !void {
+    var i: u64 = 0;
+    while (i < n) : (i += 1) {
+        const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+        const v = marl.truthOf(m.opts.truth, q);
+        _ = try m.observe(q, .{v});
+        buf.push(q, v);
+    }
+}
+
+/// Sleep against whatever target is supplied at the replay points.
+fn sleepOn(
+    gpa: std.mem.Allocator,
+    m: *marl.Model,
+    pts: []const [3]f32,
+    target: []const f64,
+    keep: usize,
+) !marl.Model {
+    const reff = try gpa.alloc(f64, m.regions.len);
+    defer gpa.free(reff);
+    var total: f64 = 0;
+    for (m.regions, 0..) |*reg, ri| {
+        reff[ri] = 0;
+        if (reg.own.items.len == 0) continue;
+        const tmp = try gpa.alloc(marl.Kernel, reg.own.items.len);
+        defer gpa.free(tmp);
+        for (reg.own.items, 0..) |g, i| tmp[i] = m.kernels.items[g];
+        const sub = try sampleKernels(gpa, tmp, pts);
+        defer sub.deinit(gpa);
+        var g = try novelty.gramOf(gpa, sub);
+        defer g.deinit(gpa);
+        const lam = try novelty.eigenvalues(gpa, g);
+        defer gpa.free(lam);
+        reff[ri] = novelty.effectiveRank(lam);
+        total += reff[ri];
+    }
+    var out = std.ArrayListUnmanaged(marl.Kernel){};
+    defer out.deinit(gpa);
+    for (m.regions, 0..) |*reg, ri| {
+        if (reg.own.items.len == 0) continue;
+        const share = reff[ri] / total * @as(f64, @floatFromInt(keep));
+        const k = @min(reg.own.items.len, @max(1, @as(usize, @intFromFloat(@round(share)))));
+        const tmp = try gpa.alloc(marl.Kernel, reg.own.items.len);
+        defer gpa.free(tmp);
+        for (reg.own.items, 0..) |g, i| tmp[i] = m.kernels.items[g];
+        const sub = try sampleKernels(gpa, tmp, pts);
+        defer sub.deinit(gpa);
+        const sel = try novelty.selectExplaining(gpa, sub, target, k);
+        defer gpa.free(sel);
+        for (sel) |j| try out.append(gpa, tmp[j]);
+    }
+    const picked = try sampleKernels(gpa, out.items, pts);
+    defer picked.deinit(gpa);
+    const w = try novelty.refit(gpa, picked, target);
+    defer gpa.free(w);
+    for (out.items, w) |*k, wv| k.p[marl.PARAMS - 1] = @floatCast(wv);
+    _ = try refine(gpa, out.items, pts, target, m.opts.regions, .{});
+    return adopt(gpa, m.opts, out.items);
+}
+
+test "G61 the lineage: is the wake/sleep cycle a ratchet, or damage accumulating?" {
+    // Christian: "the crucial quantity is not whether C2 < P2 on one static
+    // test, but whether the sequence forms a MONOTONIC IMPROVEMENT LOOP
+    // under repeated wake/sleep cycles."
+    //
+    // And a design correction that surfaced before any code: OBS-13's
+    // sleep-on-self can never improve, because a student fitting its
+    // teacher at best matches it and MARL-19 priced a noiseless copy at
+    // 1.179x. Sleep on REPLAY can — which is what OBS-11 was doing without
+    // calling it that, since the truth on probes is exactly what a replay
+    // buffer holds.
+    //
+    // **Everything here is scored on HELD-OUT probes.** A sleep is fitted
+    // on the replay ring, so scoring it there is training on the test set —
+    // the mistake OBS-11 had to be corrected for, made again in this gate's
+    // first draft, where the replay arm read a fourteen-fold "improvement"
+    // measured on its own fitting points.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const BUF: usize = 4096;
+
+    var st = rng.Stream.region(1234, 0x4f31_3457, 0); // "O14W"
+    var buf = try Replay.init(gpa, BUF);
+    defer buf.deinit(gpa);
+
+    var p0 = try marl.Model.init(gpa, o);
+    defer p0.deinit();
+    try wake(&p0, 20_000, &buf, &st);
+
+    // Held out against the STANDING truth, for the sleep-target contrast.
+    const hs = try marl.probes(gpa, 5150, 4096);
+    defer {
+        gpa.free(hs.p);
+        gpa.free(hs.y);
+    }
+
+    // (1) THE CONTRAST: self against replay, both fitted on the ring and
+    // both scored on probes neither saw.
+    const self_t = try gpa.alloc(f64, BUF);
+    defer gpa.free(self_t);
+    for (buf.x[0..BUF], 0..) |q, i| self_t[i] = p0.predictAll(q)[0];
+    const before = try p0.rms(hs.p, hs.y, null);
+
+    const half0 = p0.kernels.items.len / 2;
+    var s_self = try sleepOn(gpa, &p0, buf.x[0..BUF], self_t, half0);
+    defer s_self.deinit();
+    var s_rep = try sleepOn(gpa, &p0, buf.x[0..BUF], buf.y[0..BUF], half0);
+    defer s_rep.deinit();
+    const r_self = try s_self.rms(hs.p, hs.y, null);
+    const r_rep = try s_rep.rms(hs.p, hs.y, null);
+    std.debug.print("\n  G61 [{s}] the sleep target, held out: before {d:.5} -> self {d:.5} ({d:.3}x), replay {d:.5} ({d:.3}x)\n", .{
+        @tagName(builtin.mode), before, r_self, r_self / before, r_rep, r_rep / before,
+    });
+
+    // (2) THE LINEAGE, on replay throughout, each model against ITS OWN ring.
+    var moved = marl.TruthParams{};
+    moved.shift = .{ 0, -0.10, 0 };
+    const ho = try marl.probesOf(gpa, moved, 31337, 4096);
+    defer {
+        gpa.free(ho.p);
+        gpa.free(ho.y);
+    }
+    var parent = try adopt(gpa, o, p0.kernels.items);
+    defer parent.deinit();
+    var child = try adopt(gpa, o, s_rep.kernels.items);
+    defer child.deinit();
+    parent.opts.truth = moved;
+    child.opts.truth = moved;
+
+    var pb = try Replay.init(gpa, BUF);
+    defer pb.deinit(gpa);
+    var cb = try Replay.init(gpa, BUF);
+    defer cb.deinit(gpa);
+
+    std.debug.print("  {s:<19} {s:>7} {s:>9} {s:>7}   {s:>7} {s:>9} {s:>7}   {s:>7}\n", .{ "stage", "P kern", "P RMS", "P upd", "C kern", "C RMS", "C upd", "C/P" });
+    var gap: [3]f64 = undefined;
+    for ([_][]const u8{ "gen 0 post-sleep", "gen 1 post-wake", "gen 2 post-sleep" }, 0..) |label, gi| {
+        if (gi == 1) {
+            // The SAME stream for both: equal work, equal data.
+            var ps = rng.Stream.region(99, 0x5741_4b45, 0);
+            var cs = rng.Stream.region(99, 0x5741_4b45, 0);
+            try wake(&parent, 60_000, &pb, &ps);
+            try wake(&child, 60_000, &cb, &cs);
+        } else if (gi == 2) {
+            // Each sleeps against ITS OWN replay. Sharing one ring would
+            // hand the child the parent's experience, which is the whole
+            // thing the lineage is supposed to keep apart.
+            const np = try sleepOn(gpa, &parent, pb.x[0..BUF], pb.y[0..BUF], parent.kernels.items.len / 2);
+            parent.deinit();
+            parent = np;
+            parent.opts.truth = moved;
+            const nc = try sleepOn(gpa, &child, cb.x[0..BUF], cb.y[0..BUF], child.kernels.items.len / 2);
+            child.deinit();
+            child = nc;
+            child.opts.truth = moved;
+        }
+        const pr = try parent.rms(ho.p, ho.y, null);
+        const cr = try child.rms(ho.p, ho.y, null);
+        gap[gi] = cr / pr;
+        std.debug.print("  {s:<19} {d:>7} {d:>9.5} {d:>7.0}   {d:>7} {d:>9.5} {d:>7.0}   {d:>7.4}\n", .{
+            label, parent.kernels.items.len, pr, parent.meanUpdates(),
+            child.kernels.items.len, cr, child.meanUpdates(), gap[gi],
+        });
+    }
+    std.debug.print("  the gap trajectory: {d:.4} -> {d:.4} -> {d:.4} — {s}\n", .{
+        gap[0], gap[1], gap[2],
+        if (gap[2] < gap[1]) "RATCHET: the second sleep narrowed it" else "DAMAGE: the child lineage keeps paying",
+    });
+
+    // The registered contrast: self cannot improve, replay can.
+    try testing.expect(r_self >= before * thresholds.OBS14_SELF_SLEEP);
+    try testing.expect(r_rep < r_self);
+    try testing.expect(parent.kernels.items.len > 0 and child.kernels.items.len > 0);
+}

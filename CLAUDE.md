@@ -105,6 +105,8 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/obs12_predict.py                 # ... a registered disagreement the agent LOST, and a conditioning matrix still unrun
     zig build test -Dtest-filter="G60"             # OBS-13: WAKE — redundancy is scaffolding, and the advantage is LATE. ~90 s
     python3 tools/obs13_predict.py                 # ... its pre-registration; the child regrows past the parent and still loses
+    zig build test -Dtest-filter="G61"             # OBS-14: the LINEAGE — sleep must consolidate against REPLAY, which reverses OBS-13. ~120 s
+    python3 tools/obs14_predict.py                 # ... its pre-registration; a design error found before any code was written
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a

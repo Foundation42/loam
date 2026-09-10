@@ -7779,3 +7779,48 @@ measure, and the moved world needed structure that measure called redundant,
 which is what a replay measure exists for.
 
 Validation: G60 passes ReleaseSafe; smoke set clean. G60 ~90 s.
+
+## OBS-14 / G61 — the lineage, and a correction to OBS-13
+
+A design error found before any code, and it changes OBS-13's result.
+OBS-13 consolidated the child against the PARENT'S OWN PREDICTIONS so it
+would not start life knowing what its parent had to learn — right about the
+cheating, wrong about the consequence, and visible only once sleep runs
+twice. A student fitting its teacher's output can at best match it, and
+MARL-19 measured that directly: on a noiseless field a sleep is a pure loss.
+A lineage built on sleep-on-self can only decay. OBS-11 improved on its
+basis because its target was the truth on probes — which is not cheating
+either, once named: the truth on probes is what a REPLAY BUFFER holds.
+
+Measured, held out on probes neither arm saw: sleep-on-self .06926 -> .07005
+(1.011x, no gain); sleep-on-replay .06926 -> .05920 (.855x) at half the
+kernels.
+
+And that reverses OBS-13's headline. Child/parent after a 60k wake was 1.195
+with self-sleep and is .9391 with replay-sleep — the consolidated child now
+WINS the wake rather than losing it. OBS-13's "redundancy is scaffolding"
+was an artefact of the wrong sleep target. What survives is the mechanism it
+measured: a child whose kernels arrive with updates = 0 pays for youth.
+
+The lineage, held out against the moved truth:
+  gen 0 post-sleep  P 631 .13382 upd 0     C 315 .12867 upd 0     C/P .9615
+  gen 1 post-wake   P 768 .05326 upd 1241  C 791 .05002 upd 1031  C/P .9391
+  gen 2 post-sleep  P 383 .05884 upd 0     C 396 .06054 upd 0     C/P 1.0288
+
+Not a ratchet on this run: the child leads after the first sleep and through
+the wake, and loses at the second sleep. But the reading is qualified —
+the SECOND SLEEP HURT BOTH lineages where the first helped, and the
+difference is what was slept on. Gen 0 halved a population converged over
+20k; gen 2 halved one that had just birthed heavily during a wake with
+updates spread very unevenly. The damage may be about sleeping too soon
+after a wake rather than about lineage decay, which is a distinct hypothesis
+with an obvious test (vary wake length before the second sleep) and is not
+run here. Calling it damage accumulation without that would overclaim.
+
+Method note, third occurrence: the first draft scored the sleep-target
+contrast on the replay ring it was FITTED on and read a fourteen-fold
+"improvement". Everything is held out now. And each model sleeps against ITS
+OWN ring — sharing one hands the child the parent's experience, which is the
+thing a lineage exists to keep apart.
+
+Validation: G61 passes ReleaseSafe; smoke set clean. G61 ~120 s.

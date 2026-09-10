@@ -3555,4 +3555,21 @@ pub const OBS13_START_NULL: f32 = 1.25;
 /// ratchet.
 pub const OBS13_REGROWTH: f64 = 1.5;
 
+/// G61: RMS after a sleep against the model's OWN OUTPUT, over the RMS
+/// before it, on the replay measure. PROPOSED as a FLOOR at 0.99.
+///
+/// A floor, because it asserts that sleep-on-self CANNOT improve. MARL-19
+/// measured it directly: on a noiseless field a sleep is a pure loss, a
+/// copy costs 1.179x, and no student is better than its teacher on both
+/// axes. A student fitting its teacher's output can at best match it.
+///
+/// That is OBS-13's design error, visible only once sleep has to run twice:
+/// it consolidated the child against the parent's predictions to avoid
+/// handing it the truth, which was right about the cheating and wrong about
+/// the consequence. OBS-11 improved on its basis because its target was the
+/// truth on probes — and that is not cheating either, once named: **the
+/// truth on probes is what a replay buffer holds.** A model's own
+/// observations are legitimately its to reuse.
+pub const OBS14_SELF_SLEEP: f32 = 0.99;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
