@@ -1502,3 +1502,116 @@ test "G63 does maturity matter once the evidence is adequate?" {
     // being reached and the grid measures nothing.
     try testing.expect(grid[2][0] < 0);
 }
+
+test "G64 is rho a control law, or a description of one axis?" {
+    // OBS-16 moved rho by RING SIZE at fixed budget and showed it predicts
+    // each cell's sign. That establishes rho as the regime variable; it
+    // does NOT establish that choosing k from N is safe, because k never
+    // moved. `evidenceBudget` returns a budget and nothing has yet used it
+    // to pick one.
+    //
+    // Christian: "hold replay ring fixed and sweep consolidation budget, so
+    // rho changes entirely through free-parameter count. If the sign
+    // transition appears at the same approximate rho, then evidenceBudget()
+    // graduates from a descriptive fit to a real control law."
+    //
+    // The two families reach the same rho from opposite directions: at rho
+    // 4 the small ring means k = 51 and the large one k = 205 — four times
+    // the model complexity at the same evidence ratio.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const BIG: usize = 8192;
+
+    var st = rng.Stream.region(1234, 0x4f31_3757, 0); // "O17W"
+    var warm = try Replay.init(gpa, 1024);
+    defer warm.deinit(gpa);
+    var m = try marl.Model.init(gpa, o);
+    defer m.deinit();
+    try wake(&m, 20_000, &warm, &st);
+
+    var moved = marl.TruthParams{};
+    moved.shift = .{ 0, -0.10, 0 };
+    m.opts.truth = moved;
+    const ho = try marl.probesOf(gpa, moved, 31337, 4096);
+    defer {
+        gpa.free(ho.p);
+        gpa.free(ho.y);
+    }
+    var ring = try Replay.init(gpa, BIG);
+    defer ring.deinit(gpa);
+    var ws = rng.Stream.region(99, 0x5741_4b45, 0);
+    try wake(&m, 20_000, &ring, &ws); // the "mid" maturity of OBS-16
+
+    const before = try m.rms(ho.p, ho.y, null);
+    std.debug.print("\n  G64 [{s}] {d} kernels, before {d:.5}; rho moved by BUDGET at fixed ring\n", .{
+        @tagName(builtin.mode), m.kernels.items.len, before,
+    });
+    std.debug.print("  {s:>6} {s:>7} {s:>7} {s:>9} {s:>9}   {s}\n", .{ "ring", "k", "rho", "after", "gain", "" });
+
+    const rings = [_]usize{ 2048, 8192 };
+    const ks = [_]usize{ 410, 205, 102, 51, 26 };
+    var gain: [2][ks.len]f64 = .{.{ 0, 0, 0, 0, 0 }} ** 2;
+    var have: [2][ks.len]bool = .{.{false} ** ks.len} ** 2;
+
+    for (rings, 0..) |n, ni| {
+        for (ks, 0..) |k, ki| {
+            if (k > m.kernels.items.len) continue;
+            const rho = @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(k * marl.PARAMS));
+            try (Measures{ .fit = ring.x[0..n], .sleep = ring.x[0..n], .eval = ho.p }).check();
+            var fork = try sleepOn(gpa, &m, ring.x[0..n], ring.y[0..n], k);
+            defer fork.deinit();
+            fork.opts.truth = moved;
+            const after = try fork.rms(ho.p, ho.y, null);
+            gain[ni][ki] = 1 - @as(f64, after) / @as(f64, before);
+            have[ni][ki] = true;
+            std.debug.print("  {d:>6} {d:>7} {d:>7.2} {d:>9.5} {d:>9.4}\n", .{ n, k, rho, after, gain[ni][ki] });
+        }
+    }
+
+    // **THE COLLAPSE FAILS.** Matched by rho rather than by index, so the
+    // pairing cannot be an off-by-one: for every cell in the small ring,
+    // find the large-ring cell at the same rho and compare.
+    std.debug.print("  the collapse — same rho, four times the complexity:\n", .{});
+    std.debug.print("  {s:>7}   {s:>8} {s:>9}   {s:>8} {s:>9}   {s}\n", .{ "rho", "small k", "gain", "large k", "gain", "agree?" });
+    var agree = true;
+    var pairs: usize = 0;
+    for (ks, 0..) |ka, ia| {
+        if (!have[0][ia]) continue;
+        const ra = @as(f64, 2048) / @as(f64, @floatFromInt(ka * marl.PARAMS));
+        for (ks, 0..) |kb, ib| {
+            if (!have[1][ib]) continue;
+            const rb = @as(f64, 8192) / @as(f64, @floatFromInt(kb * marl.PARAMS));
+            if (@abs(ra - rb) / ra > 0.05) continue;
+            const ok = (gain[0][ia] > 0) == (gain[1][ib] > 0);
+            if (!ok) agree = false;
+            pairs += 1;
+            std.debug.print("  {d:>7.2}   {d:>8} {d:>9.4}   {d:>8} {d:>9.4}   {s}\n", .{ ra, ka, gain[0][ia], kb, gain[1][ib], if (ok) "yes" else "NO" });
+        }
+    }
+
+    // What IS monotone: within a ring, gain rises with k (less compression
+    // is better); across rings at matched k, gain rises with N (more
+    // evidence is better). Both directions raise or lower rho
+    // inconsistently, which is why the ratio cannot be the law.
+    var k_monotone = true;
+    var n_monotone = true;
+    for (0..ks.len - 1) |step| {
+        for (0..2) |ni| {
+            if (have[ni][step] and have[ni][step + 1] and !(gain[ni][step] > gain[ni][step + 1])) k_monotone = false;
+        }
+        if (have[0][step] and have[1][step] and !(gain[1][step] > gain[0][step])) n_monotone = false;
+    }
+    std.debug.print("  within a ring, gain rises with k: {}; at matched k, gain rises with N: {}\n", .{ k_monotone, n_monotone });
+    std.debug.print("  so evidence and compression are SEPARABLE, and rho — their ratio — is not the law\n", .{});
+
+    try testing.expect(pairs >= 2);
+    // The registered collapse is REFUTED: at matched rho the two families
+    // disagree in SIGN. Asserted as the refutation, because that is the
+    // finding and a gate that asserted the collapse would now be a gate
+    // that fails for the right reason and says the wrong thing.
+    try testing.expect(!agree);
+    try testing.expect(k_monotone);
+    try testing.expect(n_monotone);
+}

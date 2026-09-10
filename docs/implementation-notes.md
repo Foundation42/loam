@@ -7929,3 +7929,54 @@ generation. Replay composition is untouched. Effective-age inheritance has
 moved down the causal order.
 
 Validation: G63 passes ReleaseSafe; smoke set clean. G63 ~4 min.
+
+## OBS-17 / G64 — rho is not a control law, and two phases need re-reading
+
+Christian's policy test: OBS-15 and OBS-16 moved rho by changing N, never k,
+so evidenceBudget had never been tested on the quantity it returns. Hold the
+ring fixed, sweep the budget, and see whether the sign transition lands at
+the same rho.
+
+It does not. Reaching the same rho from opposite directions gives opposite
+signs: at rho 2 the small ring (k=102) scores -.4121 and the large (k=410)
++.3239; at rho 4, -.6692 against +.0651. Only the rho-8 pair agrees, and
+both are negative there.
+
+Within a ring, gain RISES with k — less compression is better, monotone over
+five budgets. At matched k, gain RISES with N — more evidence is better,
+monotone over all five. Both true, and they move rho in opposite directions,
+which is exactly why the ratio cannot govern.
+
+So OBS-15 and OBS-16 measured N and called it rho: both held k fixed or
+nearly so while varying the ring, and OBS-16's grid held k at exactly 200,
+making rho proportional to N inside it. Its "the rule predicts every cell"
+was a statement about evidence alone.
+
+evidenceBudget is REFUTED as a control law — you cannot choose k from N,
+because shrinking k to satisfy a ratio makes the outcome worse. It stays in
+the tree as a description of one axis, with that written on it.
+
+What survives is the useful half: at a given replay size there is a maximum
+COMPRESSION beyond which sleep hurts, near k = 150 of 703 at 8,192 points.
+Evidence does not licence more compression; it reduces what compression
+costs. The best cell in the table is the least compression at the most
+evidence, which is the opposite of a ratio rule's recommendation.
+
+The registered caution at obs17_predict §(3) turned out to be the whole
+story rather than an edge case: a smaller k is not merely a better
+conditioned fit, it is also a harsher compression, and rho captures only the
+first. What was predicted as a turnover at high rho is monotone against rho
+throughout.
+
+Corrected picture: gain ~ f(N) + g(k), roughly additive on this data — four
+times the ring buys +.29 to +.54 at every budget tried. Two knobs, not one.
+And Christian's architectural sentence inverts: a small replay buffer does
+not upper-bound the complexity sleep may produce, it places a LOWER bound on
+the complexity sleep may safely keep.
+
+Still owed: the ratchet test now needs fixed N and fixed k rather than fixed
+rho, which is simpler. Replay composition is untouched and is now the most
+interesting remaining question, since N is established as dominant and
+nothing says what should be in it. Effective-age inheritance is unaffected.
+
+Validation: G64 passes ReleaseSafe; smoke set clean. G64 ~4 min.

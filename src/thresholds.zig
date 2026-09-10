@@ -3641,6 +3641,39 @@ pub const OBS15_READINESS: f64 = 0.5;
 /// **So rho_min = 2 is the BOUNDARY, not a safe floor.** The mixed row is
 /// the rule sitting exactly on its own limit. A working policy wants 4 or
 /// more.
+///
+/// **AND G64 OVERTURNS THE READING.** This grid held k FIXED at 200 and
+/// moved rho by RING SIZE, so its "rho" column was purely N — the rule
+/// predicted every cell because within this grid rho was proportional to
+/// the evidence. Moving rho by BUDGET at fixed ring gives the OPPOSITE
+/// sign: gain falls as rho rises. Evidence and compression are separable
+/// and their ratio is not the law. See `OBS17_COLLAPSE`.
 pub const OBS16_GRID: f64 = 0;
+
+/// G64: whether the two rho families collapse onto one curve. Recorded
+/// rather than thresholded; the gate asserts the shape.
+///
+/// **REFUTED, and it overturns OBS-15 and OBS-16's framing.** Reaching the
+/// same rho from opposite directions gives opposite signs:
+///
+///     rho    small ring   k=102  -.4121      large ring  k=410  +.3239
+///     rho 4  small ring   k= 51  -.6692      large ring  k=205  +.0651
+///
+/// Within a ring, gain RISES with k — less compression is better, monotone.
+/// At matched k, gain RISES with N — more evidence is better, monotone.
+/// Both are true and they move rho in opposite directions, which is exactly
+/// why the ratio cannot govern.
+///
+/// So OBS-15 and OBS-16 measured N and called it rho, because both held k
+/// fixed (or nearly) while varying the ring. **`evidenceBudget` is refuted
+/// as a CONTROL LAW**: you cannot pick k from N, because shrinking k to
+/// satisfy a ratio makes the outcome worse, not better. It survives only as
+/// a description of one axis.
+///
+/// What survives, and it is the useful half: at a given replay size there
+/// is a maximum COMPRESSION beyond which sleep hurts — at 8 192 points the
+/// crossing sits near k = 150 of a 703-kernel population. Evidence does not
+/// license more compression; it reduces what compression costs.
+pub const OBS17_COLLAPSE: f64 = 0;
 
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

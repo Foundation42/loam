@@ -1891,3 +1891,93 @@ causal order: youth looked primary before OBS-15 and now looks second-order
 once consolidation is properly conditioned.
 
 Cost: G63 is ~4 min. `python3 tools/obs16_predict.py` for the derivations.
+
+## OBS-17 / G64 — ρ is not a control law, and two phases need re-reading
+
+Christian: *so far, ρ has been changed by changing N, not k. If the sign
+transition appears at the same approximate ρ, then `evidenceBudget()`
+graduates from a descriptive fit to a real control law.*
+
+It does not.
+
+| ring | k | ρ | after | gain |
+|---:|---:|---:|---:|---:|
+| 2 048 | 410 | 0.50 | 0.09202 | −0.2161 |
+| 2 048 | 205 | 1.00 | 0.10212 | −0.3495 |
+| 2 048 | 102 | 2.01 | 0.10686 | −0.4121 |
+| 2 048 | 51 | 4.02 | 0.12631 | −0.6692 |
+| 2 048 | 26 | 7.88 | 0.13421 | −0.7735 |
+| 8 192 | 410 | 2.00 | 0.05116 | **+0.3239** |
+| 8 192 | 205 | 4.00 | 0.07074 | +0.0651 |
+| 8 192 | 102 | 8.03 | 0.07840 | −0.0360 |
+| 8 192 | 51 | 16.06 | 0.08825 | −0.1662 |
+| 8 192 | 26 | 31.51 | 0.11201 | −0.4802 |
+
+### The collapse fails at every shared point that matters
+
+| ρ | small ring | gain | large ring | gain | agree? |
+|---:|---:|---:|---:|---:|---|
+| 2.01 | k = 102 | −0.4121 | k = 410 | **+0.3239** | **NO** |
+| 4.02 | k = 51 | −0.6692 | k = 205 | **+0.0651** | **NO** |
+| 7.88 | k = 26 | −0.7735 | k = 102 | −0.0360 | yes |
+
+**Within a ring, gain rises with k.** Less compression is better, monotone
+across five budgets. **At matched k, gain rises with N.** More evidence is
+better, monotone across all five. Both are true, and they move ρ in
+*opposite* directions — which is precisely why the ratio cannot govern.
+
+    evidence and compression are SEPARABLE, and rho is not the law
+
+### What this does to OBS-15 and OBS-16
+
+Both held k fixed (or nearly) and varied the ring. **So both measured N and
+called it ρ.** OBS-16's grid held k at exactly 200, which made ρ ∝ N inside
+it — the rule "predicted every cell's sign" because within that grid it was
+a statement about evidence alone.
+
+`evidenceBudget` is **refuted as a control law**. You cannot choose $k$ from
+$N$: shrinking $k$ to satisfy a ratio makes the outcome *worse*. It survives
+only as a description of one axis, and the function stays in the tree with
+that written on it.
+
+### What survives, and it is the useful half
+
+    At a given replay size there is a maximum COMPRESSION beyond which
+    sleep hurts. Evidence does not licence more compression; it reduces
+    what compression costs.
+
+At 8 192 points the crossing sits near $k \approx 150$ of a 703-kernel
+population — about a fifth kept. And the best cell in the whole table is the
+*least* compression at the *most* evidence, which is the opposite of what a
+ratio rule would recommend.
+
+The registered caution at §(3) of `obs17_predict.py` turns out to have been
+the whole story rather than an edge case: *a smaller k is not merely a
+better-conditioned fit, it is also a harsher compression, and ρ captures
+only the first.* What was predicted as a turnover at high ρ is in fact
+monotone against ρ throughout.
+
+### The corrected picture
+
+$$\text{gain} \approx f(N) + g(k), \quad\text{not}\quad h(N/k)$$
+
+Roughly additive on this data: four times the ring buys +0.29 to +0.54 of
+gain at every budget tried, and the budget buys a monotone amount at every
+ring. Two knobs, not one — and a policy needs both, with the spectrum
+proposing $k$ and the evidence setting how much that choice will *cost*
+rather than capping it.
+
+Christian's architectural sentence needs the same correction. Not *the
+replay buffer places an upper bound on the model complexity sleep may
+produce* — the bound runs the other way. **A small replay buffer places a
+LOWER bound on the complexity sleep may safely keep.**
+
+### Still owed
+
+The ratchet test now has no fixed-ρ recipe to run under, so it needs
+fixed-$N$ and fixed-$k$ instead, which is simpler. **Replay composition** is
+untouched and is now the most interesting remaining question, since $N$ is
+established as the dominant knob and nothing says what should be *in* it.
+**Effective-age inheritance** is unaffected.
+
+Cost: G64 is ~4 min. `python3 tools/obs17_predict.py` for the derivations.
