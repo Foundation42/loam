@@ -109,6 +109,8 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/obs14_predict.py                 # ... its pre-registration; a design error found before any code was written
     zig build test -Dtest-filter="G62"             # OBS-15: the consolidation window is EVIDENCE PER PARAMETER, not maturity. ~5 min
     python3 tools/obs15_predict.py                 # ... its pre-registration; the readiness correlation came out -0.72, the wrong sign
+    zig build test -Dtest-filter="G63"             # OBS-16: EVIDENCE ABSORBS MATURITY, and k <= N/(rho*p) predicts every cell's sign. ~4 min
+    python3 tools/obs16_predict.py                 # ... its pre-registration; rho_min = 2 is the boundary, not a safe floor
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a

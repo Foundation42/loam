@@ -3615,4 +3615,32 @@ pub const OBS14_SELF_SLEEP: f32 = 0.99;
 /// parameter rather than per function.
 pub const OBS15_READINESS: f64 = 0.5;
 
+/// G63: the evidence-controlled maturity grid, recorded rather than
+/// thresholded — the gate asserts the SHAPE (rho monotone within every
+/// maturity row, and the starved column destructive) because the numbers
+/// the phase exists to find should not be pre-committed.
+///
+///   maturity  before      rho 0.5   rho 2.0   rho 8.0
+///   young     .10915      -.3875    +.0858    +.1111
+///   mid       .07529      -.7670    -.0232    +.4619
+///   settled   .05213     -3.3564    -.4356    +.3340
+///
+/// **Evidence absorbs maturity.** The spread of gain ACROSS maturities is
+/// 2.969 at rho 0.5, 0.521 at rho 2.0 and 0.351 at rho 8.0 — an
+/// INTERACTION, not a main effect. Consolidation with ample evidence
+/// repairs a young population, because it does not merely select, it
+/// REFINES, and refinement is what fixes a badly placed kernel.
+///
+/// And Christian's rule is validated cell by cell. At rho_min = 2 a ring of
+/// N permits N/(2p) kernels; this grid kept 200 throughout:
+///
+///     rho 0.5  1 000 points permit  50   kept 200, 4x over   ALL NEGATIVE
+///     rho 2.0  4 000 points permit 200   kept 200, exactly at   MIXED
+///     rho 8.0 16 000 points permit 800   kept 200, 4x inside ALL POSITIVE
+///
+/// **So rho_min = 2 is the BOUNDARY, not a safe floor.** The mixed row is
+/// the rule sitting exactly on its own limit. A working policy wants 4 or
+/// more.
+pub const OBS16_GRID: f64 = 0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

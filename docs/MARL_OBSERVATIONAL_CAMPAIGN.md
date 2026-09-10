@@ -1805,3 +1805,89 @@ inheritance** is unaffected and still owed, and **replay weighting**
 phase says only that the ring must be *big*, not what should be *in* it.
 
 Cost: G62 is ~5 min. `python3 tools/obs15_predict.py` for the derivations.
+
+## OBS-16 / G63 — evidence absorbs maturity, and the rule holds cell by cell
+
+> **Do not ask a compressed model to remember more structure than its replay
+> evidence can identify.**
+
+Christian's correction to OBS-15: maturity was never refuted in general, it
+was *non-discriminating under an evidence-starved fit*. So a grid, not
+another sweep — and the budget held **fixed at 200 kernels** in every cell,
+with the ring sized by his own rule, $N = \rho\,p\,k$, so that $\rho$ is the
+only thing moving along that axis.
+
+| maturity | kernels | R1024 | fresh | before | ρ 0.5 | ρ 2.0 | ρ 8.0 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| young | 641 | 0.035 | 0.016 | 0.10915 | −0.3875 | +0.0858 | +0.1111 |
+| mid | 701 | 0.601 | 0.102 | 0.07529 | −0.7670 | −0.0232 | **+0.4619** |
+| settled | 775 | 0.873 | 0.133 | 0.05213 | −3.3564 | −0.4356 | +0.3340 |
+
+**ρ is monotone in every row.** Evidence dominates, as OBS-15 said.
+
+### Evidence absorbs maturity — an interaction, not a main effect
+
+    maturity spread of the gain, by rho:   2.969    0.521    0.351
+
+The registered disagreement goes to the agent this time, and the mechanism
+is the reason it was worth registering: **consolidation does not merely
+select, it refines** — and refinement is exactly what fixes a badly placed
+kernel. Given enough evidence it repairs a young population, so maturity
+stops mattering.
+
+Two things worth keeping beside that. The maturity measure now *works*:
+R1024 reads 0.035 / 0.601 / 0.873 where OBS-15's R64 saturated at
+0.98–0.999, and `fresh` — the share of contribution from kernels born since
+the move — tracks it. And at ρ = 0.5 a **better** model loses **more**
+(−0.39, −0.77, −3.36), which is OBS-15's ceiling seen from the other side.
+
+At adequate evidence the *mid* model gains most (0.462). The young one has
+less accumulated redundancy to exploit; the settled one has less headroom.
+Neither is a monotone in maturity, and neither was predicted.
+
+### The rule validates cell by cell
+
+$$k_{\text{keep}} \le \frac{N_{\text{replay}}}{\rho_{\min}\,p}$$
+
+At $\rho_{\min} = 2$, with $p = 10$ and 200 kernels kept throughout:
+
+| column | points | permits | kept | outcome |
+|---|---:|---:|---:|---|
+| ρ 0.5 | 1 000 | 50 | 200 — **4× over** | all negative |
+| ρ 2.0 | 4 000 | 200 | 200 — **exactly at** | mixed |
+| ρ 8.0 | 16 000 | 800 | 200 — **4× inside** | all positive |
+
+The rule predicts the sign of every cell. And the middle row is the useful
+correction:
+
+    rho_min = 2 is the BOUNDARY, not a safe floor — a working policy wants
+    four or more
+
+`evidenceBudget(n, rho_min, p)` is in `consolidate.zig` as the deliverable,
+and the sentence it enforces is Christian's:
+
+    The spectrum proposes the budget; the evidence permits it.
+
+### The law, at two scales
+
+G56 (a): *you cannot ask about redundancy with fewer samples than
+functions.* OBS-15 and OBS-16: *you cannot synthesise a parameterisation
+with fewer observations than it has parameters.* Christian's general form,
+and it is worth keeping as the campaign's:
+
+> **Representational questions are only meaningful relative to the rank and
+> density of the evidence supporting them.**
+
+### What is still owed
+
+ρ is varied here by **ring size at fixed budget**, never by budget at fixed
+ring — so nothing yet says what happens when the *spectrum* asks for more
+than the evidence permits, which is the rule's actual use case. The
+**ratchet test** is now runnable fairly, at fixed points-per-parameter per
+generation rather than fixed ring. **Replay composition** — uniform, recent,
+error-biased — is untouched, and OBS-15/16 answer *how much* evidence
+without saying *which*. **Effective-age inheritance** has moved down the
+causal order: youth looked primary before OBS-15 and now looks second-order
+once consolidation is properly conditioned.
+
+Cost: G63 is ~4 min. `python3 tools/obs16_predict.py` for the derivations.

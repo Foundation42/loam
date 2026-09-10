@@ -1368,3 +1368,137 @@ test "G62 (b) when is a population ready to be rewritten?" {
     // asserted is the diagnosis: more replay lifts the ceiling.
     try testing.expect(lifted);
 }
+
+/// The largest consolidation budget the evidence permits — Christian's
+/// rule, as code:
+///
+///     k_keep ≤ N_replay / (ρ_min · p)
+///
+/// **The spectrum proposes the budget; the evidence permits it.** OBS-10's
+/// `r_eff` says how many dimensions deserve to survive; this says how many
+/// can be fitted reliably, and the consolidation takes the smaller. If the
+/// spectral budget asks for 390 kernels and replay can only support 150,
+/// sleep either waits for more evidence or consolidates less aggressively.
+///
+/// The general form of what OBS-15 found, and G56 (a) found one level down:
+/// *representational questions are only meaningful relative to the rank and
+/// density of the evidence supporting them.*
+pub fn evidenceBudget(n_replay: usize, rho_min: f64, p: usize) usize {
+    const cap = @as(f64, @floatFromInt(n_replay)) / (rho_min * @as(f64, @floatFromInt(p)));
+    return @max(1, @as(usize, @intFromFloat(@floor(cap))));
+}
+
+/// The share of a model's CONTRIBUTION resting on kernels born after a
+/// given point — the maturity measure OBS-15's readiness could not be,
+/// because update counts saturate almost at once.
+pub fn freshShare(m: *const marl.Model, since: u64) f64 {
+    var tot: f64 = 0;
+    var new: f64 = 0;
+    for (m.kernels.items) |*k| {
+        const w = @abs(@as(f64, k.weightsConst()[0]));
+        tot += w;
+        if (k.born_at >= since) new += w;
+    }
+    return if (tot > 0) new / tot else 0;
+}
+
+test "G63 does maturity matter once the evidence is adequate?" {
+    // OBS-15 refuted maturity, but only under an evidence-starved fit: the
+    // rho effect was so dominant that any maturity effect was buried, and
+    // readiness itself never varied. Christian's correction is a grid
+    // rather than another sweep.
+    //
+    // **k_keep is FIXED at 200 in every cell**, so the ring is sized by his
+    // own rule — N = rho·p·k — and rho is the only thing moving along that
+    // axis. Letting the budget follow the population would change the
+    // conditioning and the compression ratio together, which is the
+    // confound OBS-15 fell into from the other side.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const KEEP: usize = 200;
+    const BIG: usize = 16384;
+
+    var st = rng.Stream.region(1234, 0x4f31_3657, 0); // "O16W"
+    var warm = try Replay.init(gpa, 1024);
+    defer warm.deinit(gpa);
+    var base = try marl.Model.init(gpa, o);
+    defer base.deinit();
+    try wake(&base, 20_000, &warm, &st);
+
+    var moved = marl.TruthParams{};
+    moved.shift = .{ 0, -0.10, 0 };
+    base.opts.truth = moved;
+    const since = base.stats.exemplars;
+    const ho = try marl.probesOf(gpa, moved, 31337, 4096);
+    defer {
+        gpa.free(ho.p);
+        gpa.free(ho.y);
+    }
+
+    var ring = try Replay.init(gpa, BIG);
+    defer ring.deinit(gpa);
+    var ws = rng.Stream.region(99, 0x5741_4b45, 0);
+
+    std.debug.print("\n  G63 [{s}] budget fixed at {d} kernels ({d} free parameters); the ring is sized by rho·p·k\n", .{
+        @tagName(builtin.mode), KEEP, KEEP * marl.PARAMS,
+    });
+    std.debug.print("  {s:<9} {s:>7} {s:>7} {s:>7} {s:>9}   {s:>9} {s:>9} {s:>9}\n", .{ "maturity", "kernels", "R1024", "fresh", "before", "rho 0.5", "rho 2.0", "rho 8.0" });
+
+    const marks = [_]u64{ 2_000, 20_000, 80_000 };
+    const labels = [_][]const u8{ "young", "mid", "settled" };
+    const rhos = [_]f64{ 0.5, 2.0, 8.0 };
+    var grid: [3][3]f64 = undefined;
+    var seen: u64 = 0;
+    for (marks, labels, 0..) |mark, label, mi| {
+        try wake(&base, mark - seen, &ring, &ws);
+        seen = mark;
+        const before = try base.rms(ho.p, ho.y, null);
+        std.debug.print("  {s:<9} {d:>7} {d:>7.3} {d:>7.3} {d:>9.5}", .{
+            label, base.kernels.items.len, readiness(&base, 1024), freshShare(&base, since), before,
+        });
+        for (rhos, 0..) |rho, ri| {
+            const n = @as(usize, @intFromFloat(rho * @as(f64, @floatFromInt(KEEP * marl.PARAMS))));
+            std.debug.assert(n <= BIG);
+            // The guardrail, every cell.
+            try (Measures{ .fit = ring.x[0..n], .sleep = ring.x[0..n], .eval = ho.p }).check();
+            var fork = try sleepOn(gpa, &base, ring.x[0..n], ring.y[0..n], KEEP);
+            defer fork.deinit();
+            fork.opts.truth = moved;
+            const after = try fork.rms(ho.p, ho.y, null);
+            grid[mi][ri] = 1 - @as(f64, after) / @as(f64, before);
+            std.debug.print(" {d:>9.4}", .{grid[mi][ri]});
+        }
+        std.debug.print("\n", .{});
+    }
+
+    // Does rho dominate within every row?
+    var rho_monotone = true;
+    for (0..3) |mi| {
+        if (!(grid[mi][0] < grid[mi][1] and grid[mi][1] < grid[mi][2])) rho_monotone = false;
+    }
+    // Does the maturity spread SHRINK as rho rises? The agent's prediction.
+    var spread: [3]f64 = undefined;
+    for (0..3) |ri| {
+        var lo = grid[0][ri];
+        var hi = grid[0][ri];
+        for (0..3) |mi| {
+            lo = @min(lo, grid[mi][ri]);
+            hi = @max(hi, grid[mi][ri]);
+        }
+        spread[ri] = hi - lo;
+    }
+    std.debug.print("  maturity spread of the gain, by rho: {d:.4} {d:.4} {d:.4} — {s}\n", .{
+        spread[0], spread[1], spread[2],
+        if (spread[2] < spread[0]) "the AGENT: evidence absorbs maturity" else "CHRISTIAN: maturity survives adequate evidence",
+    });
+    std.debug.print("  the rule: at rho_min = 2, {d} points permit {d} kernels; this grid kept {d}\n", .{
+        BIG, evidenceBudget(BIG, 2.0, marl.PARAMS), KEEP,
+    });
+
+    try testing.expect(rho_monotone);
+    // rho = 0.5 must be destructive somewhere, or the starved regime is not
+    // being reached and the grid measures nothing.
+    try testing.expect(grid[2][0] < 0);
+}

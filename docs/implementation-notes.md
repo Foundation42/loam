@@ -7877,3 +7877,55 @@ inheritance is unaffected; replay weighting is now the natural next question,
 since this phase says only that the ring must be big, not what is in it.
 
 Validation: G62 (a) and (b) pass ReleaseSafe; smoke set clean. G62 ~5 min.
+
+## OBS-16 / G63 — evidence absorbs maturity, and the rule holds cell by cell
+
+Christian's correction to OBS-15: maturity was never refuted in general, it
+was non-discriminating under an evidence-starved fit. So a grid, with the
+budget held FIXED at 200 kernels in every cell and the ring sized by his own
+rule N = rho*p*k, so rho is the only thing moving along that axis.
+
+  maturity  kernels  R1024  fresh   before    rho0.5   rho2.0   rho8.0
+  young         641   .035   .016   .10915    -.3875   +.0858   +.1111
+  mid           701   .601   .102   .07529    -.7670   -.0232   +.4619
+  settled       775   .873   .133   .05213   -3.3564   -.4356   +.3340
+
+rho is monotone in every row. And the maturity spread of the gain runs
+2.969 / .521 / .351 across the rho columns — EVIDENCE ABSORBS MATURITY, an
+interaction rather than a main effect. The registered disagreement goes to
+the agent, and the mechanism is why it was worth registering: consolidation
+does not merely select, it REFINES, and refinement is what fixes a badly
+placed kernel, so ample evidence repairs a young population.
+
+The maturity measure now works: R1024 reads .035/.601/.873 where OBS-15's
+R64 saturated at .98-.999, and freshShare (contribution from kernels born
+since the move) tracks it. At rho .5 a BETTER model loses MORE
+(-.39/-.77/-3.36), which is OBS-15's ceiling from the other side. At
+adequate evidence the MID model gains most (.462) — the young one has less
+accumulated redundancy to exploit, the settled one less headroom. Neither
+was predicted.
+
+The rule validates cell by cell. At rho_min = 2 with p = 10 and 200 kept:
+  rho 0.5   1,000 points permit  50   kept 200, 4x over    ALL NEGATIVE
+  rho 2.0   4,000 points permit 200   kept 200, exactly at MIXED
+  rho 8.0  16,000 points permit 800   kept 200, 4x inside  ALL POSITIVE
+It predicts the sign of every cell, and the middle row is the correction:
+rho_min = 2 is the BOUNDARY, not a safe floor. A working policy wants 4+.
+
+evidenceBudget(n, rho_min, p) is the deliverable. The spectrum proposes the
+budget; the evidence permits it.
+
+The law at two scales — G56(a) "you cannot ask about redundancy with fewer
+samples than functions", OBS-15/16 "you cannot synthesise a parameterisation
+with fewer observations than it has parameters" — generalises to:
+representational questions are only meaningful relative to the rank and
+density of the evidence supporting them.
+
+Still owed: rho is varied by ring size at fixed budget and never by budget
+at fixed ring, so nothing yet says what happens when the SPECTRUM asks for
+more than the evidence permits, which is the rule's actual use case. The
+ratchet test is now runnable fairly at fixed points-per-parameter per
+generation. Replay composition is untouched. Effective-age inheritance has
+moved down the causal order.
+
+Validation: G63 passes ReleaseSafe; smoke set clean. G63 ~4 min.
