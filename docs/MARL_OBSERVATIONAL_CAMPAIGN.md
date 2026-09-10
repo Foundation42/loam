@@ -776,3 +776,139 @@ without the hedge the control forced on it, for this fixture:
 
 Cost: G53 is ~120 s, two full factorials. Not a smoke check.
 `python3 tools/obs6_predict.py` for the derivations.
+
+## OBS-7 / G54 — operator inference, and what actually governs it
+
+The note's §29 level 3, by way of §27. OBS-1 did level 1 (state), OBS-2
+level 2 (parameters of a hidden potential), and OBS-6 made the structural
+pressure signal readable. §29 asks each level to be demonstrated
+independently before the next.
+
+**The rig already contained a hidden operator.** `trajectory.zig`'s law is
+
+$$\dot x = \omega R(x-c) - \sum_i w_i \nabla\phi_i(x)$$
+
+and OBS-3 through OBS-6 used $\omega$ as a *known, given* knob — correct 0,
+wrong 0.3. Level 3 is the same rig with it taken away: the truth has it, the
+learner is not told, and must find it in a library. `src/law.zig` is a
+separate engine because four gates rest on `trajectory.zig` reproducing bit
+for bit; the sensitivity ODE $\dot s_j = \partial f/\partial\theta_j + Js_j$
+is the same shape in both.
+
+### The library, and the prediction that came with it
+
+Five affine candidates, $d = x - c$. Only the first is in the truth.
+
+| k | $V_k(x)$ | a gradient? |
+|---|---|---|
+| rotation | $(-d_y, d_x)$ | **no** — divergence-free, curl 2 |
+| divergence | $(d_x, d_y)$ | yes — $\nabla(\lvert d\rvert^2/2)$ |
+| shear | $(d_y, d_x)$ | yes — $\nabla(d_x d_y)$ |
+| drift x | $(1,0)$ | yes — $\nabla x$ |
+| drift y | $(0,1)$ | yes — $\nabla y$ |
+
+`tools/obs7_predict.py`, frozen first, argued from Helmholtz that §27's
+success criterion could only half hold: the learner is *already* fitting a
+pure gradient field, so any candidate that is itself a gradient competes for
+the same explanation, and four of the five are.
+
+### G54 (a) — the sensitivities
+
+G49's discipline carried to the library's parameters: worst relative error
+against a Richardson finite difference is **4.42e-8** over all fourteen. The
+mutation drops the $J\cdot s$ coupling — the term that says moving a
+coefficient moves the *path* — and it is off by **100% at 8 steps and 178%
+at 64**, same sign and same order, getting worse with the horizon. Exactly
+the kind of wrong a loss curve hides.
+
+### G54 (b) — §27's criterion holds in full, and my prediction was refuted
+
+| operator | seed 7 | seed 19 | seed 41 | RMS velocity contributed |
+|---|---:|---:|---:|---|
+| **rotation** | **0.08574** | **0.08573** | **0.08572** | truth: 0.08573 |
+| divergence | −0.00704 | −0.00042 | −0.00094 | |
+| shear | 0.00026 | −0.00003 | −0.00014 | |
+| drift x | −0.00015 | 0.00001 | −0.00004 | |
+| drift y | 0.00005 | 0.00000 | 0.00001 | |
+
+- **Recovery: 0.0%.** The hidden rotation comes back exact at every seed.
+- **The null: 0.000004** against a bar of 0.008573 — with no rotation in the
+  truth, the library does not invent one, by a factor of 2000.
+- **Prediction: 0.0028.** Held-out endpoint RMS with the library is 360×
+  better than the same fit with the law left incomplete.
+- **The irrelevant coefficients do approach zero.** The largest is 8.2% of
+  the rotation's contribution and three of the four are under 0.3%.
+
+So §27's criterion holds in full and the Helmholtz prediction is
+**refuted** — and so was the statistic written to test it. `OBS7_IDENTIFIABLE`
+asked for the curl-free candidates' across-seed coefficient of variation to
+exceed the rotation's by 5×; it "passed" at **15 408**, for a reason that has
+nothing to do with degeneracy. **A CV on a near-zero quantity is always
+about one**, so it cannot tell *arbitrary* from *correctly zero*. Both the
+threshold and the prediction are left standing and marked, and G54 (b) now
+rests on the magnitude statement it should have made first.
+
+### G54 (c) — what actually governs it, measured with no learner
+
+MARL-23's move, one campaign over: separate what the **basis** can do from
+what the **learner** finds. Least squares over the sampled square, no
+optimiser, no observations, no trajectories —
+
+$$\min_w \left\lVert V_k - \sum_i w_i(-\nabla\phi_i)\right\rVert$$
+
+as a fraction of $\lVert V_k\rVert$. One means the basis cannot imitate the
+candidate at all; zero means the split is arbitrary.
+
+| candidate | residual | |
+|---|---:|---|
+| rotation | **1.0000** | a curl-free span cannot make curl **at all** |
+| **divergence** | **0.0967** | the basis absorbs **90%** of a radial bowl |
+| shear | 0.7355 | |
+| drift x / y | 0.7320 | |
+
+The rotation's 1.0000 is the Helmholtz argument confirmed to four places,
+and it is why the recovery in (b) was exact. But the curl-free candidates
+**do not behave alike**, which the argument had no way to see:
+
+    being a gradient is NECESSARY for the degeneracy and nowhere near
+    SUFFICIENT — what decides is whether the candidate's potential is
+    SMOOTH AT THE BASIS'S OWN SCALE
+
+A radial bowl is: nine kernels of σ = .22 on a .25 lattice make one easily.
+A saddle needs a sign change at the centre those kernels are badly
+conditioned for, and a linear ramp needs support past the lattice's edge.
+
+**And the correspondence makes it an explanation rather than a
+coincidence**, asserted inside the same gate rather than read across from
+(b)'s printout: the candidate the basis absorbs most is the same candidate
+whose coefficient the fit moves most. Divergence, both times.
+
+### What OBS-7 says
+
+**Level 3 works** — on this fixture, with a library that contains the
+missing term, the coefficient is recovered exactly, nothing is invented when
+there is nothing to find, and held-out prediction improves 360×.
+
+**And it is well posed exactly to the extent that the library lies outside
+the span of what is already being learned.** That is a design rule for level
+4, and it is measurable *before* any fitting: `law.degeneracy(k)` is a
+9×9 least-squares solve. A candidate at 0.97 residual is worth adding; one
+at 0.10 will be fitted arbitrarily and its coefficient should not be read as
+a physical quantity, even though the model's *predictions* stay perfectly
+determined. §33's distinction, with a number attached to it.
+
+The obvious follow-up is the one the pre-registration named: **how fine does
+the potential basis have to be before level 3 stops working?** The residual
+above is a function of the basis, and sweeping it would price the boundary
+directly, with no learner in the loop.
+
+### Limits
+
+The library contains the missing term, which §27 states as its scope
+("...when that term already exists within its operator vocabulary").
+Nothing here bears on level 4. One 2-D first-order flow, a frozen potential
+basis, and allocation deliberately not adaptive — OBS-6's recalibrated birth
+signal is what would drive a level-4 search and is kept out, so that
+operator recovery and capacity acquisition are measured apart.
+
+Cost: G54 is ~35 s. `python3 tools/obs7_predict.py` for the derivations.

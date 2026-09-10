@@ -62,6 +62,9 @@ pub const field = @import("field.zig");
 /// OBS-5: does a settled MARL manufacture capacity? The churn floor under
 /// every population number the campaign has recorded.
 pub const churn = @import("churn.zig");
+/// OBS-7: operator inference — the note's §29 level 3, on the trajectory
+/// rig whose rotation term OBS-3..6 only ever told the learner about.
+pub const law = @import("law.zig");
 /// ALG-2: deferred materialisation and the field read between checkpoints.
 pub const deferred = @import("deferred.zig");
 /// OBS-1: state observations through a known flow.
@@ -113,6 +116,7 @@ test {
     _ = milk;
     _ = field;
     _ = churn;
+    _ = law;
     _ = deferred;
     _ = observed;
     _ = inferred;

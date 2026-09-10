@@ -7401,3 +7401,68 @@ rich one. Whether a detector built on repeat pressure generalises past this
 fixture stays untested.
 
 Cost: G53 ~120 s, two full factorials. Not smoke.
+
+## OBS-7 / G54 — operator inference, and what actually governs it
+
+The note's §29 level 3 by way of §27. The rig already contained a hidden
+operator: trajectory.zig's law is xdot = omega*R(x-c) - sum_i w_i grad phi_i,
+and OBS-3..6 used omega as a KNOWN knob (correct 0, wrong .3). Level 3 takes
+it away — the truth has it, the learner is not told, and must find it in a
+library. src/law.zig is a separate engine because G49, G50, G51 and G53 rest
+on trajectory.zig reproducing bit for bit; the sensitivity ODE sdot =
+df/dtheta + J*s is the same shape in both, so only the loop is duplicated.
+
+Library: rotation (-dy,dx), divergence (dx,dy), shear (dy,dx), drift x (1,0),
+drift y (0,1). Only rotation is in the truth. obs7_predict argued from
+Helmholtz that §27's criterion could only half hold, because the learner is
+already fitting a pure gradient field and four of the five candidates are
+themselves gradients.
+
+G54(a): worst relative sensitivity error 4.42e-8 over all fourteen
+parameters against Richardson finite differences. The mutation drops the J*s
+coupling and is off by 100% at 8 steps and 178% at 64 — same sign, same
+order, worse with the horizon.
+
+G54(b): §27's criterion HOLDS IN FULL and the prediction is REFUTED.
+Rotation recovered to 0.0% (.08574/.08573/.08572 against a truth of .08573).
+The null — no rotation in the truth — returns .000004 against a bar of
+.008573, so the library invents nothing. Held-out endpoint RMS with the
+library is .0028 of the incomplete law's. The largest curl-free contribution
+is 8.2% of the rotation's and three of four are under .3%.
+
+The statistic was flawed as well as the prediction. OBS7_IDENTIFIABLE asked
+for the curl-free candidates' across-seed CV to exceed the rotation's by 5x
+and "passed" at 15,408 — because a CV on a near-zero quantity is always
+about one and cannot tell arbitrary from correctly zero. Both threshold and
+prediction left standing and marked; OBS7_IRRELEVANT is the magnitude
+statement G54(b) now rests on.
+
+G54(c) measures what actually governs it, with no learner: least squares of
+each candidate against the potential basis's own span over the sampled
+square. rotation 1.0000, divergence .0967, shear .7355, drift x/y .7320. The
+rotation's 1.0000 is Helmholtz confirmed to four places and is why recovery
+was exact. But the curl-free candidates do not behave alike: being a
+gradient is necessary and nowhere near sufficient, and what decides is
+whether the candidate's potential is SMOOTH AT THE BASIS'S OWN SCALE. A
+radial bowl is; a saddle needs a sign change at the centre that nine kernels
+of sigma .22 on a .25 lattice are badly conditioned for, and a ramp needs
+support past the lattice's edge. The gate asserts the split (one under .2,
+one over .5) plus the correspondence, computed inside the same gate: the
+candidate the basis absorbs most is the same one whose coefficient the fit
+moves most. Divergence, both times.
+
+Consequence, and it is a design rule for level 4: a library is well posed
+exactly to the extent it lies outside the span of what is already being
+learned, and law.degeneracy(k) is a 9x9 solve that says so BEFORE any
+fitting. A candidate at .97 residual is worth adding; one at .10 will be
+fitted arbitrarily and its coefficient is not a physical quantity — though
+the model's predictions stay determined, which is §33's distinction with a
+number attached.
+
+Limits: the library contains the missing term, which is §27's stated scope.
+One 2-D first-order flow, frozen potential basis, allocation deliberately
+not adaptive so that operator recovery and capacity acquisition are measured
+apart. Follow-up named in the pre-registration: sweep the basis and price
+where level 3 stops working, with no learner in the loop.
+
+Cost: G54 ~35 s. Not smoke.

@@ -3092,4 +3092,104 @@ pub const OBS5_DOUBLING_ADAM: f64 = 1.60;
 /// transferred capacity should do.
 pub const OBS6_CONTROL_CLEARS: f64 = 0.50;
 
+/// G54 (a): worst relative error of a library sensitivity against a
+/// Richardson finite difference. PROPOSED as a CEILING at 1e-3.
+///
+/// G49 (a)'s discipline carried to the operator coefficients. The
+/// sensitivity ODE is s-dot = df/dtheta + J*s for every parameter; the two
+/// halves differ only in df/dtheta, so an audit that covered the potential
+/// alone would say nothing about the library.
+pub const OBS7_SENSITIVITY: f64 = 1e-3;
+
+/// G54 (b): |omega_hat - omega| / omega for the hidden rotation, pooled
+/// over seeds. PROPOSED as a CEILING at 0.10.
+///
+/// §27's first half. It should hold cleanly because the rotation is the one
+/// candidate in the library the potential term cannot imitate: a potential
+/// gradient is curl-free everywhere and a rigid rotation has curl 2.
+pub const OBS7_RECOVERY: f64 = 0.10;
+
+/// G54 (b): how much larger the curl-free candidates' across-seed
+/// coefficient of variation must be than the rotation's. PROPOSED as a
+/// FLOOR at 5.
+///
+/// **A floor, because this asserts a FAILURE of §27's stated success
+/// criterion, and the failure is the phase's finding.** §27 asks for the
+/// irrelevant coefficients to approach zero. Four of the five cannot: the
+/// learner is already fitting a pure gradient field, and `divergence`,
+/// `shear`, `drift_x` and `drift_y` are all themselves gradients, so they
+/// compete with the potential for the same explanation rather than with the
+/// data. Where a coefficient rests is then set by initialisation and the
+/// optimiser's path, and the across-seed spread is what says so.
+///
+/// The degeneracy is PARTIAL, not exact — nine isotropic Gaussians of sigma
+/// .22 on a 3x3 lattice cannot reproduce a global linear ramp over the
+/// sampled square — so the prediction is a wide spread rather than a free
+/// one, and the contrast with the rotation is what carries it.
+///
+/// **REFUTED, and the statistic was flawed as well as the prediction.** It
+/// "passed" at a factor of 15 408, for a reason that has nothing to do with
+/// degeneracy: a coefficient of variation on a near-zero quantity is always
+/// about one, so a CV cannot tell "arbitrary" from "correctly zero". The
+/// curl-free contributions are TINY — the largest is 0.00704, 8% of the
+/// rotation's, and three of the four are under 0.3%. §27's success
+/// criterion holds in full.
+///
+/// The Helmholtz argument behind it was too crude, and G54 (c) measures
+/// what actually governs the question. Not asserted; `OBS7_IRRELEVANT` is
+/// the number G54 (b) now rests on.
+pub const OBS7_IDENTIFIABLE: f64 = 5;
+
+/// G54 (b): the largest curl-free candidate's recovered contribution, as a
+/// fraction of the truth's rotation. PROPOSED as a CEILING at 0.20.
+///
+/// §27's second half stated the way it should have been the first time:
+/// "irrelevant operator coefficients approach zero" is a claim about
+/// MAGNITUDE. Measured 0.0821, and three of the four candidates are under
+/// 0.003 of the rotation.
+pub const OBS7_IRRELEVANT: f64 = 0.20;
+
+/// G54 (b): held-out endpoint RMS with the library, over the same with the
+/// law left incomplete. PROPOSED as a CEILING at 0.25.
+///
+/// §33's distinction, and the reason the identifiability failure above is
+/// not a disaster: the SPLIT between potential and candidates is
+/// under-determined, the SUM is not. A model can be unidentifiable in its
+/// parameters and perfectly determined in its predictions.
+pub const OBS7_PREDICTS: f64 = 0.25;
+
+/// G54 (c): the least-squares residual of each curl-free candidate against
+/// the potential basis's own span, over the sampled square, as a fraction
+/// of the candidate's norm. PROPOSED as a FLOOR at 0.5.
+///
+/// Written AFTER G54 (b) refuted its Helmholtz prediction, and it is a
+/// diagnostic promoted to a gate rather than a pre-registered number —
+/// recorded that way on purpose, MARL-24's rule for something noticed by
+/// accident. What it measures is not in doubt; only its value was unknown.
+///
+/// Being a gradient is NECESSARY for a candidate to be degenerate with a
+/// potential term and nowhere near SUFFICIENT. The candidate's potential
+/// has to lie in the span of nine isotropic Gaussians of sigma .22 on a 3x3
+/// lattice over [.25,.75], read across the sampled [.15,.85] square, and a
+/// global linear ramp or quadratic bowl mostly does not.
+///
+/// **REFUTED at 0.0967, and the refutation is the phase's result.** The
+/// candidates do not behave alike:
+///
+///     rotation      1.0000   a curl-free span cannot make curl at all
+///     divergence    0.0967   the basis absorbs 90% of a radial bowl
+///     shear         0.7355
+///     drift x/y     0.7320
+///
+/// So what decides is not "is it a gradient" but **is its potential SMOOTH
+/// AT THE BASIS'S OWN SCALE**. A bowl is. A saddle needs a sign change at
+/// the centre that nine kernels of sigma .22 on a .25 lattice are badly
+/// conditioned for; a ramp needs support past the lattice's edge.
+///
+/// Not asserted as a floor. G54 (c) asserts the SPLIT instead — one
+/// candidate under 0.2 and one over 0.5 — together with the correspondence
+/// that makes it an explanation: the candidate the basis absorbs is the
+/// same one whose coefficient the fit moves most.
+pub const OBS7_SPAN: f64 = 0.5;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
