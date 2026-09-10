@@ -7466,3 +7466,67 @@ apart. Follow-up named in the pre-registration: sweep the basis and price
 where level 3 stops working, with no learner in the loop.
 
 Cost: G54 ~35 s. Not smoke.
+
+## OBS-8 / G55 — a geometry of degeneracy, and three refutations
+
+Christian's restatement of OBS-7 — an operator is inferable only to the
+extent it contributes something linearly independent of the representational
+span already available — with a correction to the closing sentence: not
+"well posed" but LOCALLY IDENTIFIABLE UNDER THE CHOSEN SAMPLING MEASURE AND
+BASIS. He was right, and by the end of this phase for a reason neither of us
+had. Almost all of OBS-8 is least squares on a grid with no optimiser.
+
+G55(a). The extension: residualise the whole library, Gtilde = (I-P)G, read
+novelty off diag(H) and mutual identifiability off its spectrum. The raw
+library is exactly orthogonal on the symmetric square (worst off-diagonal
+4.5e-16, cond 1.0000) by E[dx]=E[dy]=E[dx*dy]=0 with E[dx^2]=E[dy^2], so the
+pre-registration predicted every off-diagonal after residualisation would be
+the basis's doing and asked for one above .02. REFUTED at 4.6e-15: the
+coupling is <Pv_i, Pv_j>, a square lattice of isotropic kernels on a square
+region is D4-invariant, P commutes with that group, and the five candidates
+sit in different irreps (drift x/y sharing one, Schur making P a scalar).
+The residualised Gram is diagonal EXACTLY at every basis on both sweeps.
+Jitter the centres a quarter of a spacing and coupling appears at once:
+worst off-diagonal .6990 (divergence-drift y), mutual collinearity 6.15. A
+learned MARL basis is never symmetric, so the lattice is the special case.
+
+G55(b). Axis A refines the lattice at fixed sigma/h; axis B adds rings at
+OBS-7's own spacing and width. The predicted interaction (bowl by scale,
+saddle by resolution, ramp by support) is REFUTED and axis A was the wrong
+axis: holding sigma/h fixed while refining makes kernels NARROWER, and
+narrow kernels over a small span are worse at a smooth global field, so
+novelty RISES along it (shear .7125 -> .9929 at n=8). Resolution and
+smoothness-scale are not one knob. Axis B is unambiguous: one ring takes the
+saddle .7125 -> .0731 and the ramp .7083 -> .0722. Support is the mechanism;
+the bowl was already absorbed at .0897 because its potential is concentrated
+where the lattice already is.
+
+G55(c). The pre-registration called the rotation's novelty an invariant.
+REFUTED: on the square it falls to .918 once the lattice reaches the edge.
+The Helmholtz argument drops a term that vanishes only on the whole plane —
+integral grad(psi).V = boundary integral psi (V.n) - integral psi div V — and
+a rotation is divergence-free, so the overlap with any potential is EXACTLY
+the boundary integral. On a disc centred on the rotation's axis V is
+tangential on the boundary, V.n is identically zero, and the term vanishes:
+square 1.0000/.9253/.9181 against disc 1.0000/.9998/.9995 at equal area.
+Same library, same kernels. Independence is a property of the REGION.
+
+So novelty is a property of (operator, basis, region), all three. Absorbable
+by support: divergence, shear, drift. Not absorbable given the right region:
+rotation, but only because a disc's boundary is one of its streamlines.
+Invisible on a symmetric fixture: mutual collinearity, which is what the
+Gram was for and needs a learned basis to show.
+
+Method notes. The disc was CLIPPED when sampled over the square's bounding
+box — a disc with four chords cut off, whose boundary is partly straight and
+where V.n is not zero, which is the one property it exists to have; it read
+.9868 against a true disc's .9995. std.math.sign(0) is 0 and a correlation
+matrix has a unit diagonal, so the Jacobi rotation angle was exactly zero
+for every pair, the sweep did nothing, and cond_collinear returned 1.0000
+for every matrix it was handed — including one carrying a .699 coupling,
+which is what gave it away; the gate now asserts conditioning and
+off-diagonals together. And degeneracy/analyse were two truths about one
+quantity at two quadratures; degeneracy now delegates, and G54(c)'s numbers
+move in the fourth decimal with its claims untouched.
+
+Validation: G54 and G55 pass ReleaseSafe; smoke set clean. G55 ~10 s.

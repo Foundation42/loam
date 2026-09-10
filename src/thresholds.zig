@@ -3056,6 +3056,35 @@ pub const OBS5_DOUBLING_ADAM: f64 = 1.60;
 /// G52 (a) measured directly, and the schedule lets it converge. G53
 /// asserts that cell as well, and it is the one that matters.
 
+/// G53: frozen-allocation train RMS under OBS-5's 1/t schedule, over the
+/// same at OBS-4's fixed rate, pooled over the factorial. PROPOSED as a
+/// CEILING at 1.10.
+///
+/// **THE NULL, and it is registered first because nothing after it means
+/// anything otherwise.** A decayed rate could improve every birth number in
+/// OBS-6 for the stupidest possible reason — by learning less. A model that
+/// barely moves makes no requests and also fits nothing. Frozen allocation
+/// leaves coefficients as the only thing that can move, so this is the
+/// clean read of whether the schedule cost the fit. MARL-20's two-nulls
+/// discipline.
+///
+/// **HELD at 0.9999 and 1.0000, and it took two attempts to measure
+/// anything.** Pooled over the factorial, and then pooled over the
+/// correct-dynamics arms alone, the figure is dominated by cells where the
+/// fit is limited by the MODEL CLASS — the rich field's two components
+/// outside the nine-kernel span, and the wrong dynamics — and no learning
+/// rate can move those. Both read essentially unchanged (1.702e-2 ->
+/// 1.702e-2, 3.035e-2 -> 3.035e-2), which is a true number about the wrong
+/// quantity.
+///
+/// The cell where the RATE binds is the simple field under correct
+/// dynamics with allocation frozen, a target the model class contains
+/// exactly. There the null INVERTS: 1.669e-4 -> 4.609e-7 and 5.177e-4 ->
+/// 4.380e-7, better by 360x and 1180x. Fixed-rate Adam was hovering, as
+/// G52 (a) measured directly, and the schedule lets it converge. G53
+/// asserts that cell as well, and it is the one that matters.
+pub const OBS6_FIT_NULL: f64 = 1.10;
+
 /// G53: the simple-field adaptive/frozen evaluation ratio under the
 /// schedule, over the same ratio at the fixed rate. PROPOSED as a CEILING
 /// at 0.50 — the control's excess at least halved.
@@ -3191,5 +3220,97 @@ pub const OBS7_PREDICTS: f64 = 0.25;
 /// that makes it an explanation: the candidate the basis absorbs is the
 /// same one whose coefficient the fit moves most.
 pub const OBS7_SPAN: f64 = 0.5;
+
+/// G55 (a): the worst off-diagonal of the RESIDUALISED library Gram,
+/// normalised. PROPOSED as a FLOOR at 0.02.
+///
+/// A floor, because the claim is that the coupling EXISTS and is the
+/// basis's doing. The raw library is exactly orthogonal on the symmetric
+/// sampling square — every pair vanishes by E[dx] = E[dy] = E[dx*dy] = 0
+/// with E[dx^2] = E[dy^2] — measured at 1.8e-14 with condition number
+/// 1.0000 before this gate was written. So every off-diagonal after
+/// residualisation is manufactured by the basis and none of it comes from
+/// the library, which is what makes the Gram a clean readout.
+///
+/// It also makes the SYMMETRIC sensor region load-bearing: on a clustered
+/// or asymmetric one the raw Gram would not be the identity and the
+/// attribution would weaken. That is the obvious axis after these two.
+///
+/// **REFUTED at 0.0000 on the lattice, and for a better reason than the
+/// prediction had.** The coupling is the overlap of the PROJECTIONS,
+/// <Pv_i, Pv_j>. A square lattice of isotropic kernels on a square region
+/// is D4-invariant, the projector commutes with that group, and the five
+/// candidates sit in different irreducible representations of it (drift x
+/// and y sharing one, where Schur makes P a scalar). Different irreps are
+/// orthogonal and P cannot mix them, so the residualised Gram is diagonal
+/// EXACTLY, at every basis on both sweeps.
+///
+/// So the mutual-identifiability channel is invisible on a symmetric
+/// fixture and live the moment the symmetry goes. **A learned MARL basis is
+/// never symmetric** — kernels move — so the lattice is the special case.
+/// Now asserted against a JITTERED basis, where the coupling appears, and
+/// the symmetric case is asserted to be diagonal.
+pub const OBS8_BASIS_COUPLING: f64 = 0.02;
+
+/// G55 (b): the rotation's novelty at EVERY basis on both sweeps. PROPOSED
+/// as a FLOOR at 0.999 — an invariant, not a trend.
+///
+/// A potential's gradient field is curl-free at any resolution and any
+/// support; a rigid rotation has curl 2. So no amount of basis enrichment
+/// can make a rotation degenerate, and that is the distinction the whole
+/// taxonomy is for: the other four candidates' independence is a matter of
+/// RESOLUTION AND SUPPORT and can be eroded, where the rotation's is
+/// TOPOLOGICAL and cannot.
+///
+/// If a candidate's novelty falls as the basis is enriched, its
+/// identifiability was always contingent on the model class being poor
+/// enough. If it does not, no refinement will ever confuse it.
+///
+/// **REFUTED: on the square it falls to 0.918.** The Helmholtz argument
+/// drops a term that only vanishes on the whole plane:
+///
+///     integral of grad(psi).V = boundary integral of psi (V.n) - integral psi div V
+///
+/// A rotation is divergence-free, so the overlap between any potential and
+/// the rotation is EXACTLY the boundary integral. At the 3x3 basis the
+/// kernels decay before the edge and it is 1.0000; enlarge the lattice and
+/// psi stops vanishing on the boundary.
+///
+/// Now used the other way round, as the bar the square must FALL BELOW,
+/// with `OBS8_ROTATION_DISC` carrying the case where the term really does
+/// vanish. The independence is a property of the region, not of the fields.
+pub const OBS8_ROTATION_INVARIANT: f64 = 0.999;
+
+/// G55 (c): the rotation's novelty on a DISC of the same area, centred on
+/// its axis, over the same basis sweep. PROPOSED as a FLOOR at 0.99.
+///
+/// On a disc centred on the rotation's axis the field is tangential
+/// everywhere on the boundary, so V.n is identically zero and the boundary
+/// term vanishes at every basis. Same library, same kernels, same area,
+/// different answer: square 1.0000 -> 0.918, disc 0.9992 -> 0.9955.
+///
+/// Which is Christian's refinement of OBS-7's closing sentence vindicated
+/// more strongly than the argument he made it with — **locally identifiable
+/// under the chosen SAMPLING MEASURE and basis**, where the measure turns
+/// out to matter through the SHAPE of its support and not merely its
+/// coverage.
+pub const OBS8_ROTATION_DISC: f64 = 0.99;
+
+/// G55 (b): the novelty drop one ring of extra support buys, on the worst
+/// curl-free candidate. PROPOSED as a FLOOR at 0.5.
+///
+/// Christian predicted the three curl-free candidates would separate by
+/// mechanism — bowl by scale, saddle by resolution, ramp by support. **The
+/// interaction is REFUTED and axis A was the wrong axis**: holding sigma/h
+/// fixed while refining the lattice makes the kernels NARROWER, and narrow
+/// kernels over a small span are WORSE at a smooth global field, so novelty
+/// RISES along it. Resolution and smoothness-scale are not one knob.
+///
+/// Axis B is unambiguous: one ring at OBS-7's own spacing and width takes
+/// the saddle from .7355 to .0798 and the ramp from .7320 to .0789.
+/// Support is the mechanism, and the bowl was already absorbed because it
+/// is the one candidate whose potential is concentrated where the lattice
+/// already is.
+pub const OBS8_SUPPORT_DOMINATES: f64 = 0.5;
 
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

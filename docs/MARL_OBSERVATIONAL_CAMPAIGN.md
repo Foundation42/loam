@@ -912,3 +912,148 @@ signal is what would drive a level-4 search and is kept out, so that
 operator recovery and capacity acquisition are measured apart.
 
 Cost: G54 is ~35 s. `python3 tools/obs7_predict.py` for the derivations.
+
+## OBS-8 / G55 — a geometry of degeneracy, and three refutations
+
+Christian, restating OBS-7's result better than the phase did:
+
+> An operator is inferable only to the extent that it contributes something
+> linearly independent of the representational span already available to
+> the learner.
+
+with a correction to the sentence OBS-7 closed on — not "well posed" but
+**locally identifiable under the chosen sampling measure and basis**,
+because the residual measures geometric independence while practical
+recoverability also needs conditioning, coverage, and the candidates not
+being collinear *with each other*.
+
+He was right, and by the end of this phase he was right for a reason
+neither of us had.
+
+`tools/obs8_predict.py` was frozen first. Almost all of OBS-8 is least
+squares on a grid with no optimiser anywhere: it is an experiment about a
+basis, not about a learner.
+
+### G55 (a) — the Gram idea is right and this fixture cannot show it
+
+The extension: residualise the whole library, $\tilde G = (I-P_\Phi)G$, and
+read novelty off the diagonal of $H = \tilde G^{\mathsf T}\tilde G$ and
+mutual identifiability off its spectrum.
+
+The raw library is **exactly orthogonal** on the symmetric sampling square
+(worst off-diagonal 4.5e-16, condition number 1.0000) — every pair vanishes
+by $E[d_x] = E[d_y] = E[d_xd_y] = 0$ with $E[d_x^2] = E[d_y^2]$. So the
+pre-registration predicted that every off-diagonal *after* residualisation
+would be the basis's doing, and asked for one above 0.02.
+
+**Refuted at 4.6e-15, and for a better reason than the prediction had.**
+The coupling is $\langle Pv_i, Pv_j\rangle$. A square lattice of isotropic
+kernels on a square region is invariant under $D_4$; the projector commutes
+with that group; and the five candidates sit in **different irreducible
+representations** of it — drift x and y sharing one, where Schur makes $P$ a
+scalar. Different irreps are orthogonal and $P$ cannot mix them. **The
+residualised Gram is diagonal exactly, at every basis on both sweeps.**
+
+So the mutual-identifiability channel is invisible on a symmetric fixture —
+and live the moment the symmetry goes. Jitter the centres by a quarter of a
+spacing and it appears at once:
+
+    worst off-diagonal 0.6990 (divergence–drift y), mutual collinearity 6.15
+
+**A learned MARL basis is never symmetric** — kernels move. The lattice is
+the special case; the coupling is the ordinary one.
+
+### G55 (b) — support absorbs an operator, resolution does not
+
+| basis | rotation | divergence | shear | drift x/y |
+|---|---:|---:|---:|---:|
+| **A** 3×3 on [.25,.75], σ .220 | 1.0000 | 0.0897 | 0.7125 | 0.7083 |
+| 5×5 same span, σ .110 | 0.9898 | 0.2349 | 0.9045 | 0.9130 |
+| 8×8 same span, σ .063 | 0.9983 | 0.4192 | 0.9929 | 0.9935 |
+| **B** 5×5 on [0,1], σ .220 | 0.9253 | **0.0048** | **0.0731** | **0.0722** |
+| 7×7 on [−.25,1.25], σ .220 | 0.9181 | 0.0001 | 0.0015 | 0.0014 |
+
+**The predicted interaction is refuted, and axis A was the wrong axis.**
+Holding σ/h fixed while refining the lattice makes the kernels *narrower*,
+and narrow kernels over a small span are **worse** at a smooth global field,
+so novelty *rises* along it. Resolution and smoothness-scale are not one
+knob, and the sweep as designed conflated them.
+
+Axis B is unambiguous and overwhelming. At OBS-7's own spacing and width,
+**one ring of extra kernels takes the saddle from 0.713 to 0.073 and the
+ramp from 0.708 to 0.072.** Support is the mechanism. The bowl was already
+absorbed at 0.090 because it is the one candidate whose potential is
+concentrated where the lattice already is.
+
+### G55 (c) — and independence is a property of the REGION
+
+The pre-registration called the rotation's novelty an **invariant**: a
+gradient is curl-free at any resolution and any support, a rotation has curl
+2, so nothing could confuse them. **Refuted — on the square it falls to
+0.918.**
+
+The Helmholtz argument drops a term that only vanishes on the whole plane:
+
+$$\int_\Omega \nabla\psi\cdot V = \oint_{\partial\Omega}\psi\,(V\cdot n) - \int_\Omega \psi\,(\nabla\cdot V)$$
+
+A rigid rotation is divergence-free, so the overlap between *any* potential
+and the rotation is **exactly the boundary integral**. At the 3×3 basis the
+kernels decay before the edge, $\psi \approx 0$ there, and the residual is
+1.0000. Enlarge the lattice and $\psi$ stops vanishing on $\partial\Omega$.
+
+The discriminator is the region's *shape*, not the basis. On a disc centred
+on the rotation's axis, $V$ is tangential everywhere on the boundary, so
+$V\cdot n \equiv 0$ and the term vanishes identically:
+
+| basis | square | disc, equal area |
+|---|---:|---:|
+| 3×3 on [.25,.75] | 1.0000 | 1.0000 |
+| 5×5 on [0,1] | 0.9253 | **0.9998** |
+| 7×7 on [−.25,1.25] | 0.9181 | **0.9995** |
+
+Same library, same kernels, same area. **Christian's refinement vindicated
+more strongly than the argument he made it with** — the sampling measure
+matters through the *shape of its support*, not merely its coverage.
+
+### What OBS-8 leaves
+
+    Novelty is a property of (operator, basis, region) — all three.
+
+- **Absorbable by support**, and cheaply: divergence, shear, drift. Their
+  independence at OBS-7's basis was an artefact of a lattice too small for
+  the region it was sampled over.
+- **Not absorbable by any enrichment, given the right region**: the
+  rotation, but only because a disc's boundary is one of its streamlines.
+  On a square its independence erodes too.
+- **Invisible on a symmetric fixture**: mutual collinearity. It is real, it
+  is what Christian's Gram was for, and it needs an asymmetric basis to
+  show — which is to say, a learned one.
+
+Three predictions, three refutations, and the corrected statements are all
+stronger than what they replaced. The practical form for whatever owns this
+next:
+
+    before admitting a candidate, compute its novelty against the CURRENT
+    learned basis over the ACTUAL sensor region, and the Gram of the
+    residualised library alongside it. A candidate near zero will be fitted
+    arbitrarily; a pair with a large off-diagonal will trade against each
+    other. Neither costs anything to check and neither is visible from the
+    fit.
+
+### Method notes the phase paid for
+
+- **The disc was clipped.** Written against the square's bounding box it is
+  a disc with four chords cut off, whose boundary is partly straight and
+  where $V\cdot n \neq 0$ — the one property the disc exists to have. It
+  read 0.9868 against a true disc's 0.9995.
+- **`std.math.sign(0)` is 0, and a correlation matrix has a unit
+  diagonal.** So the Jacobi rotation angle was exactly zero for every pair,
+  the sweep did nothing, and `cond_collinear` returned 1.0000 for every
+  matrix it was ever handed — including one carrying a 0.699 coupling,
+  which is what gave it away. The gate now asserts the conditioning and the
+  off-diagonals together.
+- **`degeneracy` and `analyse` were two truths** about one quantity at two
+  quadratures. `degeneracy` now delegates; G54 (c)'s numbers move in the
+  fourth decimal and its claims are untouched.
+
+Cost: G55 is ~10 s. `python3 tools/obs8_predict.py` for the derivations.

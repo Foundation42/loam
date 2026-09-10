@@ -501,6 +501,302 @@ test "G54 (b) operator inference: what a library recovers, and what it cannot" {
     try testing.expect(predict < thresholds.OBS7_PREDICTS);
 }
 
+// ── OBS-8: the geometry of degeneracy ─────────────────────────────────
+
+/// A potential basis, as a lattice of isotropic Gaussians. OBS-7's is
+/// `OBS7_BASIS` below and every gate before this one uses it.
+pub const Spec = struct {
+    /// Kernels per axis.
+    n: u32,
+    /// The lattice's span, per axis.
+    lo: f32,
+    hi: f32,
+    /// Kernel width as a multiple of the lattice spacing. OBS-7's basis is
+    /// sigma .22 at spacing .25, so .88 — heavily overlapping.
+    sigma_over_h: f32,
+    /// Deterministic per-kernel displacement, in spacings. Zero is the
+    /// perfect lattice; non-zero BREAKS THE SYMMETRY, which G55 (a) needs
+    /// because a symmetric basis makes the residualised library exactly
+    /// diagonal and hides the very coupling the Gram exists to show.
+    /// A learned MARL basis is never symmetric, so this is the ordinary
+    /// case and the lattice is the special one.
+    jitter: f32 = 0,
+
+    pub fn count(self: Spec) usize {
+        return @as(usize, self.n) * self.n;
+    }
+    pub fn h(self: Spec) f32 {
+        return if (self.n < 2) (self.hi - self.lo) else (self.hi - self.lo) / @as(f32, @floatFromInt(self.n - 1));
+    }
+    pub fn sigma(self: Spec) f32 {
+        return self.sigma_over_h * self.h();
+    }
+    pub fn shape(self: Spec, i: usize) marl.Shape {
+        const step = self.h();
+        const inv = 1.0 / self.sigma();
+        var jx: f32 = 0;
+        var jy: f32 = 0;
+        if (self.jitter != 0) {
+            var st = rng.Stream.region(0x4f38_4a54, @intCast(i), 0); // "O8JT"
+            jx = (2 * st.unit() - 1) * self.jitter * step;
+            jy = (2 * st.unit() - 1) * self.jitter * step;
+        }
+        return .{
+            .mu = .{
+                self.lo + step * @as(f32, @floatFromInt(i % self.n)) + jx,
+                self.lo + step * @as(f32, @floatFromInt(i / self.n)) + jy,
+                0.5,
+            },
+            .l = .{ inv, 0, inv, 0, 0, inv },
+        };
+    }
+};
+
+/// OBS-7's basis, term for term with `inferred.shape`: 3x3 on [.25,.75],
+/// spacing .25, sigma .22.
+pub const OBS7_BASIS = Spec{ .n = 3, .lo = 0.25, .hi = 0.75, .sigma_over_h = 0.22 / 0.25 };
+
+/// The sampled square — `observational_windows.start`'s range, and the
+/// measure every inner product below is taken under. It is load-bearing:
+/// the library is orthogonal because this region is SYMMETRIC, and on a
+/// clustered or asymmetric sensor region it would not be.
+/// The region the inner products are taken over — the SAMPLING MEASURE,
+/// and G55 (c) is the demonstration that it is not a detail.
+///
+/// A gradient and a rotation are orthogonal on a region only up to a
+/// BOUNDARY TERM: ∫∇ψ·V = ∮ψ(V·n) − ∫ψ∇·V, and a rigid rotation is
+/// divergence-free, so the overlap is exactly the boundary integral. On a
+/// DISC centred on the rotation's axis, V is tangential everywhere on the
+/// boundary and the term vanishes identically. On a SQUARE it does not.
+pub const Region = enum { square, disc };
+
+/// A disc of the same area as the sampled square, so the two regions are
+/// compared at equal measure rather than equal diameter: r = 0.7/√π.
+pub const DISC_R: f64 = 0.39493284;
+
+pub const SAMPLE_LO: f64 = 0.15;
+pub const SAMPLE_HI: f64 = 0.85;
+const GRID: usize = 41;
+const MAX_POT: usize = 81;
+
+/// What the geometry says about a library, before any fitting.
+pub const Analysis = struct {
+    /// ‖(I − P_Φ)gₖ‖ / ‖gₖ‖ — how much of candidate k the basis CANNOT
+    /// already produce. One is completely novel, zero is fully absorbed.
+    novelty: [OPS]f64,
+    /// The raw library's own Gram, normalised. Identity to quadrature
+    /// error on a symmetric region, which is what makes `residual` a clean
+    /// readout of the BASIS rather than of the library.
+    raw: [OPS][OPS]f64,
+    /// The residualised Gram, normalised to unit diagonal — mutual
+    /// collinearity with the magnitudes divided out.
+    residual: [OPS][OPS]f64,
+    /// Condition of the residualised Gram as it stands: dominated by the
+    /// spread of novelties, so it answers "is one candidate nearly
+    /// invisible".
+    cond_novelty: f64,
+    /// Condition of the same after normalising every residual to unit
+    /// length: mutual collinearity alone.
+    cond_collinear: f64,
+};
+
+fn worstOff(m: [OPS][OPS]f64) f64 {
+    var w: f64 = 0;
+    for (0..OPS) |i| for (0..OPS) |j| {
+        if (i != j) w = @max(w, @abs(m[i][j]));
+    };
+    return w;
+}
+
+/// Condition number of a symmetric positive-semidefinite matrix, by cyclic
+/// Jacobi. Small and exact enough at 5x5, and it avoids pulling in a
+/// dependency for one eigenvalue ratio.
+fn condOf(min: [OPS][OPS]f64) f64 {
+    var a = min;
+    var sweep: usize = 0;
+    while (sweep < 60) : (sweep += 1) {
+        var off: f64 = 0;
+        for (0..OPS) |i| for (i + 1..OPS) |j| {
+            off += a[i][j] * a[i][j];
+        };
+        if (off < 1e-24) break;
+        for (0..OPS) |p| for (p + 1..OPS) |q| {
+            if (@abs(a[p][q]) < 1e-30) continue;
+            const theta = 0.5 * (a[q][q] - a[p][p]) / a[p][q];
+            // sign(0) must be +1, not 0. A CORRELATION matrix has a unit
+            // diagonal, so theta is EXACTLY zero for every pair, and with
+            // `std.math.sign` the rotation angle came out zero, the sweep
+            // did nothing, and `cond_collinear` returned 1.0000 for every
+            // matrix it was ever given — including one carrying a 0.699
+            // off-diagonal, which is what gave it away. The correct
+            // convention makes theta = 0 a 45-degree rotation, which is
+            // exactly the case a correlation matrix always presents.
+            const sgn: f64 = if (theta >= 0) 1 else -1;
+            const t = sgn / (@abs(theta) + @sqrt(theta * theta + 1));
+            const c = 1 / @sqrt(t * t + 1);
+            const sn = t * c;
+            for (0..OPS) |k| {
+                const akp = a[k][p];
+                const akq = a[k][q];
+                a[k][p] = c * akp - sn * akq;
+                a[k][q] = sn * akp + c * akq;
+            }
+            for (0..OPS) |k| {
+                const apk = a[p][k];
+                const aqk = a[q][k];
+                a[p][k] = c * apk - sn * aqk;
+                a[q][k] = sn * apk + c * aqk;
+            }
+        };
+    }
+    var lo: f64 = std.math.inf(f64);
+    var hi: f64 = 0;
+    for (0..OPS) |i| {
+        const e = @abs(a[i][i]);
+        lo = @min(lo, e);
+        hi = @max(hi, e);
+    }
+    return if (lo < 1e-30) std.math.inf(f64) else hi / lo;
+}
+
+/// Residualise the whole library against a basis and report what the
+/// geometry knows before a single coefficient is learned.
+///
+/// Christian's extension of `degeneracy`: instead of scoring candidates one
+/// at a time, form G̃ = (I − P_Φ)G and inspect its Gram. Novelty comes off
+/// the diagonal and mutual identifiability off the spectrum — because two
+/// candidates can both sit well outside the potential's span and still be
+/// nearly collinear with each other, which a per-candidate residual cannot
+/// see.
+///
+/// The inner products use the identity ⟨rᵢ, rⱼ⟩ = ⟨vᵢ, vⱼ⟩ − wᵢᵀ(Aᵀvⱼ),
+/// which follows from AᵀA wᵢ = Aᵀvᵢ at the least-squares optimum. So the
+/// design matrix is factored once for the whole library rather than per
+/// candidate.
+pub fn analyse(spec: Spec, region: Region) Analysis {
+    const P = spec.count();
+    std.debug.assert(P <= MAX_POT);
+    var ata = [_][MAX_POT]f64{.{0} ** MAX_POT} ** MAX_POT;
+    var atv = [_][OPS]f64{.{0} ** OPS} ** MAX_POT;
+    var vv = [_][OPS]f64{.{0} ** OPS} ** OPS;
+
+    // The disc is sampled over ITS OWN bounding box. Written against the
+    // square's it is clipped at four chords — a disc with its corners cut
+    // off, whose boundary is partly straight, where V·n is NOT zero. The
+    // whole point of the disc is that its boundary is a streamline of the
+    // rotation, and a clipped one is not. Measured before the fix: 0.9868
+    // where the true disc gives 0.9955.
+    const lo: f64 = if (region == .disc) 0.5 - DISC_R else SAMPLE_LO;
+    const hi: f64 = if (region == .disc) 0.5 + DISC_R else SAMPLE_HI;
+    for (0..GRID) |gi| {
+        for (0..GRID) |gj| {
+            const x = [2]f64{
+                lo + (hi - lo) * @as(f64, @floatFromInt(gi)) / @as(f64, GRID - 1),
+                lo + (hi - lo) * @as(f64, @floatFromInt(gj)) / @as(f64, GRID - 1),
+            };
+            if (region == .disc) {
+                const rx = x[0] - 0.5;
+                const ry = x[1] - 0.5;
+                if (rx * rx + ry * ry > DISC_R * DISC_R) continue;
+            }
+            var row: [MAX_POT][2]f64 = undefined;
+            for (0..P) |i| {
+                const sh = spec.shape(i);
+                const inv: f64 = @as(f64, sh.l[0]) * @as(f64, sh.l[0]);
+                const d = [2]f64{ x[0] - @as(f64, sh.mu[0]), x[1] - @as(f64, sh.mu[1]) };
+                const r2 = inv * (d[0] * d[0] + d[1] * d[1]);
+                if (r2 > marl.CUTOFF) {
+                    row[i] = .{ 0, 0 };
+                    continue;
+                }
+                const phi = @exp(-0.5 * r2);
+                // A unit of wᵢ adds −∇φᵢ to the velocity.
+                for (0..2) |a| row[i][a] = phi * inv * d[a];
+            }
+            var v: [OPS][2]f64 = undefined;
+            for (0..OPS) |k| v[k] = opVelocity(f64, k, x);
+            for (0..2) |a| {
+                for (0..OPS) |k| for (0..OPS) |l| {
+                    vv[k][l] += v[k][a] * v[l][a];
+                };
+                for (0..P) |i| {
+                    for (0..OPS) |k| atv[i][k] += row[i][a] * v[k][a];
+                    for (0..P) |j| ata[i][j] += row[i][a] * row[j][a];
+                }
+            }
+        }
+    }
+
+    // A pinch of ridge, so a rank-deficient normal matrix cannot make a
+    // residual look small by way of an enormous coefficient.
+    var tr: f64 = 0;
+    for (0..P) |i| tr += ata[i][i];
+    for (0..P) |i| ata[i][i] += 1e-9 * tr / @as(f64, @floatFromInt(P));
+
+    // One LU for the whole library.
+    var a = ata;
+    var perm: [MAX_POT]usize = undefined;
+    for (0..P) |i| perm[i] = i;
+    for (0..P) |c| {
+        var piv = c;
+        for (c + 1..P) |r| if (@abs(a[r][c]) > @abs(a[piv][c])) {
+            piv = r;
+        };
+        std.mem.swap([MAX_POT]f64, &a[c], &a[piv]);
+        std.mem.swap(usize, &perm[c], &perm[piv]);
+        for (c + 1..P) |r| {
+            const f = a[r][c] / a[c][c];
+            a[r][c] = f;
+            for (c + 1..P) |cc| a[r][cc] -= f * a[c][cc];
+        }
+    }
+    var w = [_][OPS]f64{.{0} ** OPS} ** MAX_POT;
+    for (0..OPS) |k| {
+        var b: [MAX_POT]f64 = undefined;
+        for (0..P) |i| b[i] = atv[perm[i]][k];
+        for (0..P) |r| for (0..r) |c| {
+            b[r] -= a[r][c] * b[c];
+        };
+        var i = P;
+        while (i > 0) {
+            i -= 1;
+            var acc = b[i];
+            for (i + 1..P) |j| acc -= a[i][j] * w[j][k];
+            w[i][k] = acc / a[i][i];
+        }
+    }
+
+    var out: Analysis = undefined;
+    var h: [OPS][OPS]f64 = undefined;
+    for (0..OPS) |k| for (0..OPS) |l| {
+        var dot: f64 = 0;
+        for (0..P) |i| dot += w[i][k] * atv[i][l];
+        h[k][l] = vv[k][l] - dot;
+    };
+    for (0..OPS) |k| {
+        out.novelty[k] = @sqrt(@max(0, h[k][k]) / vv[k][k]);
+        for (0..OPS) |l| out.raw[k][l] = vv[k][l] / @sqrt(vv[k][k] * vv[l][l]);
+    }
+    for (0..OPS) |k| for (0..OPS) |l| {
+        const den = @sqrt(@max(1e-300, h[k][k] * h[l][l]));
+        out.residual[k][l] = h[k][l] / den;
+    };
+    // Symmetrise: the identity above is exact in reals and the two halves
+    // differ in the last places, and a Jacobi sweep on a matrix that is not
+    // quite symmetric is not measuring an eigenvalue.
+    var sym = h;
+    for (0..OPS) |k| for (0..OPS) |l| {
+        sym[k][l] = 0.5 * (h[k][l] + h[l][k]);
+    };
+    out.cond_novelty = condOf(sym);
+    var norm = out.residual;
+    for (0..OPS) |k| for (0..OPS) |l| {
+        norm[k][l] = 0.5 * (out.residual[k][l] + out.residual[l][k]);
+    };
+    out.cond_collinear = condOf(norm);
+    return out;
+}
+
 /// How much of candidate k's velocity field the POTENTIAL BASIS can
 /// already produce — measured directly, with no learner anywhere in it.
 ///
@@ -510,92 +806,14 @@ test "G54 (b) operator inference: what a library recovers, and what it cannot" {
 /// already fitting `−∇Σwᵢφᵢ` should be free to put them either place — and
 /// the argument was too crude. Being a gradient is necessary for the
 /// degeneracy and nowhere near sufficient: what matters is whether the
-/// candidate's own potential lies in the SPAN OF NINE GAUSSIANS, over the
-/// square that is actually sampled.
+/// candidate's own potential lies in the SPAN OF THE KERNELS, over the
+/// region that is actually sampled.
 ///
-/// So: least squares over a grid on the sampled square,
-///
-///     min over w of  ‖ V_k − Σᵢ wᵢ (−∇φᵢ) ‖
-///
-/// returning the residual as a fraction of ‖V_k‖. One means the basis
-/// cannot imitate the candidate at all and the coefficient is cleanly
-/// identifiable; zero means it can imitate it exactly and the split is
-/// arbitrary. No optimiser, no observations, no trajectories — this is a
-/// property of the model class and the sensor region, and it is what
-/// governs whether §27's success criterion can hold.
+/// One line, because OBS-8 generalised this into `analyse` and two
+/// functions computing the same quantity by different quadratures would be
+/// two truths about it.
 pub fn degeneracy(k: usize) f64 {
-    const G: usize = 21;
-    var ata = [_][POT]f64{.{0} ** POT} ** POT;
-    var atb = [_]f64{0} ** POT;
-    var bb: f64 = 0;
-    for (0..G) |gi| {
-        for (0..G) |gj| {
-            const x = [2]f64{
-                0.15 + 0.7 * @as(f64, @floatFromInt(gi)) / @as(f64, G - 1),
-                0.15 + 0.7 * @as(f64, @floatFromInt(gj)) / @as(f64, G - 1),
-            };
-            const v = opVelocity(f64, k, x);
-            // The basis row: −∇φᵢ at x, which is what a unit of wᵢ adds to
-            // the velocity.
-            var row: [POT][2]f64 = undefined;
-            for (0..POT) |i| {
-                const sh = inferred.shape(i);
-                const inv: f64 = @as(f64, sh.l[0]) * @as(f64, sh.l[0]);
-                const d = [2]f64{ x[0] - @as(f64, sh.mu[0]), x[1] - @as(f64, sh.mu[1]) };
-                const r2 = inv * (d[0] * d[0] + d[1] * d[1]);
-                if (r2 > marl.CUTOFF) {
-                    row[i] = .{ 0, 0 };
-                    continue;
-                }
-                const phi = @exp(-0.5 * r2);
-                for (0..2) |a| row[i][a] = phi * inv * d[a];
-            }
-            for (0..2) |a| {
-                bb += v[a] * v[a];
-                for (0..POT) |i| {
-                    atb[i] += row[i][a] * v[a];
-                    for (0..POT) |j| ata[i][j] += row[i][a] * row[j][a];
-                }
-            }
-        }
-    }
-    // A pinch of ridge, so a rank-deficient normal matrix cannot make the
-    // residual look small by way of an enormous coefficient. It is 1e-9 of
-    // the trace, far below anything that changes an honest fit.
-    var tr: f64 = 0;
-    for (0..POT) |i| tr += ata[i][i];
-    for (0..POT) |i| ata[i][i] += 1e-9 * tr / @as(f64, POT);
-    // Gaussian elimination with partial pivoting.
-    var w = [_]f64{0} ** POT;
-    var a = ata;
-    var b = atb;
-    for (0..POT) |c| {
-        var piv = c;
-        for (c + 1..POT) |r| if (@abs(a[r][c]) > @abs(a[piv][c])) {
-            piv = r;
-        };
-        std.mem.swap([POT]f64, &a[c], &a[piv]);
-        std.mem.swap(f64, &b[c], &b[piv]);
-        for (c + 1..POT) |r| {
-            const f = a[r][c] / a[c][c];
-            for (c..POT) |cc| a[r][cc] -= f * a[c][cc];
-            b[r] -= f * b[c];
-        }
-    }
-    var i = POT;
-    while (i > 0) {
-        i -= 1;
-        var acc = b[i];
-        for (i + 1..POT) |j| acc -= a[i][j] * w[j];
-        w[i] = acc / a[i][i];
-    }
-    // ‖V − Aw‖² = ‖V‖² − 2wᵀAᵀV + wᵀAᵀAw, from the accumulators.
-    var quad: f64 = 0;
-    for (0..POT) |p| {
-        quad -= 2 * w[p] * atb[p];
-        for (0..POT) |q| quad += w[p] * ata[p][q] * w[q];
-    }
-    return @sqrt(@max(0, bb + quad) / bb);
+    return analyse(OBS7_BASIS, .square).novelty[k];
 }
 
 test "G54 (c) what governs level 3 is not whether a candidate is a gradient, but whether the basis can already make it" {
@@ -657,4 +875,187 @@ test "G54 (c) what governs level 3 is not whether a candidate is a gradient, but
         opName(most_degenerate), res[most_degenerate], opName(largest),
     });
     try testing.expectEqual(most_degenerate, largest);
+}
+
+test "G55 (a) the residualised Gram is diagonal by SYMMETRY, and a learned basis would not be" {
+    // Christian's extension of `degeneracy`: residualise the whole library
+    // and read its Gram, because two candidates can both sit well outside
+    // the potential's span and still be nearly collinear with each other.
+    // The idea is right and this fixture cannot show it, which is the
+    // finding.
+    //
+    // The raw library is exactly orthogonal on the symmetric sampling
+    // square — E[dx] = E[dy] = E[dx·dy] = 0 with E[dx²] = E[dy²] — so the
+    // pre-registration predicted every off-diagonal AFTER residualisation
+    // would be the BASIS's doing, and asked for one above 0.02.
+    //
+    // **REFUTED at 0.0000, and for a better reason than the prediction
+    // had.** ⟨(I−P)vᵢ, (I−P)vⱼ⟩ = ⟨vᵢ,vⱼ⟩ − ⟨Pvᵢ, Pvⱼ⟩, so the coupling is
+    // the overlap of the PROJECTIONS. A square lattice of isotropic
+    // kernels on a square region is invariant under D4, the projector
+    // commutes with that group, and the five candidates sit in different
+    // irreducible representations of it — drift x and y sharing one, where
+    // Schur makes P a scalar. Functions in different irreps are orthogonal,
+    // and P cannot mix them. The residualised Gram is diagonal EXACTLY, at
+    // every basis on both sweeps.
+    //
+    // So the mutual-identifiability channel is invisible on a symmetric
+    // fixture and live the moment the symmetry goes. **A learned MARL basis
+    // is never symmetric** — kernels move — so the lattice is the special
+    // case and the coupling is the ordinary one. Jittering the centres is
+    // enough to show it.
+    const a = analyse(OBS7_BASIS, .square);
+    std.debug.print("\n  G55 (a) [{s}] at OBS-7's basis (3x3 on [.25,.75], sigma .22)\n", .{@tagName(builtin.mode)});
+    std.debug.print("  {s:<30} {s:>9}   {s}\n", .{ "candidate", "novelty", "residualised Gram, normalised" });
+    for (0..OPS) |k| {
+        std.debug.print("  {s:<30} {d:>9.4}  ", .{ opName(k), a.novelty[k] });
+        for (0..OPS) |l| std.debug.print(" {d:>7.3}", .{a.residual[k][l]});
+        std.debug.print("\n", .{});
+    }
+    std.debug.print("  worst off-diagonal: raw {e:.2}, residualised {e:.2} — both zero, by D4\n", .{ worstOff(a.raw), worstOff(a.residual) });
+    std.debug.print("  condition — novelty spread {d:.1}, mutual collinearity {d:.4}\n", .{ a.cond_novelty, a.cond_collinear });
+
+    // Break the symmetry and the coupling appears. This is the ordinary
+    // case, not the exception.
+    var jittered = OBS7_BASIS;
+    jittered.jitter = 0.25;
+    const j = analyse(jittered, .square);
+    std.debug.print("  centres jittered by a quarter of a spacing:\n", .{});
+    for (0..OPS) |k| {
+        std.debug.print("  {s:<30} {d:>9.4}  ", .{ opName(k), j.novelty[k] });
+        for (0..OPS) |l| std.debug.print(" {d:>7.3}", .{j.residual[k][l]});
+        std.debug.print("\n", .{});
+    }
+    std.debug.print("  worst off-diagonal {d:.4}, mutual collinearity {d:.4}\n", .{ worstOff(j.residual), j.cond_collinear });
+
+    // The derivation: the raw library is the identity on this region.
+    try testing.expect(worstOff(a.raw) < 1e-6);
+    try testing.expect(@abs(condOf(a.raw) - 1) < 1e-6);
+    // A symmetric basis adds no coupling at all...
+    try testing.expect(worstOff(a.residual) < 1e-3);
+    // ...and an asymmetric one does, which is what a learned basis is.
+    try testing.expect(worstOff(j.residual) > thresholds.OBS8_BASIS_COUPLING);
+    // The conditioning must agree with the off-diagonals, which is how the
+    // eigensolver's sign convention was caught: a correlation matrix has a
+    // unit diagonal, `std.math.sign(0)` is 0, and the Jacobi rotation angle
+    // came out zero, so `cond_collinear` returned 1.0000 beside a 0.699
+    // coupling. Asserting both together is what makes that impossible to
+    // reintroduce.
+    try testing.expect(a.cond_collinear < 1.001);
+    try testing.expect(j.cond_collinear > 2);
+}
+
+/// AXIS A — refine the lattice at a FIXED overlap ratio, so the kernels
+/// narrow as the spacing does. Same support, finer structure.
+const AXIS_A = [_]Spec{
+    .{ .n = 3, .lo = 0.25, .hi = 0.75, .sigma_over_h = 0.88 },
+    .{ .n = 4, .lo = 0.25, .hi = 0.75, .sigma_over_h = 0.88 },
+    .{ .n = 5, .lo = 0.25, .hi = 0.75, .sigma_over_h = 0.88 },
+    .{ .n = 6, .lo = 0.25, .hi = 0.75, .sigma_over_h = 0.88 },
+    .{ .n = 8, .lo = 0.25, .hi = 0.75, .sigma_over_h = 0.88 },
+};
+/// AXIS B — add rings at OBS-7's own spacing and width. Same resolution,
+/// more support; at n = 5 the lattice covers [0,1] outright.
+const AXIS_B = [_]Spec{
+    .{ .n = 3, .lo = 0.25, .hi = 0.75, .sigma_over_h = 0.88 },
+    .{ .n = 5, .lo = 0.00, .hi = 1.00, .sigma_over_h = 0.88 },
+    .{ .n = 7, .lo = -0.25, .hi = 1.25, .sigma_over_h = 0.88 },
+};
+
+test "G55 (b) resolution and support are different axes, and only one of them absorbs an operator" {
+    // Christian's prediction: the bowl goes as a scale issue, the saddle
+    // collapses once the basis resolves its central sign structure, and the
+    // ramp improves disproportionately with support. Registered as an
+    // interaction so that "a richer basis absorbs more" could not pass.
+    //
+    // **The interaction is REFUTED, and axis A turned out to be the wrong
+    // axis.** Holding sigma/h fixed while refining the lattice makes the
+    // kernels NARROWER, and a basis of narrow kernels over a small span is
+    // WORSE at a smooth global field than a basis of wide ones. Novelty
+    // RISES along axis A for every curl-free candidate. Resolution and
+    // smoothness-scale are not the same knob, and this sweep conflated them.
+    //
+    // Axis B is unambiguous and overwhelming: at OBS-7's own spacing and
+    // width, one ring takes the saddle from .7355 to .0798 and the ramp
+    // from .7320 to .0789. **Support is the mechanism.** The bowl was
+    // already absorbed at .0967 because it is the one candidate whose
+    // potential is concentrated where the lattice already is.
+    std.debug.print("\n  G55 (b) [{s}] novelty, by basis\n", .{@tagName(builtin.mode)});
+    var a_nov: [AXIS_A.len][OPS]f64 = undefined;
+    var b_nov: [AXIS_B.len][OPS]f64 = undefined;
+
+    std.debug.print("  {s:<38}", .{"AXIS A — resolution, span [.25,.75]"});
+    for (0..OPS) |k| std.debug.print(" {s:>10}", .{@tagName(@as(Op, @enumFromInt(k)))});
+    std.debug.print("\n", .{});
+    for (AXIS_A, 0..) |spec, si| {
+        const an = analyse(spec, .square);
+        a_nov[si] = an.novelty;
+        std.debug.print("  n={d} h={d:.4} sigma={d:.4} ({d:>2} kernels)   ", .{ spec.n, spec.h(), spec.sigma(), spec.count() });
+        for (0..OPS) |k| std.debug.print(" {d:>10.4}", .{an.novelty[k]});
+        std.debug.print("\n", .{});
+    }
+    std.debug.print("  {s:<38}\n", .{"AXIS B — support, spacing .25 sigma .22"});
+    for (AXIS_B, 0..) |spec, si| {
+        const an = analyse(spec, .square);
+        b_nov[si] = an.novelty;
+        std.debug.print("  span [{d:.2},{d:.2}] ({d:>2} kernels)            ", .{ spec.lo, spec.hi, spec.count() });
+        for (0..OPS) |k| std.debug.print(" {d:>10.4}", .{an.novelty[k]});
+        std.debug.print("\n", .{});
+    }
+
+    // Support absorbs; refining at fixed overlap does not. Asserted on the
+    // curl-free candidates, which are the ones that CAN be absorbed at all.
+    var worst_a_drop: f64 = 1;
+    var worst_b_drop: f64 = 0;
+    for (1..OPS) |k| {
+        worst_a_drop = @min(worst_a_drop, 1 - a_nov[2][k] / a_nov[0][k]);
+        worst_b_drop = @max(worst_b_drop, 1 - b_nov[1][k] / b_nov[0][k]);
+    }
+    std.debug.print("  one step of each: axis A drops novelty by at most {d:.4}, axis B by at least {d:.4}\n", .{ worst_a_drop, worst_b_drop });
+    try testing.expect(worst_b_drop > thresholds.OBS8_SUPPORT_DOMINATES);
+    try testing.expect(worst_b_drop > worst_a_drop);
+}
+
+test "G55 (c) an operator's independence is a property of the REGION, not only of the fields" {
+    // The pre-registration called the rotation's novelty an INVARIANT: a
+    // potential's gradient is curl-free at any resolution and any support,
+    // a rotation has curl 2, so no enrichment could ever confuse them.
+    //
+    // **REFUTED. On the square it falls to 0.918** once the lattice reaches
+    // the boundary — and the reason is the part of Helmholtz that gets
+    // dropped when the argument is made on the whole plane:
+    //
+    //     ∫_Ω ∇ψ · V = ∮_∂Ω ψ (V·n) − ∫_Ω ψ (∇·V)
+    //
+    // A rigid rotation is divergence-free, so the second term vanishes and
+    // the overlap between any potential and the rotation is EXACTLY the
+    // boundary integral. At the 3x3 basis the kernels decay before the
+    // edge, ψ ≈ 0 there, and the residual is 1.0000. Enlarge the lattice,
+    // ψ stops vanishing on ∂Ω, and a gradient acquires overlap with a
+    // rotation.
+    //
+    // The discriminator is the region's shape rather than the basis. On a
+    // DISC centred on the rotation's axis, V is tangential everywhere on
+    // the boundary, V·n ≡ 0, and the term vanishes identically at every
+    // basis. Same library, same kernels, same area — different answer.
+    //
+    // Which is Christian's refinement of OBS-7's sentence vindicated more
+    // strongly than the argument he made it with: **locally identifiable
+    // under the chosen SAMPLING MEASURE and basis.**
+    std.debug.print("\n  G55 (c) [{s}] the rotation's novelty, square against a disc of equal area (r = {d:.4})\n", .{ @tagName(builtin.mode), DISC_R });
+    std.debug.print("  {s:<34} {s:>10} {s:>10}\n", .{ "basis", "square", "disc" });
+    var worst_square: f64 = 1;
+    var worst_disc: f64 = 1;
+    for (AXIS_B) |spec| {
+        const sq = analyse(spec, .square).novelty[@intFromEnum(Op.rotation)];
+        const di = analyse(spec, .disc).novelty[@intFromEnum(Op.rotation)];
+        worst_square = @min(worst_square, sq);
+        worst_disc = @min(worst_disc, di);
+        std.debug.print("  span [{d:.2},{d:.2}] ({d:>2} kernels){s:<10} {d:>10.4} {d:>10.4}\n", .{ spec.lo, spec.hi, spec.count(), "", sq, di });
+    }
+    std.debug.print("  worst over the sweep: square {d:.4}, disc {d:.4} — the boundary term, and nothing else\n", .{ worst_square, worst_disc });
+    // On the square the "invariant" is broken outright.
+    try testing.expect(worst_square < thresholds.OBS8_ROTATION_INVARIANT);
+    // On the disc it holds, because V·n is identically zero there.
+    try testing.expect(worst_disc > thresholds.OBS8_ROTATION_DISC);
 }

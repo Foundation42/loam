@@ -93,6 +93,8 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/obs6_predict.py                  # ... its pre-registration; the null is registered FIRST and the obvious version of it is useless
     zig build test -Dtest-filter="G54"             # OBS-7: OPERATOR INFERENCE (note §29 level 3) — a hidden rotation recovered exactly; the degeneracy measured with no learner. ~35 s
     python3 tools/obs7_predict.py                  # ... its pre-registration; the Helmholtz prediction was REFUTED and so was the statistic testing it
+    zig build test -Dtest-filter="G55"             # OBS-8: the GEOMETRY of degeneracy — novelty is a property of (operator, basis, REGION). ~10 s
+    python3 tools/obs8_predict.py                  # ... its pre-registration; three predictions, three refutations, all three corrections stronger
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a
