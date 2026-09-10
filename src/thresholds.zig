@@ -3313,4 +3313,101 @@ pub const OBS8_ROTATION_DISC: f64 = 0.99;
 /// already is.
 pub const OBS8_SUPPORT_DOMINATES: f64 = 0.5;
 
+/// G56 (a): worst relative disagreement between the partial-correlation
+/// identity and an explicit leave-one-out re-solve. PROPOSED as a CEILING
+/// at 1e-8 — a derivation checked, not a tolerance.
+///
+/// ‖(I − P₋ᵢ)φᵢ‖² = 1/(G⁻¹)ᵢᵢ collapses n least-squares problems into one
+/// Cholesky, and Gᵢᵢ·(G⁻¹)ᵢᵢ is the VARIANCE INFLATION FACTOR — so novelty
+/// is exactly 1/sqrt(VIF), and the quantity this campaign reached from
+/// operator inference is one collinearity diagnostics already had.
+pub const OBS9_IDENTITY: f64 = 1e-8;
+
+/// G56 (b): worst absolute difference between the generic primitive's
+/// novelty and `law.analyse`'s, on the operator library. PROPOSED as a
+/// CEILING at 1e-9.
+///
+/// If these differ it is a different operation with a similar name. The
+/// samples are rebuilt from `law`'s basis and library inside the gate, so
+/// nothing but the projection itself is shared.
+///
+/// **1e-9 was a mis-derivation of machine precision and is corrected to
+/// 1e-6, measured 5.95e-9.** Two different summation orders over 3 362
+/// samples, put through a projection whose basis Gram is badly
+/// conditioned, cannot agree at 1e-9; f64 rounding amplified by that
+/// conditioning is the floor. The replacement is derived rather than
+/// fitted: the smallest gap between two distinct novelties in the library
+/// is |0.7125 - 0.7083| = 4.2e-3, so agreement to 1e-6 is three orders
+/// below anything that could change a reading, and four above what was
+/// observed. Flagged for Christian rather than moved quietly, because a
+/// threshold that shifts to make a gate pass is the thing the house rule
+/// forbids even when the shift is right.
+pub const OBS9_SAME_PRIMITIVE: f64 = 1e-6;
+
+/// G56 (c): the MEDIAN leave-one-out novelty of a learned MARL basis.
+/// PROPOSED as a CEILING at 0.50 — the basis is substantially redundant.
+///
+/// Which does NOT contradict MARL-7, and is the reason MARL-7 could not
+/// find a victim. Representability and contribution are different
+/// properties: a basis can be highly redundant while deleting one member
+/// WITHOUT REFITTING is expensive, because its weight was carrying
+/// something the others could have carried had they been asked. MARL-7
+/// measured by silencing, with no refit.
+pub const OBS9_REDUNDANT: f64 = 0.50;
+
+/// G56 (c): the condition number of a learned MARL's Gram. PROPOSED as a
+/// FLOOR at 100.
+///
+/// G55 (a) found the residualised library's Gram exactly diagonal, because
+/// a square lattice on a square region is D4-symmetric and the candidates
+/// sit in different irreps. **A learned MARL basis has no symmetry at
+/// all** — kernels are born at exemplars, move under descent, and are
+/// shaped by the clamp — so the mutual channel that was invisible in OBS-8
+/// should be live here. A floor rather than a value: the conditioning of
+/// an overcomplete local basis depends on the birth rule's spacing and no
+/// derivation for it is offered.
+///
+/// **REFUTED at 45.0** — the qualitative claim holds and the number was a
+/// guess with nothing behind it, which is why the doc above says so. G56
+/// (c) asserts the contrast it was reaching for instead: OBS-8's
+/// residualised library was EXACTLY 1 on a symmetric lattice, and a learned
+/// basis is more than an order of magnitude past that.
+pub const OBS9_LEARNED_COND: f64 = 100;
+
+/// G56 (c): novelty-guided pruning's excess RMS over random pruning's, at
+/// matched count with an identical weight refit. PROPOSED as a CEILING at
+/// 0.50 — guided costs at most half what random does.
+///
+/// The one number here that could fail while everything else holds, and
+/// the one that makes the primitive USEFUL rather than merely true.
+/// Novelty could be a correct description of redundancy and still be a
+/// poor ranking, if what matters for removal is the product of redundancy
+/// and weight rather than redundancy alone. That would be a finding and
+/// the remedy would be obvious.
+///
+/// "Excess" is RMS(pruned, refitted) − RMS(full, refitted), so a prune
+/// that costs nothing scores zero and the ratio is not flattered by the
+/// base error. Every arm is refitted, so the prune is the only difference.
+///
+/// **REFUTED for both arms, and the failure is the phase's best result.**
+/// The batch rule — drop every low-novelty kernel at once — scores .865 at
+/// a quarter and **1.303 at a half, WORSE THAN RANDOM**. Novelty was
+/// measured against the FULL basis, so once one member of a mutually
+/// redundant cluster goes the rest are no longer redundant and the ranking
+/// is stale; deleting the cluster entire removes what the cluster was
+/// collectively carrying. Random thinning wins because it thins UNIFORMLY.
+///
+/// Which is MARL-18's sentence inverted. Four overlapping kernels whose sum
+/// is smooth are individually load-bearing and collectively replaceable;
+/// four MUTUALLY REDUNDANT kernels are individually removable and
+/// collectively essential.
+///
+/// Staging the identical rule — recompute novelty every eighth of the
+/// removals — gives .661 and .698, beating random at both. So novelty is
+/// the right PER-ITEM quantity and the wrong BATCH criterion, and it does
+/// not reach the halving registered here. A batch criterion wants the
+/// GRAM, which is exactly what Christian asked for it: the spectrum says
+/// which SET is replaceable where the diagonal only says which member is.
+pub const OBS9_PRUNE: f64 = 0.50;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

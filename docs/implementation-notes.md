@@ -7530,3 +7530,55 @@ quantity at two quadratures; degeneracy now delegates, and G54(c)'s numbers
 move in the fourth decimal with its claims untouched.
 
 Validation: G54 and G55 pass ReleaseSafe; smoke set clean. G55 ~10 s.
+
+## OBS-9 / G56 — one residualisation, three faces
+
+src/novelty.zig makes Christian's unification one operation: novelty(g; Phi,
+mu) = ||(I-P)g||/||g||, with birth, operator inference and distillation as
+the same call with different arguments. OBS-8's lesson is in the signature —
+nothing computes an inner product without being handed the points. The
+module knows nothing about MARL and MARL knows nothing about it.
+
+G56(a). Leave-one-out is one Cholesky, not n solves: ||(I-P_-i)phi_i||^2 =
+1/(G^-1)_ii, so novelty_i = 1/sqrt(G_ii (G^-1)_ii), and that product is the
+VARIANCE INFLATION FACTOR — novelty is exactly 1/sqrt(VIF). Checked against
+25 explicit re-solves at 7.44e-12. It first read 0.81 and the identity was
+not at fault: 623 kernels against 512 probes, so rank(G) <= 512 and
+everything is trivially redundant. You cannot ask about redundancy with
+fewer observations than functions; the gate now asserts m > n.
+
+G56(b). Rebuilt from law's basis and library inside the gate: all five
+novelties reproduce to six decimal places, residualised Gram diagonal at
+4.6e-15. Registered at 1e-9 and measured 5.95e-9 — a mis-derivation of
+machine precision (two summation orders through a badly conditioned
+projection), corrected to 1e-6 from the smallest gap between distinct
+novelties (4.2e-3), and flagged rather than moved quietly.
+
+G56(c). Median leave-one-out novelty on a learned MARL is .479 (min .252,
+max .829) — substantially redundant, which does NOT contradict MARL-7 and is
+why MARL-7 could not find a victim: representability and contribution are
+different properties, and silencing measures the second. Gram condition 45.0
+against OBS-8's exactly 1, so the mutual channel is live on a learned basis
+as predicted; the registered 100 was a guess and is refuted.
+
+The useful test failed and it is the best result. Batch pruning of the least
+novel kernels, with a weight refit, scores .865 at a quarter and 1.303 at a
+half — WORSE THAN RANDOM. Novelty was measured against the full basis, so
+once one member of a mutually redundant cluster goes the rest are no longer
+redundant; deleting the cluster entire removes what it collectively carried,
+and random wins because it thins uniformly. MARL-18 inverted: four
+mutually redundant kernels are individually removable and collectively
+essential. Staging the identical rule (recompute every eighth of the
+removals) gives .661 and .698, beating random at both and confirming the
+staleness diagnosis. The registered halving is refuted for both arms.
+
+So novelty is the right PER-ITEM quantity and the wrong BATCH criterion. A
+batch criterion wants the GRAM — the spectrum says which SET is replaceable
+where the diagonal says only which member is. Next phase, with a concrete
+target rather than an intuition.
+
+Not claimed: no default changes, birth is discussed and not rebuilt, and the
+623-kernel measurement says nothing about the 47,000-kernel models of G52(b),
+which would need MARL's locality exploited.
+
+Validation: G56 (a/b/c) pass ReleaseSafe; smoke set clean. G56 ~25 s.

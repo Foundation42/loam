@@ -1057,3 +1057,146 @@ next:
   fourth decimal and its claims are untouched.
 
 Cost: G55 is ~10 s. `python3 tools/obs8_predict.py` for the derivations.
+
+## OBS-9 / G56 — one residualisation, three faces
+
+Christian, closing OBS-8:
+
+> growth pressure, mismatch detection, distillation, and now operator
+> discovery are all converging on essentially the same question: what
+> explanatory degree of freedom is genuinely missing from the current
+> representation?
+
+`src/novelty.zig` is that as one operation. Given a candidate $g$, a span
+$\Phi$, and the measure $\mu$ you actually observe under,
+
+$$\text{novelty}(g;\Phi,\mu) = \frac{\lVert (I-P_\Phi)g\rVert_\mu}{\lVert g\rVert_\mu}$$
+
+    BIRTH         g a candidate kernel, Φ the existing kernels, μ the
+                  local exemplar density
+    OPERATOR      g a candidate operator's field, Φ the learned span,
+                  μ the sensor region                    (OBS-7, OBS-8)
+    DISTILLATION  g an EXISTING kernel, Φ the OTHERS, μ the query
+                  distribution — leave-one-out
+
+OBS-8's lesson is carried in the signature: nothing computes an inner
+product without being handed the points to compute it over. There is no
+default measure and there should not be one. The module knows nothing about
+MARL; MARL knows nothing about it.
+
+### G56 (a) — leave-one-out is one inverse, not n solves
+
+The distillation face looks like $n$ least-squares problems and is one
+Cholesky:
+
+$$\lVert (I-P_{-i})\phi_i\rVert^2 = \frac{1}{(G^{-1})_{ii}}, \qquad \text{novelty}_i = \frac{1}{\sqrt{G_{ii}(G^{-1})_{ii}}}$$
+
+and that product is the **variance inflation factor** — so novelty is
+exactly $1/\sqrt{\text{VIF}}$. Worth naming: the quantity this campaign
+reached from operator inference is one collinearity diagnostics already
+characterised from the other side.
+
+Checked against 25 explicit re-solves: **7.44e-12**.
+
+**It first read 0.81, and the identity was not at fault** — 623 kernels
+against 512 probes. The Gram is $n\times n$ built from $m$ samples, so its
+rank is at most $m$; with fewer probes than kernels it is singular by
+construction and everything looks redundant. *You cannot ask about
+redundancy with fewer observations than functions.* The gate now asserts
+$m > n$.
+
+### G56 (b) — it is the same primitive
+
+Rebuilt from `law`'s basis and library inside the gate, sharing nothing
+with G55 but the projection: **all five novelties reproduce to 6 decimal
+places**, and the residualised Gram comes back diagonal at 4.6e-15, D4
+again.
+
+Registered at 1e-9 and measured 5.95e-9 — that was a mis-derivation of
+machine precision, corrected to 1e-6 with a derivation rather than a fit
+(the smallest gap between two distinct novelties is 4.2e-3, so 1e-6 is
+three orders below anything that could change a reading). Flagged rather
+than moved quietly.
+
+### G56 (c) — the third face, and the contradiction it resolves
+
+MARL-7 concluded kernel death has nothing to target, because silencing
+accumulated capacity costs 1.4–1.6× the RMS. MARL-18 said the sharper
+thing: *a consolidation never chooses a victim — it declines to rebuild
+one.* Those are only in tension if **load-bearing** and **non-redundant**
+are the same property. They are not:
+
+    REPRESENTABILITY  can φᵢ be reproduced by the others?  — geometric
+    CONTRIBUTION      does the error rise if φᵢ is DELETED? — depends on
+                      wᵢ, and MARL-7 measured it by SILENCING, with no refit
+
+On a learned MARL: **median leave-one-out novelty 0.479** (min 0.252, max
+0.829). The basis *is* substantially redundant — and that is exactly why
+MARL-7 could not find a victim by silencing. A kernel can be reproducible
+by its neighbours and still expensive to delete, because its weight was
+carrying something they could have carried had they been asked.
+
+The Gram's condition is **45.0** where OBS-8's residualised library was
+exactly 1. A learned basis has no symmetry — kernels are born at exemplars,
+move under descent, are shaped by the clamp — so the mutual channel that
+was invisible in OBS-8 is live here, as predicted. (The registered 100 was
+a guess with no derivation and is refuted; the contrast is what holds.)
+
+### And then the useful test failed, which is the best part
+
+Prune the least-novel kernels, refit the survivors, compare against random
+pruning at matched count with the identical refit:
+
+| pruned | batch | staged | random | batch/rnd | staged/rnd |
+|---|---:|---:|---:|---:|---:|
+| 25% | 0.059822 | 0.057240 | 0.061526 | 0.8654 | **0.6613** |
+| 50% | 0.084323 | 0.067857 | 0.076081 | **1.3029** | **0.6977** |
+
+**Batch-guided pruning is WORSE than random at half the population.**
+Novelty was measured against the *full* basis, so once one member of a
+mutually redundant cluster goes, the rest are no longer redundant — the
+ranking is stale, and deleting the cluster entire removes what the cluster
+was collectively carrying. Random wins because it thins **uniformly**.
+
+Which is MARL-18's sentence inverted:
+
+    four overlapping kernels whose sum is smooth are individually
+    load-bearing and collectively replaceable; four MUTUALLY REDUNDANT
+    kernels are individually removable and collectively essential
+
+Staging the identical rule — recompute every eighth of the removals —
+gives 0.661 and 0.698, beating random at both prunes and confirming the
+staleness diagnosis directly. It does not reach the registered halving, and
+that number is refuted for both arms.
+
+    Novelty is the right PER-ITEM quantity and the wrong BATCH criterion.
+
+A batch criterion wants the **Gram**, which is precisely what Christian
+asked for it: the spectrum says which *set* is replaceable where the
+diagonal only says which member is. That is the next phase and it now has a
+concrete target rather than an intuition.
+
+### What OBS-9 leaves
+
+Three mechanisms this campaign built separately are one operation with
+different arguments, and the unification is not cosmetic — it transfers
+results between them:
+
+- **MARL-7 and MARL-18 are reconciled**, by separating representability
+  from contribution. Silencing measures the second; novelty measures the
+  first; a criterion needs both.
+- **OBS-8's symmetry finding predicted OBS-9's conditioning**: the mutual
+  channel is dead on a lattice and live on a learned basis, and the
+  learned basis is the case that matters.
+- **The rank condition is a real precondition**, not an implementation
+  note: redundancy is unanswerable with fewer samples than functions, and
+  a birth rule evaluating coverage at a single exemplar is at the extreme
+  of that.
+
+Not claimed: nothing here changes a default. Birth is discussed and not
+rebuilt. The measurement is on a 623-kernel model where the full Gram is
+exact; the 47 000-kernel models of G52 (b) would need MARL's own locality
+exploited, which is an implementation question and deliberately separate
+from whether the quantity is right.
+
+Cost: G56 is ~25 s. `python3 tools/obs9_predict.py` for the derivations.

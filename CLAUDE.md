@@ -95,6 +95,8 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/obs7_predict.py                  # ... its pre-registration; the Helmholtz prediction was REFUTED and so was the statistic testing it
     zig build test -Dtest-filter="G55"             # OBS-8: the GEOMETRY of degeneracy — novelty is a property of (operator, basis, REGION). ~10 s
     python3 tools/obs8_predict.py                  # ... its pre-registration; three predictions, three refutations, all three corrections stronger
+    zig build test -Dtest-filter="G56"             # OBS-9: ONE RESIDUALISATION, three faces — birth, operator inference and distillation are one operation. ~25 s
+    python3 tools/obs9_predict.py                  # ... its pre-registration; novelty is the right per-item quantity and the WRONG batch criterion
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a
