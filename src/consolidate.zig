@@ -729,3 +729,190 @@ test "G59 (a) the conditional: where does synthesis actually pay?" {
     // fixture was built inside the gather's bound.
     try testing.expect(gain[3] > 0);
 }
+
+/// Consolidate a model into a smaller one: r_eff sets the budget per
+/// region (OBS-10), the target-conditioned residual chooses the members
+/// (OBS-10), and synthesis lets them move (OBS-11).
+///
+/// **The target is the PARENT'S OWN PREDICTIONS, not the truth.** That is
+/// the difference between sleep and cheating: a consolidation reorganises
+/// what the model HAS, and a child handed the truth would start life
+/// knowing something its parent had to learn. OBS-11 used the truth
+/// because it was measuring representational quality; a lifecycle cannot.
+pub fn consolidate(
+    gpa: std.mem.Allocator,
+    parent: *marl.Model,
+    pts: []const [3]f32,
+    keep: usize,
+    o: Options,
+) !std.ArrayListUnmanaged(marl.Kernel) {
+    const target = try gpa.alloc(f64, pts.len);
+    defer gpa.free(target);
+    for (pts, 0..) |q, i| target[i] = parent.predictAll(q)[0];
+
+    // r_eff per region — the budget estimator.
+    const reff = try gpa.alloc(f64, parent.regions.len);
+    defer gpa.free(reff);
+    var total: f64 = 0;
+    for (parent.regions, 0..) |*reg, ri| {
+        reff[ri] = 0;
+        if (reg.own.items.len == 0) continue;
+        const tmp = try gpa.alloc(marl.Kernel, reg.own.items.len);
+        defer gpa.free(tmp);
+        for (reg.own.items, 0..) |g, i| tmp[i] = parent.kernels.items[g];
+        const sub = try sampleKernels(gpa, tmp, pts);
+        defer sub.deinit(gpa);
+        var g = try novelty.gramOf(gpa, sub);
+        defer g.deinit(gpa);
+        const lam = try novelty.eigenvalues(gpa, g);
+        defer gpa.free(lam);
+        reff[ri] = novelty.effectiveRank(lam);
+        total += reff[ri];
+    }
+
+    var out = std.ArrayListUnmanaged(marl.Kernel){};
+    errdefer out.deinit(gpa);
+    for (parent.regions, 0..) |*reg, ri| {
+        if (reg.own.items.len == 0) continue;
+        const share = reff[ri] / total * @as(f64, @floatFromInt(keep));
+        const k = @min(reg.own.items.len, @max(1, @as(usize, @intFromFloat(@round(share)))));
+        const tmp = try gpa.alloc(marl.Kernel, reg.own.items.len);
+        defer gpa.free(tmp);
+        for (reg.own.items, 0..) |g, i| tmp[i] = parent.kernels.items[g];
+        const sub = try sampleKernels(gpa, tmp, pts);
+        defer sub.deinit(gpa);
+        const sel = try novelty.selectExplaining(gpa, sub, target, k);
+        defer gpa.free(sel);
+        for (sel) |j| try out.append(gpa, tmp[j]);
+    }
+    // Refit the weights over the whole surviving basis, then let it move.
+    const picked = try sampleKernels(gpa, out.items, pts);
+    defer picked.deinit(gpa);
+    const w = try novelty.refit(gpa, picked, target);
+    defer gpa.free(w);
+    for (out.items, w) |*k, wv| k.p[marl.PARAMS - 1] = @floatCast(wv);
+    _ = try refine(gpa, out.items, pts, target, parent.opts.regions, o);
+    return out;
+}
+
+/// Put a set of kernels into a fresh model so it can resume learning.
+/// `compact` rebuilds ownership and every region's bound, which is the one
+/// place that knowledge lives.
+pub fn adopt(gpa: std.mem.Allocator, opts: marl.Options, ks: []const marl.Kernel) !marl.Model {
+    var m = try marl.Model.init(gpa, opts);
+    errdefer m.deinit();
+    for (ks) |k| {
+        var c = k;
+        // Drift is measured from where a kernel STARTS, and this one starts
+        // here — it is a new element, not the ancestor it was selected from.
+        c.mu0 = .{ c.p[0], c.p[1], c.p[2] };
+        c.m1 = .{0} ** marl.PARAMS;
+        c.m2 = .{0} ** marl.PARAMS;
+        c.t = 0;
+        c.updates = 0;
+        try m.kernels.append(gpa, c);
+    }
+    const dead = try gpa.alloc(bool, ks.len);
+    defer gpa.free(dead);
+    @memset(dead, false);
+    try m.compact(dead);
+    return m;
+}
+
+test "G60 wake: was the discarded freedom useful plasticity, or clutter?" {
+    // Christian's systems question, and he calls it the more consequential
+    // one: is overcompleteness advantageous DURING ACQUISITION, even if
+    // consolidation produces the better final representation?
+    //
+    //     grow -> fit -> consolidate -> resume learning
+    //
+    // Same parent, its consolidated child, the same new data stream, equal
+    // work, births on under identical policy. The new regime is the
+    // campaign's own modest move — `shift = {0, -0.10, 0}`, MARL-6 through
+    // MARL-9's — so old and new structure stay comparable.
+    //
+    // A second registered disagreement. Christian expects the parent to
+    // adapt faster (redundancy as scaffolding); the agent expects the child
+    // to keep up, on MARL-6's finding that 91% of committed capacity ends
+    // outside the current band after a move, and MARL-1's invariant. The
+    // agent lost the last one by reasoning from a property of the members
+    // rather than of the operation, which is the failure mode to watch.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+
+    var parent = try marl.Model.init(gpa, o);
+    defer parent.deinit();
+    try parent.stream_n(20_000);
+
+    // Sleep. Consolidated against the parent's own output.
+    const fitp = try marl.probes(gpa, 909, 4096);
+    defer {
+        gpa.free(fitp.p);
+        gpa.free(fitp.y);
+    }
+    const half = parent.kernels.items.len / 2;
+    var kids = try consolidate(gpa, &parent, fitp.p, half, .{});
+    defer kids.deinit(gpa);
+    var child = try adopt(gpa, o, kids.items);
+    defer child.deinit();
+
+    // The world moves.
+    var moved = marl.TruthParams{};
+    moved.shift = .{ 0, -0.10, 0 };
+    parent.opts.truth = moved;
+    child.opts.truth = moved;
+    const ho = try marl.probesOf(gpa, moved, 31337, 4096);
+    defer {
+        gpa.free(ho.p);
+        gpa.free(ho.y);
+    }
+
+    std.debug.print("\n  G60 [{s}] parent {d} kernels -> child {d} after sleep (budget {d})\n", .{
+        @tagName(builtin.mode), parent.kernels.items.len, child.kernels.items.len, half,
+    });
+    std.debug.print("  {s:>8}  {s:>8} {s:>8} {s:>9} {s:>7}   {s:>8} {s:>8} {s:>9} {s:>7}\n", .{ "exemplars", "P kern", "P births", "P RMS", "P upd", "C kern", "C births", "C RMS", "C upd" });
+
+    const marks = [_]u64{ 0, 5_000, 20_000, 60_000 };
+    var seen: u64 = 0;
+    var p_rms: [marks.len]f32 = undefined;
+    var c_rms: [marks.len]f32 = undefined;
+    const c0 = child.kernels.items.len;
+    const pb0 = parent.stats.births;
+    const cb0 = child.stats.births;
+    for (marks, 0..) |mark, mi| {
+        try parent.stream_n(mark - seen);
+        try child.stream_n(mark - seen);
+        seen = mark;
+        p_rms[mi] = try parent.rms(ho.p, ho.y, null);
+        c_rms[mi] = try child.rms(ho.p, ho.y, null);
+        // Mean updates per kernel — the mechanism, measured rather than
+        // inferred. MARL-1's invariant is that capacity you cannot TRAIN is
+        // worse than capacity you do not have, so if the child ends behind
+        // while carrying MORE kernels, this is where it should show.
+        std.debug.print("  {d:>9}  {d:>8} {d:>8} {d:>9.5} {d:>7.0}   {d:>8} {d:>8} {d:>9.5} {d:>7.0}\n", .{
+            mark, parent.kernels.items.len, parent.stats.births - pb0, p_rms[mi], parent.meanUpdates(),
+            child.kernels.items.len,        child.stats.births - cb0, c_rms[mi],  child.meanUpdates(),
+        });
+    }
+    const last = marks.len - 1;
+    const regrowth = @as(f64, @floatFromInt(child.kernels.items.len)) / @as(f64, @floatFromInt(c0));
+    std.debug.print("  child regrew {d:.3}x its post-sleep size, to {d:.3} of the parent's\n", .{
+        regrowth, @as(f64, @floatFromInt(child.kernels.items.len)) / @as(f64, @floatFromInt(parent.kernels.items.len)),
+    });
+    std.debug.print("  Christian: redundancy is SCAFFOLDING, parent adapts faster.  Agent: it is BAGGAGE, child keeps up.\n", .{});
+    std.debug.print("  final held-out: parent {d:.5}, child {d:.5} — child/parent {d:.4}, {s} was right\n", .{
+        p_rms[last], c_rms[last], c_rms[last] / p_rms[last],
+        if (c_rms[last] <= p_rms[last] * 1.05) "the AGENT" else "CHRISTIAN",
+    });
+
+    // The nulls first.
+    try testing.expect(c_rms[0] <= p_rms[0] * thresholds.OBS13_START_NULL);
+    try testing.expect(child.kernels.items.len > 0);
+    // Both arms learn something from the moved world.
+    try testing.expect(p_rms[last] < p_rms[0]);
+    try testing.expect(c_rms[last] < c_rms[0]);
+    // And the regrowth question.
+    try testing.expect(regrowth > thresholds.OBS13_REGROWTH);
+}

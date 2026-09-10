@@ -1523,3 +1523,103 @@ its own.
 
 Cost: G59 (a) is ~30 s. `python3 tools/obs12_predict.py` for the
 derivations.
+
+## OBS-13 / G60 — wake: scaffolding or clutter?
+
+Christian's systems question, and he was right to call it the more
+consequential one:
+
+> Is overcompleteness actually advantageous during acquisition, even if
+> consolidation produces the better final representation?
+
+Same parent, its consolidated child at half the population, the same new
+data stream, equal work, births on under identical policy. The new regime
+is the campaign's own modest move — `shift = {0, −0.10, 0}`, MARL-6 through
+MARL-9's — so old and new structure stay comparable and nothing needs a new
+constant.
+
+**The child is consolidated against the parent's own predictions, not
+against the truth.** That is the difference between sleep and cheating.
+OBS-11 used the truth because it was measuring representational quality; a
+lifecycle cannot.
+
+### A second registered disagreement, and the agent lost again
+
+| exemplars | P kern | P births | P RMS | P upd | C kern | C births | C RMS | C upd |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 623 | 0 | 0.13254 | 446 | 311 | 0 | 0.13375 | 0 |
+| 5 000 | 663 | 40 | 0.08985 | 546 | 551 | 240 | **0.08881** | 96 |
+| 20 000 | 712 | 89 | 0.07396 | 861 | 713 | 402 | **0.07138** | 375 |
+| 60 000 | 773 | 150 | **0.04793** | 1551 | 815 | 504 | 0.05726 | 1024 |
+
+The agent predicted the child would keep up (MARL-6's *91% of committed
+capacity ends outside the current band*, MARL-1's invariant). Christian
+predicted the parent would adapt faster.
+
+**Both are right, at different horizons — and that is the finding.** The
+child is *ahead* through 20 000 exemplars and the parent pulls clearly
+away by 60 000, ending at 0.04793 against 0.05726.
+
+### The mechanism, measured rather than inferred
+
+The child ends with **more kernels than the parent** (815 against 773) and
+is **19% worse**. It bought 504 births against the parent's 150 — 3.4× —
+and regrew to **1.054× the parent's size**.
+
+The last column says why. **Mean updates per kernel: 1551 against 1024.**
+The child's population is younger and less trained, because it had to
+re-acquire what the parent still held. MARL-1's invariant, sixth sighting:
+*capacity you cannot train is worse than capacity you do not have* — and
+here it is the consolidation itself that created the untrainable capacity,
+by discarding trained structure the moved world still had a use for.
+
+    the child regrew to the parent's size and did not recover the parent's
+    accuracy
+
+So the parent's redundancy was not merely *more kernels*. It was **kernels
+already trained, in places the moved world still needed**. Regrowing the
+count does not regrow the training, and MARL-9's law says exactly that:
+capacity is paid per thing learned, and the child had to pay again.
+
+### What this does and does not settle
+
+**Settles**: redundancy is not clutter. On this move it is scaffolding, and
+the advantage is real but *late* — invisible at 20 000 exemplars and clear
+at 60 000. A shorter experiment would have concluded the opposite, which is
+worth recording as a methodological warning: an adaptation comparison
+truncated early can invert.
+
+**Does not settle**: whether the cycle is a ratchet. Christian's strongest
+outcome — *parent faster, child better after a second sleep* — is untested,
+and deliberately: one cycle first, so the adaptation comparison is not
+entangled with a second consolidation's own gain. The child ending behind
+after one wake does not decide it, because the question is what a *second*
+sleep does to each.
+
+**And it points at the fix.** The child was penalised for youth, not for
+size. Two things follow, neither built here:
+
+- **Consolidation should preserve training state, not only structure.** A
+  synthesised kernel arrives with `updates = 0` and Adam's moments cleared;
+  a fairer child would inherit an effective update count from the ancestors
+  it replaced. That is a small change with a clear prediction.
+- **This is the myopia OBS-11 recorded.** The consolidation optimised the
+  parent's output *under the old measure*. The moved world needed structure
+  the old measure said was redundant — which is exactly the case a replay
+  measure $\mu_{\text{replay}}$ exists for. Christian's third outcome, and
+  the data supports it: the criterion is myopic, and the objective is what
+  is myopic about it.
+
+### The rule, as it now stands
+
+    Growth acquires possibilities.
+    Novelty identifies redundancy.
+    Effective rank sets the consolidation budget.
+    The target determines what survives.
+    Synthesis rewrites the basis.
+    Wake tests whether the discarded freedom was useful plasticity.
+
+— and OBS-13's answer to the last line is **yes, on a moved world, and
+late**. Which makes the sixth line's objective the next thing to widen.
+
+Cost: G60 is ~90 s. `python3 tools/obs13_predict.py` for the derivations.

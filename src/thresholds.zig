@@ -3534,4 +3534,25 @@ pub const OBS11_BETTER_THAN_FULL: f64 = 1.0;
 /// Not asserted; the gate asserts the ordering instead.
 pub const OBS12_ORTHOGONAL: f64 = 0.10;
 
+/// G60: the consolidated child's initial error on the moved world, over the
+/// parent's. PROPOSED as a CEILING at 1.25.
+///
+/// THE NULL. The child starts with half the kernels so it may be worse; if
+/// it starts MUCH worse, the consolidation damaged what transferred and the
+/// adaptation comparison is confounded from step zero.
+pub const OBS13_START_NULL: f32 = 1.25;
+
+/// G60: the child's final population over its post-sleep size. PROPOSED as
+/// a FLOOR at 1.5.
+///
+/// Christian: "if the child immediately regrows the same kinds of kernels
+/// that sleep removed, then the consolidation criterion is too myopic or
+/// the environment genuinely requires them." MARL-7 measured ~1 000 kernels
+/// a move at flat accuracy, so regrowth is expected; what it MEANS is not
+/// settled by the number alone, and the pre-registration says so. A child
+/// that regrows to the parent's size and matches its accuracy has shown the
+/// cycle is neutral; one that regrows and ends BETTER has shown it is a
+/// ratchet.
+pub const OBS13_REGROWTH: f64 = 1.5;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

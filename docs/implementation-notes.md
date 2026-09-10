@@ -7737,3 +7737,45 @@ overcomplete model may be the better LEARNING representation while the
 consolidated one is the better INFERENCE representation.
 
 Validation: G59 (a) passes ReleaseSafe; G58 unmoved; smoke set clean. ~30 s.
+
+## OBS-13 / G60 — wake: scaffolding or clutter?
+
+Same parent, its consolidated child at half the population, the same new
+stream, equal work, births on under identical policy, new regime =
+shift {0,-0.10,0} (the campaign's own modest move). The child is
+consolidated against the PARENT'S OWN PREDICTIONS, not the truth — sleep
+reorganises what a model has, and a child handed the truth would start
+knowing what its parent had to learn.
+
+A second registered disagreement, and both parties were right at different
+horizons. Child ahead through 20k (.07138 vs .07396); parent clearly ahead
+by 60k (.04793 vs .05726, child/parent 1.195).
+
+The mechanism, measured rather than inferred. The child ends with MORE
+kernels than the parent (815 vs 773) and is 19% worse, having bought 504
+births against 150 and regrown to 1.054x the parent's size. Mean updates
+per kernel: parent 1551, child 1024. The child's population is younger and
+less trained because it had to re-acquire what the parent still held.
+MARL-1's invariant, and here the consolidation itself created the
+untrainable capacity by discarding trained structure the moved world still
+needed. The child regrew to the parent's size and did not recover its
+accuracy: regrowing the count does not regrow the training, which is
+MARL-9's law read from the other side.
+
+Settles: redundancy is scaffolding on this move, and the advantage is LATE —
+invisible at 20k, clear at 60k. An adaptation comparison truncated early
+would have concluded the opposite; recorded as a methodological warning.
+
+Does not settle: whether the cycle is a ratchet. Christian's strongest
+outcome — parent faster, child better after a SECOND sleep — is untested and
+deliberately so, one cycle first.
+
+Points at two fixes, neither built. Consolidation should preserve TRAINING
+STATE and not only structure: a synthesised kernel arrives with updates = 0
+and Adam's moments cleared, where a fairer child would inherit an effective
+update count from the ancestors it replaced. And this is the myopia OBS-11
+recorded — the consolidation optimised the parent's output under the OLD
+measure, and the moved world needed structure that measure called redundant,
+which is what a replay measure exists for.
+
+Validation: G60 passes ReleaseSafe; smoke set clean. G60 ~90 s.
