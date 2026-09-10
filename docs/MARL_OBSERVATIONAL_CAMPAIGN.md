@@ -1981,3 +1981,57 @@ established as the dominant knob and nothing says what should be *in* it.
 **Effective-age inheritance** is unaffected.
 
 Cost: G64 is ~4 min. `python3 tools/obs17_predict.py` for the derivations.
+
+### Where OBS-17 leaves the control problem (Christian, after the run)
+
+The two axes are mechanically distinct, and naming them separately is what
+the phase bought:
+
+    f(N)  ESTIMATION QUALITY — how well the replacement basis can be fitted
+    g(k)  INFORMATION DESTRUCTION — how much burden is placed on it
+
+One governs how well you can fit; the other how much you are asking. ρ
+collapsed them into a single number and they can move it in opposite
+directions, which is why the matched-ρ table has the same ratio giving
+−0.412 and +0.324.
+
+**The control problem inverts.** Not a maximum $k$ derived from replay size,
+but a minimum below which consolidation turns destructive:
+
+$$k_{\min} = K(N,\ \text{current basis},\ \text{target}), \qquad k < k_{\min} \Rightarrow \text{destructive}$$
+
+with sleep choosing $k_{\text{keep}} \ge k_{\min}$. Which fits the data
+exactly: small replay → high $k_{\min}$ → barely compress, or do nothing at
+all; large replay → lower $k_{\min}$ → stronger consolidation becomes safe.
+
+So evidence governs **how aggressively you may rewrite the representation**,
+not the final model size. And two things that were being conflated:
+
+    CONSOLIDATION BENEFIT   what a sleep gains
+    COMPRESSION TOLERANCE   how much it may cut before it loses
+
+Evidence raises both. They are not the same quantity, and the best cell in
+G64's table — most evidence, *least* compression — is the reminder that
+sleep is not trying to maximise compression. Compression is only useful
+insofar as it improves the representation.
+
+    **Evidence does not licence stronger compression; it makes a given
+    compression less destructive.**
+
+### The queue, as it stands
+
+1. **Replay composition.** Now the obvious next question, because quantity
+   and geometry are finally separated. Equal-sized rings, same $N$, same
+   $k$, same optimiser, differing only in the measure: uniform historical,
+   recent-biased, error-biased, novelty/coverage-biased. Nothing can then
+   hide behind sample count or compression severity. Expect a **Pareto
+   surface** rather than a winner — immediate post-sleep RMS, retention of
+   older regimes, and adaptation speed after the next shift will trade.
+2. **Ratchet, at fixed $N$ and fixed $k$** — the correct control now that
+   fixed ρ is refuted, and simpler than what it replaces.
+3. **Effective-age inheritance**, unaffected by any of this and still owed:
+   $u_{\text{child}} = \sum_i \alpha_i u_i / \sum_i \alpha_i$ weighted by
+   ancestor contribution, with optimiser moments left alone.
+4. **$k_{\min}$ as a measured function** rather than a threshold — the
+   crossing was near $k \approx 150$ of 703 at $N = 8192$, and one point is
+   not a function.
