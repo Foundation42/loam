@@ -7582,3 +7582,62 @@ Not claimed: no default changes, birth is discussed and not rebuilt, and the
 which would need MARL's locality exploited.
 
 Validation: G56 (a/b/c) pass ReleaseSafe; smoke set clean. G56 ~25 s.
+
+## OBS-10 / G57 — local rank reduction, and what geometry cannot decide
+
+Christian's spec after OBS-9's batch failure: not "which diagonal entries are
+small" but "how much dimension does this set add", with r_eff = exp(-sum p_i
+ln p_i) over the cluster Gram's normalised eigenvalues sizing it. Local rank
+reduction rather than pruning.
+
+Precondition holds: mean r_eff/k across a learned model's regions is .673 —
+379.4 effective dimensions over 623 members.
+
+The predicted ordering (batch > random > staged >= spectral) is REFUTED on
+its last step. The span-driven arm scores .826/1.054/1.062 at 25/50/75%
+pruned — behind RANDOM at half and three quarters, let alone staged's
+.661/.698/.866. There is no crossover; it loses everywhere.
+
+And it is the criterion, not the clustering. Regions are a lattice partition
+and a kernel's reach is a whole region edge, so the obvious suspect was
+cross-face overlap. Taking the clustering out entirely — pivoted QR over the
+whole basis — gives 1.094/1.081/.987 and does not help. Pivoted QR selects a
+well-conditioned SPANNING subset, optimal for reconstructing an arbitrary
+function in the span; a model has ONE target, and a geometrically
+distinctive kernel sitting where the field is flat displaces one the model
+leans on. This is OBS-9's own registered escape hatch arriving.
+
+selectExplaining differs from selectSpanning in the score alone — the drop
+in the target's residual energy, which is orthogonal matching pursuit. It
+beats staged by 2.1x at every fraction (.486/.470/.476 of staged's excess),
+and at three quarters pruned reaches RMS .0707 keeping 156 of 623 kernels,
+against random's .1019 and the full basis's .0489.
+
+    the spectrum sizes the set; the TARGET chooses the members
+
+Both halves are needed and answer different questions. r_eff says how many
+degrees of freedom a cluster deserves; the target says which members carry
+them. Sizing is not selecting, and the phase's failure was assuming one
+operation could do both.
+
+Work went as locality predicted, enormously: target-driven selection is
+39/32/21 ms against the staged diagonal's 2671/1998/1500 — 68x cheaper AND
+better on every axis. Staged factorises the whole basis per stage; the
+clustered methods factorise each region, block-diagonal by construction.
+
+G57(b): OBS9_SAME_PRIMITIVE, frozen at 1e-6 after its post-hoc correction,
+validated on a basis G56 never saw (OBS-8's axis-B 5x5 on [0,1]) at 1.67e-7,
+with no further adjustment. Christian's condition for accepting the move.
+
+So the pattern gains a clause: individuals live on the diagonal,
+representations live in the spectrum, and THE OBJECTIVE LIVES IN NEITHER.
+Geometry tells you the shape of the redundancy and cannot tell you which of
+two equally redundant members to keep. A consolidation rule wants novelty to
+rank, r_eff to budget, and the target to select.
+
+Not claimed: representatives are SELECTED, never synthesised — turning "keep
+2 of 8" into "make 2 new ones" is MARL-14's distillation and is deliberately
+separate. Cross-region overlap is shown not to matter for the criterion and
+is untested for the budgeting.
+
+Validation: G57 and G57(b) pass ReleaseSafe; smoke set clean. G57 ~40 s.

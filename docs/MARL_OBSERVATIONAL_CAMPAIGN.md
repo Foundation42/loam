@@ -1200,3 +1200,126 @@ exploited, which is an implementation question and deliberately separate
 from whether the quantity is right.
 
 Cost: G56 is ~25 s. `python3 tools/obs9_predict.py` for the derivations.
+
+## OBS-10 / G57 — local rank reduction: the spectrum sizes the set, the target chooses the members
+
+Christian, on OBS-9's batch failure: the question is not *which diagonal
+entries are small* but *how much dimension does this set actually add* — and
+that is spectral. With
+
+$$r_{\text{eff}} = \exp\!\left(-\sum_i p_i\ln p_i\right),\qquad p_i = \lambda_i/\textstyle\sum_j\lambda_j$$
+
+a cluster of eight with $r_{\text{eff}}=2.3$ is asking to be replaced by two
+or three. **You are no longer deleting weak kernels; you are performing
+local rank reduction.**
+
+### The precondition holds
+
+Mean $r_{\text{eff}}/k$ across a learned model's regions is **0.673** —
+379.4 effective dimensions over 623 members. The clusters really are
+lower-dimensional than their membership, so there is rank to reduce.
+
+### The ordering was refuted on its last step
+
+| pruned | random | staged | spanning | global | **target** | stg | spn | glb | **tgt** |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 25% | 0.061526 | 0.057240 | 0.059329 | 0.062720 | **0.052936** | 0.661 | 0.826 | 1.094 | **0.321** |
+| 50% | 0.076081 | 0.067857 | 0.077541 | 0.078276 | **0.057799** | 0.698 | 1.054 | 1.081 | **0.328** |
+| 75% | 0.101888 | 0.094772 | 0.105151 | 0.101178 | **0.070734** | 0.866 | 1.062 | 0.987 | **0.412** |
+
+Predicted: batch > random > staged ≥ spectral. **Refuted at the last step.**
+The span-driven spectral arm comes in at 1.054 and 1.062 — *behind random*,
+let alone staged. There is no crossover; it loses at every fraction.
+
+### And it is the criterion, not the clustering
+
+The obvious suspect was the partition: regions are a lattice, a kernel's
+reach is a whole region edge, so supports cross faces massively and each
+region keeps representatives of a subspace its neighbour also kept. So the
+clustering was taken out entirely — pivoted QR over the whole basis at once.
+
+**It does not help** (1.094 / 1.081 / 0.987). The partition was not the
+problem.
+
+Pivoted QR selects a well-conditioned **spanning** subset, which is optimal
+for reconstructing an *arbitrary* function in the span. A model has **one**
+target. A kernel that is geometrically distinctive but sits where the field
+is flat displaces one the model leans on.
+
+This is OBS-9's own registered escape hatch arriving: *novelty could be a
+correct description of redundancy and still be a poor ranking, if what
+matters is the product of redundancy and weight rather than redundancy
+alone.*
+
+### One line different, and it resolves
+
+Score a member by what it **explains** — the drop in the target's residual
+energy — rather than by what it spans. That is orthogonal matching pursuit,
+and `selectExplaining` differs from `selectSpanning` in the score alone.
+
+    against staged:  spanning 1.250 1.510 1.226
+                     global   1.655 1.549 1.140
+                     TARGET   0.486 0.470 0.476
+
+**The target-driven selector beats staged by 2.1× at every fraction**, and
+at three quarters pruned — 156 kernels of 623, a fourfold reduction — it
+reaches RMS 0.0707 where random reaches 0.1019 and the full basis sits at
+0.0489.
+
+    the spectrum sizes the set; the TARGET chooses the members
+
+Both halves are needed and they answer different questions. $r_{\text{eff}}$
+says *how many degrees of freedom this cluster deserves*; the target says
+*which members carry them*. Sizing is not selecting, and OBS-10's failure
+was assuming one operation could do both.
+
+### The work went the way locality predicted
+
+    selection cost, 25% / 50% / 75% pruned
+      staged diagonal    2671   1998   1500 ms
+      spanning            32     28     18 ms
+      global             566    452    263 ms
+      TARGET              39     32     21 ms
+
+The registered 5× held enormously: **the target-driven method is 68× cheaper
+than the staged diagonal and better on every axis.** Staged factorises the
+whole basis once per stage; the clustered methods factorise each region,
+which is block-diagonal by construction because distant kernels do not
+overlap at all. The method with more linear algebra in its description has
+less of it in its execution, and MARL's own locality is why.
+
+### The frozen threshold, validated
+
+`OBS9_SAME_PRIMITIVE` was moved 1e-9 → 1e-6 after observing a failure, with
+the numerical reason identified, the replacement derived from the observed
+separation scale, and the change disclosed as post hoc. Christian: *freeze
+1e-6 now and make the next unseen fixture the actual validation of it.*
+
+G57 (b) re-checks it on OBS-8's axis-B basis — 5×5 on [0,1], which G56 never
+ran — with no further adjustment: **1.67e-7**. Held.
+
+### What OBS-10 leaves
+
+The larger pattern Christian named holds and gets one more term:
+
+    birth added things; distillation removed things; operator inference
+    added new KINDS of things — and all three live in the geometry of
+    subspace change under an observation measure
+
+    individuals live on the diagonal; representations live in the spectrum;
+    and the OBJECTIVE lives in neither
+
+The third clause is this phase's contribution. Geometry tells you the shape
+of the redundancy and cannot tell you which of two equally redundant members
+to keep — that needs the thing you are trying to explain. A consolidation
+rule wants all three: novelty to rank, $r_{\text{eff}}$ to budget, and the
+target to select.
+
+Not claimed: representatives are still **selected**, never synthesised.
+Turning "keep 2 of 8" into "make 2 new ones" is MARL-14's distillation and
+is deliberately separate, so that the rank decision is measured apart from
+the fitting of new elements. Clusters are MARL's own regions and
+cross-region overlap at the faces is neglected — shown here not to matter
+for the criterion, but untested for the *budgeting*.
+
+Cost: G57 is ~40 s. `python3 tools/obs10_predict.py` for the derivations.

@@ -3410,4 +3410,55 @@ pub const OBS9_LEARNED_COND: f64 = 100;
 /// which SET is replaceable where the diagonal only says which member is.
 pub const OBS9_PRUNE: f64 = 0.50;
 
+/// G57: mean effective rank over cluster membership, across a learned
+/// model's regions. PROPOSED as a CEILING at 0.70.
+///
+/// THE PRECONDITION, registered first. r_eff = exp(-sum p_i ln p_i) with
+/// p_i the normalised eigenvalues of the cluster's Gram: k equal
+/// eigenvalues give exactly k, one dominant gives ~1. If a cluster of k
+/// members carries k effective dimensions there is no rank to reduce and
+/// everything after this measures an allocation of nothing.
+pub const OBS10_LOW_RANK: f64 = 0.70;
+
+/// G57: |spectral/staged - 1| at a QUARTER pruned. PROPOSED as a CEILING
+/// at 0.10 — the two methods within ten per cent of each other.
+///
+/// Christian: "it would be very useful if the spectral method only wins
+/// once the pruning fraction becomes large enough. That would tell you
+/// where the extra linear algebra actually pays for itself." Registered as
+/// a CROSSOVER rather than a win, because a method that wins everywhere
+/// says nothing about when to reach for it. At a light prune almost every
+/// cluster keeps enough members to span itself, so the allocation has
+/// nothing to decide and both are removing the same nearly-redundant tail.
+pub const OBS10_CROSSOVER_NEAR: f64 = 0.10;
+
+/// G57: spectral/staged at THREE QUARTERS pruned. PROPOSED as a CEILING at
+/// 0.90 — spectral ahead by at least ten per cent.
+///
+/// The other side of the crossover. At a heavy prune the budget is scarce,
+/// and PROPORTIONING it by dimension rather than by rank order is the whole
+/// difference: the diagonal ranks members, the spectrum sizes the set.
+pub const OBS10_CROSSOVER_WIN: f64 = 0.90;
+
+/// G57: the TARGET-driven selector's excess over the staged diagonal's, at
+/// three quarters pruned. PROPOSED as a CEILING at 1.0 — it must at least
+/// match the arm it is replacing, at the fraction where sizing matters most.
+///
+/// Written after `OBS10_CROSSOVER_NEAR` and `_WIN` were refuted, and
+/// recorded as such. The span-driven selector loses to staged everywhere
+/// and to RANDOM at half and three quarters; taking the clustering out
+/// entirely does not help, so it is the criterion and not the partition.
+/// Pivoted QR picks a well-conditioned SPANNING subset, optimal for
+/// reconstructing an arbitrary function in the span — and a model has one
+/// target, so a geometrically distinctive kernel sitting where the field is
+/// flat displaces one the model leans on.
+///
+/// This is OBS-9's own registered escape hatch arriving: "novelty could be
+/// a correct description of redundancy and still be a poor ranking, if what
+/// matters for removal is the product of redundancy and weight rather than
+/// redundancy alone."
+///
+///     the spectrum sizes the set; the TARGET chooses the members
+pub const OBS10_TARGET_WINS: f64 = 1.0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
