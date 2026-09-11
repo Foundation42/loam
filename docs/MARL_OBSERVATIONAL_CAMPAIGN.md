@@ -2876,3 +2876,150 @@ dominates.
 
 Cost: G67 is ~8 min 45 s — thirteen sleeps. `python3 tools/obs20_predict.py`
 for the pre-registration.
+
+## OBS-21 / G68 — targeted revisiting, and a contract that had to be fixed first
+
+OBS-19 found a **`t_min`**: consolidating soon after a regime change was
+destructive under every rule tested. OBS-20 fixed label validity by
+*discarding* history, and Astra retired the obvious way to get a wider valid
+pool — detecting the move **deletes** those observations rather than
+relabelling them.
+
+The lever left is **re-observation**: spending a real observation to ask
+again at a location the model **chooses**. `observe(q, y)` has taken an
+external exemplar since MARL-0; no phase had ever chosen `q`.
+
+### A re-observation is an observation
+
+This is the phase's load-bearing design decision, and the first version got
+it wrong. Re-observation now **pushes into the ring and evicts the oldest**,
+exactly as a fresh draw does. So every placement slides the window by the
+same 4 096 and every mode lands at exactly 0.500 pre-move: **eligibility is
+identical by construction**, not merely equal in old-share.
+
+The gate asserts the ring's own invariants — nothing older than `n − W`, and
+`t % W == slot`.
+
+> **The superseded run, kept as historical evidence.** The first version
+> mutated slots *in place* and advanced `Window.n`. Astra measured the
+> consequences: **2 709 entries older than the cutoff retained, 881 of them
+> selected into a sleep**, and the timestamp-to-slot mapping destroyed. It
+> reported a mean aimed lift of **+0.39**. *A green gate does not resolve a
+> contract it never asserts* — and this gate asserted nothing about the
+> window at all.
+
+With eligibility pinned, the comparison has an honest name: **targeted
+versus uniform acquisition.** `fresh` is the incumbent — it is simply "keep
+observing" — and `revisit` isolates *targeting* from *re-asking*.
+
+Two further corrections went in with it. **k is fixed at the branch point**,
+where the first version took it from each mode's own post-budget population
+and delivered 344 / 346 / 343. And targeting now ranks by stored surprise
+over the **whole window**, where the first version chose among slots with
+`t < WAKE_A` — the known change boundary, and therefore an oracle.
+
+### The table
+
+Two acquisition trajectories, two sleep selections each. `lift` is what the
+sleep did; the budget improves the model on its own, and crediting the sleep
+with that would answer a different question.
+
+| mode | acq | parent | hits | budget alone | after sleep | **lift** |
+|---|---|---|---|---|---|---|
+| *no budget* | 1234 | 675 | — | 0.09525 | 0.12393 | **−0.3010** |
+| fresh | 1234 | 688 | 0 | 0.08491 | 0.10910 / 0.11053 | −0.2850 / −0.3018 |
+| **aimed** | 1234 | 689 | **1359** | **0.07697** | **0.06885 / 0.07022** | **+0.1054 / +0.0877** |
+| revisit | 1234 | 686 | 408 | 0.09197 | 0.10257 / 0.10392 | −0.1153 / −0.1299 |
+| *no budget* | 5678 | 686 | — | 0.10151 | 0.12216 | **−0.2034** |
+| fresh | 5678 | 699 | 0 | 0.08589 | 0.10164 / 0.09757 | −0.1834 / −0.1360 |
+| **aimed** | 5678 | 690 | **1357** | **0.07606** | **0.07136 / 0.07134** | **+0.0618 / +0.0621** |
+| revisit | 5678 | 693 | 400 | 0.08951 | 0.10357 / 0.09735 | −0.1571 / −0.0877 |
+
+| mode | mean after | acq spread | sel spread |
+|---|---|---|---|
+| fresh | 0.10471 | 0.01021 | 0.00407 |
+| **aimed** | **0.07044** | 0.00182 | 0.00136 |
+| revisit | 0.10185 | 0.00279 | 0.00622 |
+
+### The finding
+
+> Across two acquisition trajectories and two sleep selections each,
+> **targeted revisiting produced lower post-sleep error than either uniform
+> alternative.** Sleep improved the targeted models by **6–11%**, while
+> worsening both alternatives, under matched observation budgets and
+> within-trajectory kernel budgets.
+
+`aimed` clears `fresh` by 3.4× and `revisit` by 5.0× the worst relevant
+spread. And the no-budget reference reproduces OBS-19's destructive early
+consolidation **qualitatively** — not its numerical checkpoint; −0.3010 and
+−0.2034 are G68's own references.
+
+**Acquisition replication earned its cost immediately.** `fresh`'s
+acquisition spread (0.01021) is 2.5× its selection spread (0.00407), and it
+is the spread that governs the headline margin. Two sleep-time draws could
+never have seen it. *It varies the whole life including the branch model, so
+it is not acquisition-stage randomness isolated at a fixed parent* — it
+captures variability that selection-only replication misses, and no more.
+
+### What "hits" counts, and what it does not
+
+Only 0.0944 of this cube is contested, so a budget placed at uniformly
+chosen window locations lands on that share and no more: a derived **387**,
+measured at **408 and 400**. Targeted placement reaches **1359 and 1357**.
+
+**This counts contested locations observed, not wrong labels repaired.**
+Selection ranges over the whole window including already-current entries,
+and a push leaves the older copy in place until it expires. What the numbers
+establish is **targeting concentration**, which is what the phase needs and
+is not the same claim.
+
+### Two things that survive from the first run
+
+**Targeted acquisition is a better use of a budget than fresh draws before
+any sleep at all** — 0.0770/0.0761 against 0.0849/0.0859. That is MARL-4's
+routing result reappearing at consolidation time. And **untargeted
+revisiting is worse than fresh draws** (0.0920/0.0895), because it re-asks
+where the model was already right.
+
+### What is not claimed
+
+**The compounding claim is withdrawn.** Sleep-time selection does reach for
+the targeted entries — the selected buffer reads 0.400 against the
+alternatives' ~0.476 — and the first write-up called that a *compounding* of
+repair with reprioritisation. Astra froze the acquired model, labels,
+timestamps and selection seeds and restored the original scores: the share
+moved to **0.276**, the wrong way. Targeting entries that already carried
+high weight is sufficient; rescoring partly *offsets* it. Under the
+corrected semantics nothing is rescored in place at all, so the question
+dissolves rather than being answered.
+
+**And the cost of the correction cannot be attributed.** The corrected
+experiment reduced mean aimed lift from about **+0.39 to +0.079** — but it
+changed five things at once: the ring semantics, a fixed k, the removal of
+the change-boundary oracle, the candidate population targeting draws from,
+and a second acquisition trajectory. *Attributing most of that reduction to
+the expired entries would need a matched ablation, which was not run.*
+
+**Still confounded:** observations and k are matched within a trajectory;
+parent populations are not (688 / 689 / 686). This is a query-budget
+comparison and not a fixed-compute or fixed-representation one.
+
+### Still owed
+
+- **A matched ablation** of the five corrections, if the size of the effect
+  ever matters as much as its sign.
+- **One budget size**, equal to M by construction, which is what makes the
+  arithmetic match exact.
+- **Acquisition-stage randomness at a fixed parent**, which this design
+  cannot separate from trajectory variation.
+- **Retention is not claimed.** The arms differ in more than one thing.
+- **Nothing here detects that a move happened.** The budget is spent because
+  the experiment says so.
+
+Cost: G68 is ~7 min 55 s — fourteen sleeps, six full re-runs of the life.
+`python3 tools/obs21_predict.py` for the pre-registration.
+
+*The window-contract violation, the frozen-score control that refuted
+compounding, the acquisition-replication requirement, the change-boundary
+oracle, the hits/repairs distinction and the caution against attributing the
+fivefold reduction are all Astra's.*

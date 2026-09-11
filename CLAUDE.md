@@ -119,6 +119,8 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/obs19_predict.py                 # ... its pre-registration; tau DERIVED from the soft edge, and a clamp rejected before the run
     zig build test -Dtest-filter="G67"             # OBS-20: the HARD cutoff -- the synthesis exists; first replay policy to beat the ring
     python3 tools/obs20_predict.py                 # ... its pre-registration; the pool is a SHARED object, so the contract is asserted not argued
+    zig build test -Dtest-filter="G68"             # OBS-21: RE-OBSERVATION -- you can pay to consolidate early, but only if you AIM
+    python3 tools/obs21_predict.py                 # ... its pre-registration; the cost match is arithmetic, and FRESH is the control
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a

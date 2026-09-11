@@ -3500,3 +3500,303 @@ test "G67 a hard cutoff: does error selection pay when the pool is shared?" {
     });
     std.debug.print("     NOT resource-matched against the ring: both hard arms retain W = {d} observations plus the selected {d}-slot buffer, and scan the pool at selection time. Against EACH OTHER they are matched exactly\n", .{ CLEAN, N });
 }
+
+test "G68 targeted re-observation: can you pay to consolidate early?" {
+    // OBS-19 found a `t_min`: consolidating soon after a regime change was
+    // destructive under every rule tested, because with M fresh observations
+    // for N slots at least (N-M)/N of any buffer is stale by arithmetic.
+    // OBS-20 fixed label validity by DISCARDING history, and Astra retired
+    // the obvious way to get a wider valid pool: detecting the move deletes
+    // those observations rather than relabelling them.
+    //
+    // The lever left is RE-OBSERVATION — spending a real observation to ask
+    // again at a location the model CHOOSES. `observe(q, y)` has taken an
+    // external exemplar since MARL-0; no phase had ever chosen q.
+    //
+    // **A RE-OBSERVATION IS AN OBSERVATION.** It pushes into the window and
+    // evicts the oldest, exactly as a fresh draw does. The first version of
+    // this gate instead mutated slots IN PLACE and advanced `Window.n`,
+    // which retained 2 709 entries older than the cutoff, put 881 of them
+    // into a sleep, and destroyed the `t % W == slot` mapping the ring
+    // depends on. Astra measured all of it. Equal old-share is NOT equal
+    // eligibility, and a green gate does not resolve a contract it never
+    // asserts — so the contract is asserted here.
+    //
+    // With both modes pushing, eligibility is IDENTICAL BY CONSTRUCTION and
+    // the only difference left is WHERE the budget's observations were
+    // placed. That is the honest name for this phase: TARGETED versus
+    // UNIFORM ACQUISITION.
+    //
+    // `tools/obs21_predict.py` is where the numbers were frozen.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const N: usize = 8192;
+    const W: usize = 2 * N;
+    const WAKE_A: u64 = 30_000;
+    const M: u64 = 4_096;
+    const BUDGET: usize = thresholds.OBS21_BUDGET;
+
+    const world_a = marl.TruthParams{};
+    var world_b = marl.TruthParams{};
+    world_b.shift = .{ 0, -0.10, 0 };
+
+    const ha = try marl.probesOf(gpa, world_a, 31337, 4096);
+    const hb = try marl.probesOf(gpa, world_b, 31337, 4096);
+    defer {
+        gpa.free(ha.p);
+        gpa.free(ha.y);
+        gpa.free(hb.p);
+        gpa.free(hb.y);
+    }
+
+    const Mode = enum { fresh, aimed, revisit };
+    const modes = [_]Mode{ .fresh, .aimed, .revisit };
+    const names = [_][]const u8{ "fresh", "aimed", "revisit" };
+    // ACQUISITION is replicated, not only selection. Two whole lives per
+    // mode, each with its own stream — Astra's point 3, and the two
+    // sleep-time draws alone could never have spoken to it.
+    const acq = [_]u64{ 1234, 5678 };
+    const sel = [_]u64{ 0x33, 0x44 };
+
+    std.debug.print("\n  G68 [{s}] W = 2N = {d}, budget {d} placed {d} observations after the move; {d} acquisitions x {d} selections per mode\n", .{
+        @tagName(builtin.mode), W, BUDGET, M, acq.len, sel.len,
+    });
+
+    const Cell = struct { after: f64, lift: f64, held: f64, old: f64 };
+    var cell: [modes.len][acq.len][sel.len]Cell = undefined;
+    var hits: [modes.len][acq.len]usize = undefined;
+    var post: [modes.len][acq.len]f64 = undefined;
+    var parentk: [modes.len][acq.len]usize = undefined;
+    var ref_after: [acq.len]f64 = undefined;
+    var ref_before: [acq.len]f64 = undefined;
+    var keep_of: [acq.len]usize = undefined;
+
+    for (acq, 0..) |aseed, ai| {
+        for (modes, 0..) |mode, mi| {
+            // Every mode re-runs the whole life from this acquisition's
+            // seeded stream, so all three reach the branch at a bit-identical
+            // model. Cheaper and more honest than a deep clone.
+            var m = try marl.Model.init(gpa, o);
+            defer m.deinit();
+            var win = try Window.init(gpa, W);
+            defer win.deinit(gpa);
+            var st = rng.Stream.region(aseed, 0x4f32_3152, 0); // "O21R"
+            var none: [0]*Replay = .{};
+            var wins = [_]*Window{&win};
+            try wakeInto(&m, WAKE_A, &none, &wins, &st);
+            m.opts.truth = world_b;
+            try wakeInto(&m, M, &none, &wins, &st);
+            const before = try m.rms(hb.p, hb.y, null);
+
+            // **k is fixed at the BRANCH POINT**, so every mode consolidates
+            // to the same number of kernels. The first version took k from
+            // each mode's own post-budget population and delivered 344 / 346
+            // / 343 — unequal k, which is OBS-18's mistake in a new costume.
+            if (mi == 0) {
+                keep_of[ai] = m.kernels.items.len / 2;
+                ref_before[ai] = before;
+                var ref = try Replay.initWith(gpa, N, .err, sel[0]);
+                defer ref.deinit(gpa);
+                win.selectInto(&ref);
+                var rc = try sleepOn(gpa, &m, ref.x[0..N], ref.y[0..N], keep_of[ai], .{ .exact = true });
+                defer rc.deinit();
+                rc.opts.truth = world_b;
+                ref_after[ai] = try rc.rms(hb.p, hb.y, null);
+                std.debug.print("     acq {d}: branch model {d} kernels, k = {d}, before {d:.5}; NO-BUDGET reference sleeps to {d:.5}, lift {d:.4}\n", .{
+                    aseed, m.kernels.items.len, keep_of[ai], before, ref_after[ai], 1 - ref_after[ai] / before,
+                });
+            } else {
+                try testing.expectEqual(ref_before[ai], before);
+            }
+
+            // ── SPEND THE BUDGET. Three placements, one arithmetic.
+            var chosen = try gpa.alloc(usize, W);
+            defer gpa.free(chosen);
+            var nh: usize = 0;
+            switch (mode) {
+                .fresh => try wakeInto(&m, BUDGET, &none, &wins, &st),
+                .aimed, .revisit => {
+                    for (0..W) |i| chosen[i] = i;
+                    if (mode == .aimed) {
+                        // Highest stored surprise, over the WHOLE window.
+                        // **No staleness filter** — an earlier version chose
+                        // among slots with `t < WAKE_A`, which is the known
+                        // change boundary and therefore an oracle. Astra's
+                        // point 4. A deployable policy does not know when the
+                        // world moved.
+                        std.mem.sort(usize, chosen, win.s, struct {
+                            fn lt(sv: []const f32, x: usize, y: usize) bool {
+                                return sv[x] > sv[y];
+                            }
+                        }.lt);
+                    } else {
+                        var sh = rng.Stream.region(aseed ^ 0x5245_5649, 0x5256_5354, 0);
+                        var i: usize = W;
+                        while (i > 1) {
+                            i -= 1;
+                            const j: usize = @intFromFloat(@as(f64, sh.unit()) * @as(f64, @floatFromInt(i + 1)));
+                            std.mem.swap(usize, &chosen[i], &chosen[@min(j, i)]);
+                        }
+                    }
+                    // The locations are read BEFORE any pushing, because
+                    // pushing overwrites the ring underneath them.
+                    const pts = try gpa.alloc([3]f32, BUDGET);
+                    defer gpa.free(pts);
+                    for (chosen[0..BUDGET], 0..) |i, k| pts[k] = win.x[i];
+                    for (pts) |q| {
+                        const ya: f64 = marl.truthOf(world_a, q);
+                        const yb: f64 = marl.truthOf(world_b, q);
+                        // Did this observation land where the worlds
+                        // disagree? Over nine tenths of the cube they agree,
+                        // so most of any buffer is not misleading at all, and
+                        // how many of the budget's shots land on the tenth
+                        // that is IS the aiming question.
+                        if (@abs(ya - yb) > 1e-3) nh += 1;
+                        const ev = try m.observe(q, .{@as(f32, @floatCast(yb))});
+                        win.push(q, yb, ev.surprise, ev.cover);
+                    }
+                },
+            }
+            hits[mi][ai] = nh;
+            parentk[mi][ai] = m.kernels.items.len;
+            post[mi][ai] = try m.rms(hb.p, hb.y, null);
+
+            // ── THE CONTRACT, asserted. Every slot inside the window, and
+            // the ring's own mapping intact. This is what the first version
+            // never checked and silently violated.
+            const cut = win.n - @as(u64, W);
+            for (win.t[0..W], 0..) |ti, i| {
+                try testing.expect(ti >= cut);
+                try testing.expectEqual(i, @as(usize, @intCast(ti % @as(u64, W))));
+            }
+            try testing.expect(@abs(win.oldShare(WAKE_A) - 0.5) < 1e-12);
+
+            for (sel, 0..) |sd, si| {
+                var buf = try Replay.initWith(gpa, N, .err, sd);
+                defer buf.deinit(gpa);
+                win.selectInto(&buf);
+                try (Measures{ .fit = buf.x[0..N], .sleep = buf.x[0..N], .eval = hb.p }).check();
+                var child = try sleepOn(gpa, &m, buf.x[0..N], buf.y[0..N], keep_of[ai], .{ .exact = true });
+                defer child.deinit();
+                child.opts.truth = world_b;
+                const after = try child.rms(hb.p, hb.y, null);
+                cell[mi][ai][si] = .{
+                    .after = after,
+                    .lift = 1 - @as(f64, after) / @as(f64, post[mi][ai]),
+                    .held = try child.rms(ha.p, ha.y, null),
+                    .old = buf.oldShare(WAKE_A),
+                };
+                try testing.expectEqual(keep_of[ai], child.kernels.items.len);
+            }
+            std.debug.print("       {s:<8} acq {d}  parent {d}k  hits {d:>5}/{d}  budget alone {d:.5}  after {d:.5}/{d:.5}  LIFT {d:.4}/{d:.4}  buffer-old {d:.3}\n", .{
+                names[mi], aseed, parentk[mi][ai], nh, BUDGET, post[mi][ai],
+                cell[mi][ai][0].after, cell[mi][ai][1].after,
+                cell[mi][ai][0].lift, cell[mi][ai][1].lift,
+                cell[mi][ai][0].old,
+            });
+        }
+    }
+
+    // Two spreads, reported apart: ACQUISITION varies the whole life, and
+    // SELECTION varies only the sleep's draw. Pooling them would assume they
+    // are the same kind of variability and they are not.
+    const meanOf = struct {
+        fn go(c: [2][2]Cell) f64 {
+            return (c[0][0].after + c[0][1].after + c[1][0].after + c[1][1].after) / 4;
+        }
+    }.go;
+    const acqSpread = struct {
+        fn go(c: [2][2]Cell) f64 {
+            return @abs((c[0][0].after + c[0][1].after) / 2 - (c[1][0].after + c[1][1].after) / 2);
+        }
+    }.go;
+    const selSpread = struct {
+        fn go(c: [2][2]Cell) f64 {
+            return @max(@abs(c[0][0].after - c[0][1].after), @abs(c[1][0].after - c[1][1].after));
+        }
+    }.go;
+
+    std.debug.print("     mean after / ACQUISITION spread / SELECTION spread (DESCRIPTIVE, two draws each — not confidence bounds):\n", .{});
+    for (modes, 0..) |_, mi| {
+        std.debug.print("       {s:<8} {d:.5}   acq {d:.5}   sel {d:.5}   hits {d}/{d}   parent kernels {d}/{d}\n", .{
+            names[mi], meanOf(cell[mi]), acqSpread(cell[mi]), selSpread(cell[mi]),
+            hits[mi][0], hits[mi][1], parentk[mi][0], parentk[mi][1],
+        });
+    }
+
+    // ── THE CONTRACT, restated as the premise it is.
+    std.debug.print("     the window contract HOLDS in every arm: no entry older than n - W, and t %% W == slot throughout; every mode at 0.500 pre-move by construction, not by coincidence\n", .{});
+
+    // ── AIMING. Only ~0.094 of this cube is contested, so an untargeted
+    // budget lands on that share of it and no more — the fixture's geometry,
+    // not a tuning constant.
+    try testing.expect(@abs(@as(f64, @floatFromInt(hits[2][0])) - thresholds.OBS21_UNAIMED_HITS) < 150);
+    try testing.expect(hits[1][0] > 2 * hits[2][0]);
+    try testing.expect(hits[1][1] > 2 * hits[2][1]);
+
+    // ── THE HEADLINE, against BOTH uniform alternatives, clearing the worse
+    // of the two spreads involved. `fresh` is the incumbent — it is simply
+    // "keep observing" — and `revisit` isolates TARGETING from RE-ASKING.
+    const worst = struct {
+        fn go(a: [2][2]Cell, b: [2][2]Cell) f64 {
+            return @max(@max(acqSpread(a), selSpread(a)), @max(acqSpread(b), selSpread(b)));
+        }
+    }.go;
+    try testing.expect(meanOf(cell[1]) < meanOf(cell[0]) - worst(cell[1], cell[0]));
+    try testing.expect(meanOf(cell[1]) < meanOf(cell[2]) - worst(cell[1], cell[2]));
+
+    // ── THE t_min QUESTION, on LIFT: the budget improves the model by
+    // itself, and crediting the sleep with that would answer a different
+    // question.
+    var lift_aimed: f64 = 0;
+    for (0..acq.len) |i| for (0..sel.len) |j| {
+        lift_aimed += cell[1][i][j].lift / 4;
+    };
+    var lift_fresh: f64 = 0;
+    for (0..acq.len) |i| for (0..sel.len) |j| {
+        lift_fresh += cell[0][i][j].lift / 4;
+    };
+    std.debug.print("     the no-budget reference sleeps DESTRUCTIVELY at {d:.4}/{d:.4} — OBS-19's situation QUALITATIVELY, not its numerical checkpoint; with a budget the sleep's own lift is fresh {d:.4}, aimed {d:.4}\n", .{
+        1 - ref_after[0] / ref_before[0], 1 - ref_after[1] / ref_before[1], lift_fresh, lift_aimed,
+    });
+    for (0..acq.len) |i| try testing.expect(1 - ref_after[i] / ref_before[i] < 0);
+    try testing.expect(lift_aimed > 0);
+
+    // ── WHAT IS NOT CLAIMED, and it was claimed once.
+    //
+    // The first version reported that the budget "re-prioritises as well as
+    // repairs, and the two compound" — from a selected-buffer old-share of
+    // 0.312 against the other arms' ~0.474. Astra froze the acquired model,
+    // labels, timestamps and selection seeds and restored the ORIGINAL
+    // scores: the share went to 0.276, LOWER. Rescoring does not produce the
+    // effect; targeting entries that already carried high weight does, and
+    // rescoring partly OFFSETS it. The claim is withdrawn.
+    //
+    // Under these corrected semantics nothing is rescored in place at all —
+    // a re-observed location simply appears twice until the older entry ages
+    // out — so the question dissolves rather than being answered.
+    std.debug.print("     NOT claimed: no compounding of repair with reprioritisation. Under push semantics nothing is rescored in place; the earlier claim was refuted by a frozen-score control (.312 -> .276, the wrong way) before it was retired by this fix\n", .{});
+
+    // ── AND WHAT REMAINS CONFOUNDED. Equal observations and equal k; NOT
+    // equal parent populations, because a budget placed differently births
+    // differently. This is an end-to-end query-budget comparison, and it is
+    // not a fixed-compute or fixed-representation one.
+    std.debug.print("     STILL CONFOUNDED: observations and k are matched, parent populations are not ({d}/{d}/{d} at acq {d}) — a query-budget comparison, not fixed-compute or fixed-representation\n", .{
+        parentk[0][0], parentk[1][0], parentk[2][0], acq[0],
+    });
+    // And the correction's COST is not attributable. Fixing this gate reduced
+    // mean aimed lift from about +0.39 to +0.079, but it changed FIVE things
+    // at once — the ring semantics, a fixed k, the removal of a
+    // change-boundary oracle, the candidate population targeting draws from,
+    // and a second acquisition trajectory. Blaming the expired entries for
+    // most of that would need a matched ablation, which was not run. An
+    // earlier write-up did blame them; Astra caught it.
+    std.debug.print("     the correction reduced mean aimed lift from ~+0.39 to {d:.4}, but FIVE things changed at once — ring semantics, fixed k, the removal of a change-boundary oracle, the candidate population, and a second trajectory. No part of that reduction is attributed without a matched ablation\n", .{lift_aimed});
+    // The acquisition spread varies the WHOLE LIFE including the branch
+    // model, so it captures variability that selection-only replication
+    // misses and is NOT acquisition-stage randomness isolated at a fixed
+    // parent. Reported as what it is.
+    std.debug.print("     the ACQUISITION spread varies the whole life including the branch model — it catches what selection-only replication misses, and is not acquisition randomness at a FIXED parent\n", .{});
+}

@@ -8364,3 +8364,94 @@ AND PRINT TEXT ONLY, verified by compilation and not re-run, per CODEX's rule
 on reusing passing checks of unchanged code. No assertion, arithmetic or
 control flow changed. Smoke clean; G66 re-run cell for cell after the admitAt
 refactor.
+
+OBS-21 / G68 — targeted revisiting, and a contract that had to be fixed first
+
+The lever OBS-20 left after Astra retired detection. RE-OBSERVATION spends a
+real observation to ask again at a location the model CHOOSES; observe(q, y)
+has taken an external exemplar since MARL-0 and no phase had chosen q.
+
+A RE-OBSERVATION IS AN OBSERVATION. It pushes into the ring and evicts the
+oldest, exactly as a fresh draw does, so every placement slides the window by
+the same 4096 and every mode lands at exactly .500 pre-move: ELIGIBILITY IS
+IDENTICAL BY CONSTRUCTION, not merely equal in old-share. The gate asserts the
+ring's invariants — nothing older than n - W, and t % W == slot.
+
+THE SUPERSEDED RUN IS KEPT AS HISTORICAL EVIDENCE. The first version mutated
+slots IN PLACE and advanced Window.n. Astra measured it: 2709 entries older
+than the cutoff retained, 881 selected into a sleep, the timestamp-to-slot
+mapping destroyed. It reported a mean aimed lift of +0.39. A GREEN GATE DOES
+NOT RESOLVE A CONTRACT IT NEVER ASSERTS, and that gate asserted nothing about
+the window at all.
+
+Two more corrections went in with it. k is FIXED AT THE BRANCH POINT, where
+the first version took it from each mode's post-budget population and
+delivered 344/346/343. And targeting ranks by stored surprise over the WHOLE
+window, where the first version chose among slots with t < WAKE_A — the known
+change boundary, an oracle.
+
+With eligibility pinned the comparison has an honest name: TARGETED VERSUS
+UNIFORM ACQUISITION. `fresh` is the incumbent, simply "keep observing";
+`revisit` isolates targeting from re-asking.
+
+THE FINDING, in Astra's words: across two acquisition trajectories and two
+sleep selections each, targeted revisiting produced lower post-sleep error
+than either uniform alternative. Sleep improved the targeted models by 6-11%,
+while worsening both alternatives, under matched observation budgets and
+within-trajectory kernel budgets.
+
+Means: aimed .07044, revisit .10185, fresh .10471 — aimed clears fresh by 3.4x
+and revisit by 5.0x the worst relevant spread. The no-budget reference sleeps
+destructively at -.3010/-.2034, OBS-19's situation QUALITATIVELY and not its
+numerical checkpoint.
+
+ACQUISITION REPLICATION EARNED ITS COST IMMEDIATELY: fresh's acquisition
+spread (.01021) is 2.5x its selection spread (.00407), and it is the spread
+that governs the headline margin. Two sleep-time draws could never have seen
+it. It varies the whole life INCLUDING the branch model, so it is not
+acquisition-stage randomness isolated at a fixed parent.
+
+HITS COUNT CONTESTED LOCATIONS OBSERVED, NOT WRONG LABELS REPAIRED (Astra):
+selection ranges over the whole window including already-current entries, and
+a push leaves the older copy until it expires. Untargeted 408/400 against a
+DERIVED 387 (the contested share, .0944); targeted 1359/1357. What that
+establishes is TARGETING CONCENTRATION.
+
+SURVIVING FROM THE FIRST RUN: targeted acquisition beats fresh draws BEFORE
+any sleep (.0770/.0761 vs .0849/.0859), MARL-4's routing at consolidation
+time; and UNTARGETED revisiting is WORSE than fresh draws (.0920/.0895),
+because it re-asks where the model was already right.
+
+WITHDRAWN: the compounding claim. Sleep-time selection does reach for the
+targeted entries (selected buffer .400 against ~.476), but Astra froze the
+acquired model, labels, timestamps and selection seeds and restored the
+original scores — the share moved to .276, THE WRONG WAY. Targeting entries
+that already carried high weight is sufficient; rescoring partly OFFSETS it.
+Under the corrected semantics nothing is rescored in place, so the question
+dissolves rather than being answered.
+
+AND THE COST OF THE CORRECTION CANNOT BE ATTRIBUTED. The corrected experiment
+reduced mean aimed lift from about +0.39 to +0.079, but it changed FIVE things
+at once: ring semantics, fixed k, removal of the change-boundary oracle, the
+candidate population, and a second acquisition trajectory. Attributing most of
+that reduction to the expired entries would need a matched ablation, not run.
+An earlier draft of this entry did attribute it; that is corrected here.
+
+STILL CONFOUNDED: observations and k matched within a trajectory, parent
+populations not (688/689/686). A query-budget comparison, not fixed-compute or
+fixed-representation.
+
+Process, and it cost a run: a --test-filter EXCLUDES NON-MATCHING TEST BODIES
+FROM SEMANTIC ANALYSIS, so compile-checking a new gate with another gate's
+filter validates everything except the gate just written. Recorded in CODEX.
+
+Owed: a matched ablation of the five corrections if the effect's SIZE ever
+matters as much as its sign; one budget size (equal to M by construction);
+acquisition-stage randomness at a FIXED parent, which this design cannot
+separate from trajectory variation; retention, not claimed. And nothing here
+DETECTS a move.
+
+Validation: G68 passes ReleaseSafe in 7:55 — fourteen sleeps, six full re-runs
+of the life; log g68d is the numerical record. Documentation and the rename of
+OBS21_UNAIMED_FIXED to OBS21_UNAIMED_HITS followed it, compile-verified, value
+and assertion unchanged, not re-run. Smoke clean.

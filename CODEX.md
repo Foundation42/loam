@@ -18,6 +18,11 @@ User instructions take precedence. Keep this file short and current.
   string; a twelve-minute gate does not need to. Keep the validated
   numerical log, and note the text-only delta beside it. OBS-19 spent a
   12:43 run on two print strings before this was written down.
+- **A `--test-filter` excludes non-matching test bodies from SEMANTIC
+  ANALYSIS.** Compile-checking a newly written gate with some other gate's
+  filter validates everything except the gate you just wrote. Check a new
+  test with ITS OWN filter, or unfiltered. OBS-21 shipped a bad field access
+  through three "clean" Debug compile-checks this way.
 - **Never cancel a run by matching command text.** Use the tool's session
   handle or a captured PID. `pkill -f` matches the pattern against the
   wrapper's own command line, so a kill issued from a command that mentions
@@ -49,6 +54,18 @@ User instructions take precedence. Keep this file short and current.
 - Headline measurements use f32 masters; quantization is a separate arm.
 - Distinguish fixed evidence from fixed compute; report query cost as
   well as fitting cost. A fixture result is not a universal solver rule.
+- **Aggregate statistics cannot substitute for structural invariants.**
+  Two arms reading the same share are not thereby equivalent. Assert the
+  invariant the design depends on — OBS-21's window matched on old-share
+  while retaining 2709 expired entries and putting 881 into a sleep,
+  because the gate checked the share and never the ring.
+- **Replication must vary the STAGE whose uncertainty you are
+  discussing.** Two sleep-time draws say nothing about acquisition
+  variability; in OBS-21 the acquisition spread was 2.5x the selection
+  spread and it governed the headline margin. Say which stage a spread
+  belongs to, and what it still cannot isolate.
+- **When a correction changes several things at once, report the delta
+  and attribute none of it.** Naming a cause needs a matched ablation.
 
 ## Targeted recovery map
 
@@ -56,7 +73,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
-| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..20; src/consolidate.zig, G58-G67 |
+| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..21; src/consolidate.zig, G58-G68 |
 | Complexity and fresh windows | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-4; src/observational_windows.zig, G51; docs/data/obs4 |
 | Adaptive inverse births | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-3; src/adaptive_inferred.zig, G50; docs/data/obs3 |
 | Hidden potential inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-2; src/inferred.zig, G49 |
@@ -137,75 +154,59 @@ Records in docs/data/obs4 include sensors, window-pre-update scores,
 evaluation history, coverage, requests and diagnostic. G51(a/b/c) passed
 separately; use smoke at commit, not the full suite.
 
-Latest: OBS-20 / G67, the HARD CUTOFF (2026-09-11). Astra's specification
-after OBS-19, and its contract decided the design: IDENTICAL ELIGIBLE
-OBSERVATIONS for the error and uniform selections, the cutoff preventing
-EITHER rule from retaining an expired sample.
+Latest: OBS-21 / G68, TARGETED REVISITING (2026-09-11, corrected 09-12).
+Re-observation spends a real observation to ask again AT A LOCATION THE MODEL
+CHOOSES. The phase's load-bearing decision: A RE-OBSERVATION IS AN
+OBSERVATION — it pushes into the ring and evicts the oldest, so every
+placement slides the window identically and ELIGIBILITY IS IDENTICAL BY
+CONSTRUCTION, not merely equal in old-share. The gate asserts the ring's
+invariants (nothing older than n - W, t % W == slot).
 
-THE SYNTHESIS EXISTS, on this fixture and at this timing. h-err@2N reaches
-.03787/.03733 against the ring's .05390 — 29.5x the spread, 30% lower error,
-replicated, ZERO wrong labels, NO ORACLE. OBS-19 could only reach that shape
-by relabelling from the truth.
+THE FIRST VERSION VIOLATED THAT CONTRACT AND IS KEPT AS HISTORICAL EVIDENCE:
+it mutated slots IN PLACE and advanced Window.n, retaining 2709 entries older
+than the cutoff, putting 881 into a sleep, destroying the timestamp-to-slot
+mapping, and reporting a mean aimed lift of +0.39. A GREEN GATE DOES NOT
+RESOLVE A CONTRACT IT NEVER ASSERTS.
 
-IT DECOMPOSES, and the resource-matched control is already in the table:
-h-uni@2N IS a ring of 2N subsampled uniformly to N — same retained history,
-same k, differing only in the weight — and it beats the N-ring at
-.05139/.05069, about 5%. Error weighting adds a further 26%. A SIXTH of the
-30% is the POOL, five sixths the MEASURE. The comparison against the N-ring is
-NOT resource-matched: both hard arms retain W = 2N plus the selected N-slot
-buffer and scan the pool at selection time.
+THE FINDING: across two acquisition trajectories and two sleep selections
+each, targeted revisiting produced lower post-sleep error than either uniform
+alternative. Sleep improved the targeted models by 6-11% while WORSENING both
+alternatives, under matched observation budgets and within-trajectory kernel
+budgets. Means aimed .07044, revisit .10185, fresh .10471 (3.4x and 5.0x the
+worst relevant spread). The no-budget reference is destructive at
+-.3010/-.2034 — OBS-19 QUALITATIVELY, not its numerical checkpoint.
 
-A per-rule reservoir COULD have carried the contract — OBS-18's and OBS-19's
-reservoirs all got the SAME stream, and two rules keeping different subsets is
-what selection rules ARE, not a confound (Astra). What a shared object adds is
-that hard-cutoff ELIGIBILITY becomes explicit and ENFORCEABLE. So
-`consolidate.Window` is a LITERAL SHARED OBJECT — one deterministic ring of
-the last W, no sampling in it, every rule selecting from the same bytes.
-Selection happens AT THE SLEEP (A-Res over a static pool IS weighted sampling
-without replacement) and surprise/cover are stored AS OBSERVED, so nothing
-reprioritises with hindsight. `Replay.admitAt` lets a selected buffer carry
-the OBSERVATION index rather than its selection order; `admit` delegates to it
-and is unchanged bit for bit.
+ACQUISITION REPLICATION EARNED ITS COST: fresh's acquisition spread (.01021)
+is 2.5x its selection spread (.00407), and it governs the headline margin.
+It varies the whole life INCLUDING the branch model, so it is not
+acquisition-stage randomness isolated at a fixed parent.
 
-It separates WHAT YOU KEEP (W observations) from WHAT YOU CONSOLIDATE ON (N).
-The cutoff's honest price is the first: 2x at W = 2N, 4x at 4N, against the
-exponential form's N and no expiry machinery at all.
+HITS COUNT CONTESTED LOCATIONS OBSERVED, NOT WRONG LABELS REPAIRED: selection
+ranges over the whole window including current entries, and a push leaves the
+older copy until expiry. Untargeted 408/400 against a DERIVED 387; targeted
+1359/1357. That establishes TARGETING CONCENTRATION.
 
-THE MEASURE AT IDENTICAL ELIGIBILITY: h-err@2N beats h-uni@2N by 19.1x — same
-object, same k, differing only in Compose.weight. This ISOLATES the selection
-rule; it is NOT the campaign's first legitimate comparison of selection rules.
-What is new is that eligibility is PINNED.
+SURVIVING: targeted acquisition beats fresh draws BEFORE any sleep
+(.0770/.0761 vs .0849/.0859) — MARL-4's routing at consolidation time — and
+UNTARGETED revisiting is WORSE than fresh draws, because it re-asks where the
+model was already right.
 
-THE CONTRACT AS A MEASUREMENT: refreshing the 2N arms changes the result by
-EXACTLY ZERO, .03787 -> .03787 bit for bit. Nothing to refresh. Far stronger
-than counting labels.
+WITHDRAWN: compounding of repair with reprioritisation. A frozen-score control
+moved the selected old share .312 -> .276, the WRONG WAY; targeting
+already-high-weight entries is sufficient and rescoring partly offsets it.
+Under push semantics nothing is rescored in place.
 
-A HARD CUTOFF GUARANTEES ELIGIBILITY, NEVER VALIDITY. At W = 4N half the pool
-is pre-move, EVERY arm goes negative, and the error rule carries 1166/1129
-wrong labels against uniform's 409/387 (registered 388) — OBS-19's adverse
-selection surviving the change of mechanism. A cutoff removes the ability to
-BUY past the window, not the measure's preference for the contested band
-inside it. And W = 2N is clean only because 2N = M exactly: THE FIXTURE'S
-TIMING, not something a policy knows.
+NOT ATTRIBUTABLE: the correction reduced mean aimed lift from ~+0.39 to
++0.079, but it changed FIVE things at once (ring semantics, fixed k, removal
+of a change-boundary oracle, the candidate population, a second trajectory).
+Blaming the expired entries would need a matched ablation, not run.
 
-SELECTION FREEDOM IS WORTH SOMETHING AND THE CUTOFF SPENDS IT. Registered as
-an asymmetry BEFORE the run: refreshed, the WIDE window's locations BEAT the
-clean one's, .02918/.02829 against .03787/.03733. A WIDER WINDOW IS THE BETTER
-INSTRUMENT AND THE WORSE POLICY. But DETECTING THE MOVE DOES NOT RECOVER IT —
-those better locations INCLUDE pre-move observations, and cutting at the move
-REMOVES them rather than supplying current labels; an exact detected cutoff is
-the 2N history already tested (Astra).
+STILL CONFOUNDED: observations and k matched within a trajectory, parent
+populations not (688/689/686) — a query-budget comparison.
 
-NOT CLAIMED: retention, so not dominance either. Ring .12933 against h-err@2N
-.13184/.13486 is 0.83x the spread on first draws and 1.33x on means — the
-leader-versus-mean conflation Astra caught in OBS-19. Both printed, neither
-asserted.
-
-Next: where a larger pool of VALIDLY LABELLED points could come from, since
-detection cannot supply it — observing longer before consolidating, or
-RE-OBSERVING old locations under the current world, which is a different
-mechanism from replay. Then a sweep of the move time against fixed W, to say
-how sharp the cliff is.
+Next: a matched ablation if the effect's SIZE matters as much as its sign;
+budget size; acquisition randomness at a FIXED parent; and still nothing
+DETECTS a move.
 
 G66 is the campaign's largest gate — twenty-two sleeps; G67 is ~8:45 with thirteen, almost all of it, each
 ~30 s and almost entirely the 400-step descent over 8192 replay points; all

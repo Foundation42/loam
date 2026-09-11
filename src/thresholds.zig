@@ -3986,4 +3986,76 @@ pub const OBS20_STRADDLE_WRONG: f64 = 388;
 /// over the B era alone. Different location distributions.
 pub const OBS20_SYNTHESIS: f64 = 0;
 
+/// G68: the query budget, in observations, placed just before a
+/// consolidation. REGISTERED at 4096 = N/2, and MATCHED by construction.
+///
+/// A window of W = 2N consulted M = 4096 observations after a move is 0.750
+/// pre-move. **A re-observation IS an observation** — it pushes into the ring
+/// and evicts the oldest, exactly as a fresh draw does — so every placement
+/// slides the window by the same 4096 and every mode lands at exactly 0.500
+/// pre-move. Eligibility is therefore IDENTICAL BY CONSTRUCTION, not merely
+/// equal in old-share, and the gate asserts the ring's own invariants:
+/// nothing older than `n - W`, and `t % W == slot`.
+///
+/// The first version of G68 instead mutated slots IN PLACE and advanced
+/// `Window.n`. Astra measured the result: 2709 entries older than the cutoff
+/// retained, 881 of them selected into a sleep, and the timestamp-to-slot
+/// mapping destroyed. **A green gate does not resolve a contract it never
+/// asserts.**
+pub const OBS21_BUDGET: usize = 4096;
+
+/// G68: how many of an UNTARGETED budget's observations land where the two
+/// worlds disagree, out of 4096. PROPOSED at 387.
+///
+/// Derived, not guessed: only 0.0944 of this cube is contested, so a budget
+/// placed at uniformly chosen window locations lands on that share of it and
+/// no more. Measured at 408 and 400 across two acquisition trajectories.
+///
+/// **It counts CONTESTED LOCATIONS OBSERVED, not wrong labels repaired** —
+/// Astra's correction, and the distinction is real: selection ranges over the
+/// whole window including already-current entries, and a push leaves the
+/// older copy in place until it expires. What 1359/1357 against 408/400
+/// establishes is TARGETING CONCENTRATION, which is what the phase needs and
+/// is not the same claim.
+///
+/// A re-observation costs exactly what an observation costs. The phase claims
+/// no saving, only a better placement.
+pub const OBS21_UNAIMED_HITS: f64 = 387;
+
+/// G68: the `t_min` question, recorded as a SHAPE. OBS-19 found every
+/// composition rule destructive soon after a regime change. Does a query
+/// budget make an early consolidation worth doing?
+///
+///     Across two acquisition trajectories and two sleep selections each,
+///     targeted revisiting produced lower post-sleep error than either
+///     uniform alternative. Sleep improved the targeted models by 6-11%,
+///     while worsening both alternatives, under matched observation budgets
+///     and within-trajectory kernel budgets.
+///
+/// The no-budget reference sleeps destructively at -0.3010 and -0.2034 —
+/// OBS-19's situation QUALITATIVELY, and not its numerical checkpoint.
+/// Uniform fresh draws leave it destructive at -0.227; untargeted revisits at
+/// -0.122; targeted revisiting is the only placement with positive lift.
+///
+/// **What is NOT established.** Sleep-time selection reaches for the targeted
+/// entries — the selected buffer reads 0.400 against the alternatives' ~0.476
+/// — but an earlier draft called that a COMPOUNDING of repair with
+/// reprioritisation and it is withdrawn. Astra froze the acquired model,
+/// labels, timestamps and selection seeds and restored the original scores:
+/// the share moved to 0.276, the WRONG WAY. Targeting entries that already
+/// carried high weight is sufficient; rescoring partly offsets it.
+///
+/// **And what the correction cost cannot be attributed.** The corrected
+/// experiment reduced mean aimed lift from about +0.39 to +0.079 — but it
+/// changed five things at once: the ring semantics, a fixed k, the removal of
+/// a known-staleness filter that was an oracle on the change boundary, the
+/// candidate population targeting draws from, and a second acquisition
+/// trajectory. Attributing most of the reduction to the expired entries would
+/// need a matched ablation, which was not run.
+///
+/// Still confounded: observations and k are matched within a trajectory,
+/// parent populations are not (688/689/686). A query-budget comparison, and
+/// not a fixed-compute or fixed-representation one.
+pub const OBS21_EARLY_PAYS: f64 = 0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";
