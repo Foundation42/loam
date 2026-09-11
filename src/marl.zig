@@ -874,6 +874,15 @@ pub fn Marl(comptime C: usize) type {
             /// about itself, and a residual where nothing covers the ground is
             /// just a birth waiting to happen.
             covered: bool,
+            /// The same quantity BEFORE the comparison: the largest gaussian
+            /// any responsible kernel reads at the exemplar, in [0, 1].
+            ///
+            /// Computed since MARL-0 and thrown away since MARL-0. OBS-18
+            /// needed it as a replay ADMISSION weight — "how little basis is
+            /// there here" is MARL's own birth statistic, and a composition
+            /// rule built on the boolean would be built on a threshold
+            /// belonging to a different decision.
+            cover: f32 = 0,
             /// The residual AFTER the update steps. What deformation could not
             /// remove from this exemplar with the kernels it had.
             post_residual: Ch.Vec,
@@ -1509,6 +1518,7 @@ pub fn Marl(comptime C: usize) type {
                 self.stats.visited += ev.visited;
                 self.stats.pruned += ev.pruned;
 
+                ev.cover = cover;
                 ev.covered = cover >= self.opts.coverage;
                 if (ev.surprise <= self.opts.threshold) return ev;
 

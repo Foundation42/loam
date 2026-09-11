@@ -2035,3 +2035,281 @@ insofar as it improves the representation.
 4. **$k_{\min}$ as a measured function** rather than a threshold — the
    crossing was near $k \approx 150$ of 703 at $N = 8192$, and one point is
    not a function.
+
+## OBS-18 / G65 — what does a replay policy actually choose?
+
+Christian's queue item 1, and the one OBS-17 made well-posed:
+
+> Equal-sized rings, same $N$, same $k$, same optimiser, differing only in
+> the measure: uniform historical, recent-biased, error-biased,
+> novelty/coverage-biased. Expect a **Pareto surface** rather than a winner.
+
+One model, one exemplar stream, four admission rules offered every
+observation. Three of the four are one algorithm — weighted reservoir
+sampling at equal weights *is* uniform reservoir sampling — so they differ in
+a single expression:
+
+    recent      a ring of the last N observations (the incumbent)
+    uniform     A-Res reservoir, w = 1
+    error       A-Res reservoir, w = surprise (the pre-update residual)
+    uncovered   A-Res reservoir, w = 1 - cover (MARL's own birth statistic)
+
+Every rule is an **admission** policy: it decides at observation time from
+what a learner already holds, so no arm is cheating on cost against the ring.
+
+### The phase runs two experiments, and they are complementary
+
+A rule over a non-stationary stream chooses *when* to observe as well as
+*where* — and *when* decides which world its labels describe. That is not a
+confound to be removed, it is part of what a replay policy **is**. So:
+
+| | labels | question |
+|---|---|---|
+| **as a policy** | each rule's own | how do these rules behave as they would actually run? |
+| **as a location** | all re-read from the current world | given these *positions*, which distribution fits best? |
+
+The second needs an oracle call per point, which is exactly what replay
+exists to avoid, so it is a probe rather than something deployable. Neither
+supersedes the other. An earlier draft of this section called the relabelled
+version "the only way to run the experiment that was specified"; that was
+wrong, and Astra's review is what corrected it.
+
+### What the fixture decided before any learning
+
+Measured over 200 000 uniform points by `tools/obs18_predict.py`, frozen
+before the Zig was written:
+
+| | share | |
+|---|---:|---|
+| contested, $\|y_A - y_B\| > 10^{-3}$ | 0.0950 | the only place staleness is observable |
+| dead, $x > 0.70$, $y \equiv 0$ | 0.3023 | never surprising, never births |
+| shell band, A ∪ B | 0.0777 | where all residual mass lives |
+
+**Most of a replay buffer carries no regime information at all.** The shift
+moves the shell and nothing else — `swell` never reads it — so outside the
+band union the two worlds are identical and a stored sample is equally valid
+under both. Every claim anyone makes about stale replay is a claim about that
+tenth, which is why STALE is reported as a share of the *contested* points
+and not of the buffer.
+
+### The registered mechanism is refuted, and `reached` is how
+
+The prediction was that composition acts through **effective evidence**: a
+point no kernel reaches has an all-zero design row, and past the window the
+target is zero too, so the row is $0 = 0$. It would have made the
+coverage-seeking arm a uniform arm at $N_{\text{eff}} \approx 0.2N$.
+
+Every arm reads **1.000**. There is no unreached ground, because a Gaussian
+basis must actively **hold down its own leakage**: a kernel born on structure
+has a tail reaching one region edge, that tail is wrong where the target is
+exactly zero, and holding it down costs kernels out there. Of 692 kernels,
+33 are centred past the window and — by `mu0`, a kernel's birth centre — 33
+were *born* there. "Born to cancel leakage" and "drifted out" are different
+claims and only one of them is measured.
+
+Which amends MARL-16. *Zero is special because it is what an empty model
+already predicts* is true of an **empty** model and false of a populated one:
+once kernels exist, a plateau at zero is held up by capacity like any other
+value.
+
+What is refuted is the **row-count** form of effective evidence and nothing
+wider. Conditioning, redundant constraints and information spread unevenly
+across parameters are untouched by `reached` and remain open.
+
+### Equal $k$ was announced and not delivered
+
+`sleepOn` rounded each region's share independently, delivering 345 to 347
+against a budget of 346 while the header printed 346. Six tenths of a per
+cent cannot explain any margin here, and that is exactly why it had to be
+fixed rather than argued about: equal $k$ was the design's own premise,
+reported as true when it was not. `allocate` at `exact = true` is
+largest-remainder apportionment; `exact = false` is the incumbent bit for
+bit, so G62 (b), G63 and G64 keep reproducing — and G64 was re-run and
+matches its recorded table cell for cell. The gate now asserts the population
+delivered rather than printing the one requested.
+
+Astra found it in review. The gate did not.
+
+### Replication is descriptive, and replicating the *right* rule mattered
+
+Three uniform arms and two error arms, same rule and a different reservoir
+stream. Per-rule spreads are reported **separately**, because pooling them
+assumes the two rules vary alike — and that assumption turned out to be
+load-bearing and false.
+
+An earlier version of this gate measured its floor on the uniform rule alone
+and read off the relabelled table that error-weighted replay "wins the sleep
+and is last on both adaptation axes by 13.5× and 8.4×". Adding one error
+replicate destroyed that: **the error rule's own two relabelled arms differ
+by 0.04007 on the A re-fit axis**, comparable to the widest gap between any
+two rules. Those margins were an artefact of applying one rule's variability
+to another, and with the error rule's own spread in hand they collapse to
+0.07× and 0.01×.
+
+A margin printed as "×the spread" **sizes** a difference over a handful of
+draws. It does not certify one. Nothing here is a confidence bound.
+
+### As a policy: the Pareto surface, and it is here
+
+Each rule carrying its own labels — the experiment as registered.
+
+| arm | after | **gain** | **A held** | A re-fit | births | C RMS |
+|---|---:|---:|---:|---:|---:|---:|
+| **recent** | 0.05033 | **+0.3456** | 0.13026 | 0.07622 | 369 | 0.07112 |
+| uniform | 0.10900 | −0.4171 | 0.11437 | 0.08497 | 361 | 0.08564 |
+| error | 0.10149 | −0.3194 | **0.09117** | 0.11156 | 440 | 0.08521 |
+| uncovered | 0.11634 | −0.5125 | 0.11283 | 0.07192 | 390 | 0.07810 |
+| *control, no sleep* | *0.07692* | — | *0.13111* | *0.06400* | *41* | *0.06981* |
+
+| axis | winner | margin |
+|---|---|---:|
+| immediate (B) | **recent** | 18.55× the spread |
+| **A held** | **error** | **1.93×** |
+| A re-fit | uncovered | 0.43× — inside |
+| arriving at C | recent | 0.92× — inside |
+
+**Two rules win two axes, and both clear their own rule's observed spread.**
+The ring takes the world being evaluated; the error-weighted buffer preserves
+the one before it. That is Christian's registered Pareto expectation, and it
+lives in the table an earlier draft of this section dismissed as confounded.
+
+It was very nearly missed twice. Reporting only *A re-fit* — performance
+after 20 000 further observations — hides it, because relearning washes out
+what a sleep preserved. **A held** is the sleep's own retention, scored
+before any further learning, and there the ordering reverses: historical
+observations really do preserve more of world A.
+
+### As a location: only the immediate axis separates
+
+Same points, every label re-read from the current world. An oracle call per
+point, so a probe rather than a policy.
+
+| arm | stale gain | **gain** | A held | A re-fit | C RMS |
+|---|---:|---:|---:|---:|---:|
+| **error** | −0.3194 | **+0.6399** | 0.13467 | 0.11322 | 0.11017 |
+| *error′* | *−0.2835* | *+0.6529* | *0.13552* | *0.07315* | *0.07968* |
+| uniform | −0.4171 | +0.3896 | 0.13114 | 0.06923 | 0.07211 |
+| recent | — | +0.3456 | 0.13026 | 0.07622 | 0.07112 |
+| uncovered | −0.5125 | +0.2382 | 0.13617 | 0.07213 | 0.07156 |
+
+Error-weighted locations win the current world by **3.07×** the spread, and
+the win replicates (+0.6399 and +0.6529). On A held, A re-fit and C the
+leader is **not uniquely separated** — 0.26×, 0.07×, 0.01× over its nearest
+rival — and the gate asserts those three negatives on purpose, because this
+is precisely where the first version read a trade that was not there.
+
+**That is a statement about the leader, not about the field**, and the
+distinction is not cosmetic. Two nearly tied leaders hide every difference
+behind them. Counting *pairs* separated by more than each table's own spread:
+
+| axis | policy | location |
+|---|---|---|
+| immediate | 6/6 | 5/6 |
+| A held | 5/6 (widest recent/error 0.03909) | 4/6 (widest recent/uncovered 0.00591) |
+| A re-fit | 4/6 | 2/6 (both involve error) |
+| arriving at C | 2/6 | 3/6 (all involve error) |
+
+So relabelled buffers do **not** all behave alike on A held: four of six
+pairs separate, over a total range of 0.0059 against the policy table's
+0.0391. And on A re-fit and C the only separated pairs involve `error` —
+whose own two replicates differ by 0.04007 and 0.03049 on those axes,
+comparable to the gaps themselves. Its downstream behaviour is not resolved
+by this experiment.
+
+Error-weighting is importance sampling arriving in this campaign by the back
+door: it concentrates 8 192 samples on the ~15% of the domain carrying the
+error, which is the best allocation for fitting the world its labels
+describe.
+
+### Retention is carried by the labels, not by the locations
+
+Every rule's own points retain the old world **worse** once relabelled, by
+more than the observed spread — including the arm that was best at it:
+
+| rule | A held, own labels | A held, relabelled |
+|---|---:|---:|
+| error | **0.09117** | 0.13467 |
+| uniform | 0.11437 | 0.13114 |
+| uncovered | 0.11283 | 0.13617 |
+
+Refreshing labels worsens A retention in **every** tested reservoir. The
+relabelled arms cluster near the ring's own 0.13026 and the un-slept
+control's 0.13111, and their leaders are not separated by this phase's
+descriptive criterion — though four of their six pairs are, so "they all
+forget alike" would be too strong. The best retention anywhere in the
+experiment belongs to a *stale* buffer.
+
+And what a relabelled buffer loses is not evidence about the old world. Only
+**0.0950** of this cube is contested; over the other nine tenths a world-B
+observation *is* a world-A observation. What it loses is its **A-specific
+labels on the tenth where the two worlds disagree** — which is the fixture
+statistic this section opened with, arriving as the mechanism.
+
+    A replay buffer's LOCATIONS decide how well it fits the world it is
+    labelled for. Its LABELS decide which world that is.
+
+**That is a summary, not a demonstrated separation.** Nothing here shows the
+two effects are independent, and there is every reason to expect them to
+interact: the error rule's locations are chosen *by* a residual measured
+under particular labels, and relabelling changes which locations `refine`
+then moves toward. The sentence is a way of holding two measured facts
+together, and it should not be cited as a factorisation.
+
+Stated at the width the evidence supports, which is Astra's:
+
+> On this fixture, recent replay favours current-world accuracy, while
+> historical error-weighted replay preserves more prior-world accuracy.
+> Refreshing labels improves current-world fitting and reduces prior-world
+> retention. Error-weighted locations improve immediate fitting in both
+> tested replicates; downstream performance varies substantially between
+> those replicates.
+
+Which is the qualification Astra's review forced, and it is the whole
+finding: label validity is **relative to the world being evaluated**, never
+absolute. "Stale data is corrupt" is the wrong reading. "Stale data is
+evidence about somewhere else" is the right one — a cost when you are marked
+on the current world, a benefit when you are marked on the old.
+
+The agent's registered position — *a replay buffer is evidence for a global
+fit, and every parameter in it needs its share* — was the right shape of
+argument and the wrong conclusion: the shares that matter are not equal ones,
+and it mistook one sleep's accuracy for the whole objective.
+
+### A consolidation is paid for at the next regime change
+
+The un-slept control re-fits world A for **41 births**; every half-sized
+child buys back 355–440. That is capacity — not wall clock, and not
+adaptation speed, neither of which this gate measures.
+
+### Still owed
+
+**Windowed error replay is a hypothesis, not a policy that follows.** It is
+the obvious candidate — error-weighting is free at observation time, since
+`surprise` is what `observe` already returns — but three things have to be
+established rather than assumed:
+
+- a recency window **can** straddle a regime change. The ring is
+  label-consistent *here* only because 20 000 observations in world B flushed
+  all 8 192 slots; that is the fixture's timing, not a property of rings.
+- restricting error-weighting to recent observations changes the
+  distribution it draws from. The error arm's surprise values were recorded
+  across *both* worlds.
+- a weighted sliding window has its own storage and bookkeeping cost, which
+  nothing here has priced.
+
+It should be pre-registered as a **tradeoff** hypothesis rather than an
+improvement one, because that is what OBS-18 actually taught: *can windowed
+error replay improve current-world fitting without giving up too much
+prior-world retention?* Both halves measured, not just the first.
+
+The design it needs: matched recent/uniform controls, observations placed
+deliberately **around** the transition rather than 20 000 clear of it, and
+replication of the error policy itself — which this phase has just shown is
+not optional.
+
+Untested: one $N$, one $k$, one fixture, one move size, one direction, one
+sleep per lineage.
+
+Cost: G65 is the campaign's largest gate — thirteen sleeps and twenty-eight
+adaptation runs, ~7 min 30 s. `python3 tools/obs18_predict.py` for the
+pre-registration.

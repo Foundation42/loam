@@ -44,6 +44,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
+| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..18; src/consolidate.zig, G58-G65 |
 | Complexity and fresh windows | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-4; src/observational_windows.zig, G51; docs/data/obs4 |
 | Adaptive inverse births | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-3; src/adaptive_inferred.zig, G50; docs/data/obs3 |
 | Hidden potential inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-2; src/inferred.zig, G49 |
@@ -109,7 +110,7 @@ All arms share RHS/search counts; active coefficient updates differ.
 No death policy, hence no birth-death churn claim.
 Shared sensitivities live in src/trajectory.zig; G49 stays unchanged.
 
-Latest: OBS-4 / G51, rich truth + repeated/fresh windows, 48 arms.
+Completed OBS-4 / G51, rich truth + repeated/fresh windows, 48 arms.
 Rich correct adaptive/frozen evaluation RMS .108451 (repeated), .015934
 (fresh); incoming fresh-window RMS ratio .087542 before learning. Both
 rich fresh dynamics finish K25, but wrong/correct repeat requests66/0;
@@ -123,3 +124,70 @@ inspection-derived mechanism diagnostic, not a validated stopping policy.
 Records in docs/data/obs4 include sensors, window-pre-update scores,
 evaluation history, coverage, requests and diagnostic. G51(a/b/c) passed
 separately; use smoke at commit, not the full suite.
+
+Latest: OBS-18 / G65, replay COMPOSITION at equal N and equal k (2026-09-10).
+Four admission rules — recent (ring), uniform (A-Res reservoir w=1), error
+(w=surprise), uncovered (w=1-cover) — fed ONE stream by one model, so nothing
+differs but which observations survive. `Event.cover` was added for it: the
+continuous coverage computed since MARL-0 and discarded since MARL-0.
+
+TWO EXPERIMENTS, complementary and both kept. AS A POLICY each rule uses its
+own labels, because a rule over a non-stationary stream chooses WHEN to
+observe as well as where, and that is part of the policy. AS A LOCATION every
+label is re-read from the current world; that needs an oracle per point, so
+it is a probe, not something deployable.
+
+Both tables trade, which is Christian's registered Pareto expectation against
+the agent's predicted sweep, and Christian wins on both readings. As a policy
+the ring wins the current world and is LAST at preserving the old one, while
+error-weighted replay is the reverse (A held: recent .13026, error .09117).
+As a location only the immediate axis has a uniquely separated leader (error
+by 3.07x, replicated) — and that is a claim about the LEADER, not the field:
+counting pairs separated by more than each table's spread, relabelled A held
+is 4 of 6. Replicating the rule under test is not optional; the error rule's
+own two relabelled arms differ by .04007 on A re-fit, comparable to the
+widest between-rule gap, so its downstream behaviour is unresolved.
+
+The sentence: a buffer's LOCATIONS decide how well it fits the world it is
+labelled for, and its LABELS decide which world that is — a SUMMARY, not a
+demonstrated separation; the two have every reason to interact and it must
+not be cited as a factorisation. Label validity is
+relative to the world being EVALUATED, not absolute. What a relabelled buffer
+loses is not evidence about the old world — only .0950 of this fixture is
+contested — but its old-specific labels where the two worlds disagree.
+
+REFUTED: the registered N_eff mechanism. `reached` is 1.000 in every arm —
+there is no unreached ground, because a Gaussian basis holds down its own
+leakage (33 of 692 kernels centred past the window, and `mu0` says 33 were
+born there). This refutes the ROW-COUNT form of effective evidence only;
+conditioning and uneven information across parameters stay open. It also
+amends MARL-16: "zero is what an empty model already predicts" is true of an
+EMPTY model and false of a populated one.
+
+TWO CONTRACT FAILURES, both found by Astra in review, neither by the gate.
+(1) The arms did not have equal k: sleepOn rounded each region's share
+independently, delivering 345-347 against a budget of 346 while the header
+printed 346. `allocate` is the fix — largest-remainder at exact=true, the
+incumbent bit for bit at exact=false, so G62 (b), G63 and G64 keep
+reproducing; G64 was re-run and matches its recorded table cell for cell.
+(2) Reporting only "A re-fit" (performance after 20,000 further
+observations) hid the policy table's own retention trade, because relearning
+washes out what a sleep preserved. "A held" is now a separate column.
+
+Replication is DESCRIPTIVE, not a confidence bound: three uniform arms and
+two error arms, per-rule spreads reported separately because pooling them
+assumes the rules vary alike. A margin printed as "3.07x the spread" sizes a
+difference; it does not certify one.
+
+Next: windowed error replay, pre-registered as a TRADEOFF hypothesis — can
+it improve current-world fitting without giving up too much prior-world
+retention? Both halves measured. It is a hypothesis, not a policy that
+follows automatically — a recency window can straddle a regime change (the ring was
+label-consistent here only because 20,000 B observations flushed all 8,192
+slots), and restricting error-weighting to recent observations changes the
+distribution it selects from. Needs matched recent/uniform controls,
+observations placed around the transition, and replication of the error
+policy itself.
+
+G65 is the campaign's largest gate; use smoke plus G65 at commit, not the
+full suite.

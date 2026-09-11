@@ -3676,4 +3676,152 @@ pub const OBS16_GRID: f64 = 0;
 /// license more compression; it reduces what compression costs.
 pub const OBS17_COLLAPSE: f64 = 0;
 
+/// G65: replay COMPOSITION, at equal N and equal k. Four admission rules
+/// fed ONE stream by one model, so nothing differs but which observations
+/// survive. `tools/obs18_predict.py` is where these came from, and the
+/// fixture's own geometry is where most of them came from before that.
+///
+/// The shift moves the shell and nothing else — `swell` never reads it —
+/// so outside the band union the two worlds are IDENTICAL and a stored
+/// sample is equally valid under both. Measured over 200 000 uniform
+/// points: only 0.0950 of the cube is CONTESTED. Every claim anyone makes
+/// about stale replay is a claim about that tenth.
+///
+/// STALE is the share of the contested points recorded under the OLD world,
+/// which is the only place staleness is observable at all.
+///
+/// `recent` must read exactly zero (20 000 exemplars in the new world
+/// against a buffer of 8 192, so no old sample can survive) and `uniform`
+/// must read a half. The tolerance is the FIXTURE'S, not a taste: at 0.0950
+/// contested there are ~778 contested points in the buffer, so the binomial
+/// sd is 0.0179 and this is 2.8 sigma. A tighter bar is a gate that fails
+/// on the draw.
+pub const OBS18_STALE_TOL: f64 = 0.05;
+
+/// G65: the error-weighted reservoir's contested share, as a MULTIPLE of
+/// the uniform arm's. PROPOSED as a floor at 2.5.
+///
+/// All residual mass lives on the bands, in both worlds and at every stage
+/// of learning — the cold start is largest there and so is the transient
+/// after the move — so a buffer weighted by surprise must concentrate
+/// there. If it does not, the measure is not doing what its name says and
+/// nothing downstream of it can be read.
+pub const OBS18_ERROR_CONTESTED: f64 = 2.5;
+
+/// G65: the coverage-weighted reservoir's share out past the window, where
+/// the target is exactly zero in every world. PROPOSED as a floor at 0.60.
+///
+/// window(x) = 0 past 0.70 and no feature reaches there, so 0.3023 of the
+/// cube is never surprising, never births, and is covered by nothing. A
+/// rule that seeks uncovered ground must end up there: at w = 1 in the dead
+/// third against w ~ 0.1 on structure, the reservoir's share of it is
+/// 0.30/(0.30 + 0.07) ~ 0.81.
+///
+/// **REFUTED at 0.463**, and the derivation's second sentence is why: the
+/// dead third is NOT covered by nothing. A kernel born on structure has a
+/// tail reaching one region edge, that tail is wrong where the target is
+/// zero, and holding it down costs kernels out there — so cover past the
+/// window is roughly half what it is on structure rather than zero, and the
+/// weight ratio is 2:1 rather than 10:1. The rule DID move the composition
+/// (0.463 against the uniform arm's 0.304) and the gate asserts that
+/// inequality instead.
+pub const OBS18_UNCOVERED_DEAD: f64 = 0.60;
+
+/// G65: the same arm's REACHED share — buffer points some kernel's support
+/// contains — as a fraction of the uniform arm's. PROPOSED as a ceiling at
+/// 0.60, and it is the phase's mechanism rather than a curiosity.
+///
+/// A point no kernel reaches has an all-zero design row, and out past the
+/// window the target is zero too, so the row is ZERO = ZERO: not merely
+/// uninformative but empty on both sides. If composition acts entirely
+/// through EFFECTIVE evidence then this arm is uniform at N_eff ~ 0.2 N,
+/// and G64 measured N = 2 048 at that budget as destructive.
+///
+/// **REFUTED, and the whole mechanism with it: every arm reads 1.000.**
+/// There is no unreached ground in this cube, because a Gaussian basis must
+/// actively HOLD DOWN ITS OWN LEAKAGE — kernels live past the window to
+/// cancel the tails of kernels born on structure, and the gate prints how
+/// many are CENTRED there against how many were BORN there (`mu0`), because
+/// "born to cancel leakage" and "drifted out there" are different claims
+/// and only one of them was measured.
+///
+/// The refutation is of the ROW-COUNT form of effective evidence and of
+/// nothing wider. `reached` says every sampled point has some basis over
+/// it; it says nothing about conditioning, about redundant constraints, or
+/// about information spread unevenly across parameters. Those forms of
+/// N_eff are untested here and remain open.
+///
+/// It also amends MARL-16's sentence. *Zero is special because it is what an
+/// empty model already predicts* is true of an EMPTY model and false of a
+/// populated one: once kernels exist, a plateau at zero is held up by
+/// capacity like any other value.
+pub const OBS18_UNCOVERED_REACHED: f64 = 0.60;
+
+/// G65: the Pareto question itself, recorded rather than thresholded — the
+/// gate asserts the SHAPE, because the numbers the phase exists to find
+/// should not be pre-committed.
+///
+/// CHRISTIAN: expect a Pareto surface rather than a winner — immediate RMS,
+/// retention of older regimes and adaptation speed will trade, and
+/// different measures will win different axes.
+///
+/// THE AGENT: a near-sweep by the unbiased arms. A replay buffer is not a
+/// dataset of interesting points, it is the evidence for a GLOBAL fit, and
+/// every parameter in that fit needs its share — MARL-1's invariant applied
+/// to the sleep's least-squares rather than to the online learner. The
+/// Pareto trade survives only on retention, where `recent` must lose
+/// because it has thrown the old world's evidence away.
+///
+/// **CHRISTIAN — and the surface is in the POLICY table**, the one measured
+/// with each rule carrying its own labels. A rule over a non-stationary
+/// stream chooses WHEN to observe as well as where, and when decides which
+/// world its labels describe; that is part of what a replay policy IS, not
+/// a confound in it.
+///
+///     axis            winner      margin, in units of that rule's spread
+///     immediate (B)   recent      18.55x   clears
+///     A held          error        1.93x   clears
+///     A re-fit        uncovered    0.43x   inside
+///     arriving at C   recent       0.92x   inside
+///
+/// Two rules, two axes, both clearing. The ring takes the world being
+/// evaluated; the error-weighted buffer preserves the one before it.
+///
+/// It was nearly missed because only "A re-fit" was reported at first —
+/// performance after 20 000 further observations, which washes out what a
+/// sleep preserved. "A held" is the sleep's own retention and it reverses
+/// the ordering.
+///
+/// **The relabelled probe has a uniquely separated LEADER on the immediate
+/// axis alone** (error by 3.07x, replicated at +0.6399 and +0.6529); A held,
+/// A re-fit and C are 0.26x, 0.07x and 0.01x over the nearest rival. That is
+/// a statement about the leader and not about the field: counting PAIRS
+/// separated by more than the spread, relabelled A held is 4 of 6. A leader
+/// tied with its nearest rival hides none of them. An earlier reading claimed a trade there, using
+/// a spread measured on the UNIFORM rule: the error rule's own two arms
+/// differ by 0.04007 on A re-fit, comparable to the widest gap between any
+/// two rules, so those margins were one rule's variability applied to
+/// another. Replicating the rule under test is not optional.
+///
+/// And retention is carried by the LABELS: refreshing them worsens A
+/// retention in every tested reservoir (error 0.09117 -> 0.13467), clustering
+/// near the ring's 0.13026. What is lost is not evidence about the old world
+/// — only 0.0950 of this cube is contested, so over nine tenths of it a
+/// new-world observation IS an old-world observation — but the OLD-SPECIFIC
+/// LABELS on the tenth where the two disagree.
+///
+///     a buffer's LOCATIONS decide how well it fits the world it is
+///     labelled for; its LABELS decide which world that is
+///
+/// A SUMMARY, not a demonstrated separation — nothing here shows the two
+/// effects are independent, and they have every reason to interact, since
+/// the error rule's locations are chosen by a residual measured under
+/// particular labels. Do not cite it as a factorisation.
+///
+/// So label validity is relative to the world being EVALUATED, never
+/// absolute. The agent's argument was the right SHAPE and the wrong
+/// conclusion: the shares that matter are not equal ones, and it mistook
+/// one sleep's accuracy for the whole objective.
+pub const OBS18_PARETO: f64 = 0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

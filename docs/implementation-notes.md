@@ -7980,3 +7980,130 @@ interesting remaining question, since N is established as dominant and
 nothing says what should be in it. Effective-age inheritance is unaffected.
 
 Validation: G64 passes ReleaseSafe; smoke set clean. G64 ~4 min.
+
+## OBS-18 / G65 — what does a replay policy actually choose?
+
+Christian's queue item 1: equal N, equal k, same optimiser, differing only in
+the measure. One model, one exemplar stream, four admission rules offered
+every observation — recent (a ring), uniform (A-Res reservoir w=1), error
+(w=surprise), uncovered (w = 1 - cover). Weighted reservoir sampling at equal
+weights IS uniform reservoir sampling, so three of the four differ in one
+expression. All four decide at observation time, so none is cheating on cost.
+`Event.cover` added: the continuous coverage computed since MARL-0 and thrown
+away since MARL-0, because a rule built on the boolean would be built on a
+threshold belonging to a different decision.
+
+TWO EXPERIMENTS, complementary, both kept. AS A POLICY each rule carries its
+own labels — a rule over a non-stationary stream chooses WHEN to observe as
+well as where, and that is part of the policy rather than a confound in it.
+AS A LOCATION every label is re-read from the current world, which needs an
+oracle call per point and is therefore a probe, not something deployable. An
+earlier draft called the relabelled version "the only way to run the
+experiment that was specified"; Astra's review corrected that.
+
+Registered composition held. Recent's stale share exactly 0.000, uniform's
+0.487 inside a tolerance derived from the fixture's own contested fraction
+(0.0950 of the cube, ~778 contested points, binomial sd 0.0179), error
+concentrating 3.15x on contested ground against a floor of 2.5.
+
+Registered mechanism REFUTED. `reached` is 1.000 in every arm: no unreached
+ground, because a Gaussian basis holds down its own leakage — 33 of 692
+kernels centred past the window where the target is exactly zero, and `mu0`
+says 33 were BORN there rather than drifting out. So the ROW-COUNT form of
+effective evidence has nothing to vary; conditioning and uneven information
+across parameters are untouched and stay open. Amends MARL-16: "zero is what
+an empty model already predicts" is true of an EMPTY model, false of a
+populated one.
+
+CONTRACT FAILURES, all found by Astra in review and none by the gate.
+(1) The arms did not have equal k. sleepOn rounded each region's share
+independently — 345 to 347 against a budget of 346 — while the header printed
+346. `allocate` is the fix: largest-remainder at exact=true, incumbent bit
+for bit at exact=false so G62 (b), G63 and G64 keep reproducing. G64 re-run
+and matches its recorded table cell for cell. The gate asserts the delivered
+population rather than printing the requested one.
+(2) Reporting only "A re-fit" (after 20,000 further observations) HID the
+policy table's own retention trade, because relearning washes out what a
+sleep preserved. "A held" is now its own column and it reverses the ordering:
+error preserves A at .09117 against the ring's .13026. Historical
+observations really do preserve more of the old world, which an earlier
+reading of this same run denied.
+(3) The replication floor was one gap from two uniform arms and was then
+applied to comparisons involving the error rule. Now three uniform arms and
+two error arms, per-rule spreads reported SEPARATELY because pooling assumes
+the rules vary alike. And a margin printed as "3.07x the spread" SIZES a
+difference over a handful of draws; it does not certify one.
+
+THE PARETO SURFACE IS IN THE POLICY TABLE — the one an earlier draft called
+confounded. Two rules win two axes and both clear their own rule's observed
+spread: the ring takes the world being evaluated (immediate, 18.55x), the
+error-weighted buffer preserves the one before it (A held, 1.93x). Christian's
+registered expectation against the agent's predicted sweep; Christian.
+
+AND THE ERROR REPLICATE OVERTURNED THE FIRST READING OF THE LOCATION TABLE.
+With a floor measured on the uniform rule alone, error looked like it won the
+sleep and came last on both adaptation axes by 13.5x and 8.4x. Its own two
+relabelled arms differ by .04007 on A re-fit, comparable to the widest gap
+between any two rules — so those margins were one rule's variability applied
+to another. With error replicated they collapse to .07x and .01x. In the
+location table only the immediate axis has a UNIQUELY SEPARATED LEADER
+(error by 3.07x, replicated at +.6399 and +.6529); A held, A re-fit and C are
+asserted as negatives because that is exactly where the first version read a
+trade that was not there.
+
+AND THAT NEGATIVE IS ABOUT THE LEADER, NOT THE FIELD — a third interpretation
+bug, also Astra's. `judge` compares the leader to its NEAREST rival, so two
+nearly tied leaders hide every difference behind them, and an earlier draft
+printed "NOTHING else separates" off exactly that test. Counting PAIRS
+separated by more than each table's own spread: A held is 5/6 policy and 4/6
+location (widest recent/uncovered .00591 against a spread of .00345). So
+relabelled buffers do not all behave alike. The gate now reports pairs and
+leaders apart and asserts both.
+
+RETENTION IS CARRIED BY THE LABELS, NOT THE LOCATIONS. Refreshing labels
+worsens A retention in every tested reservoir, by more than the spread —
+error .09117 -> .13467, uniform .11437 -> .13114, uncovered .11283 -> .13617
+— clustering near the ring's .13026 and the un-slept control's .13111, with
+their leaders unseparated by this phase's criterion though four of six pairs
+are. The best retention anywhere belongs to a STALE buffer.
+
+What a relabelled buffer loses is NOT evidence about the old world. Only
+.0950 of this cube is contested, so over nine tenths of it a world-B
+observation IS a world-A observation; what it loses is its A-SPECIFIC labels
+on the tenth where the worlds disagree. The fixture statistic the phase
+opened with turns out to be the mechanism.
+
+  a replay buffer's LOCATIONS decide how well it fits the world it is
+  labelled for; its LABELS decide which world that is
+
+That is a SUMMARY and not a demonstrated separation: nothing here shows the
+two effects are independent, and they have every reason to interact, since
+the error rule's locations are chosen by a residual measured under particular
+labels. Not to be cited as a factorisation.
+
+Label validity is relative to the world being evaluated, not absolute. Error
+weighting is importance sampling by the back door: the best allocation for
+fitting the world its labels describe. The agent's "every parameter needs its
+share" was the right shape and the wrong conclusion — the shares that matter
+are not equal ones.
+
+The control re-fits A for 41 births against every child's 355-440 — capacity,
+not wall clock and not adaptation speed, neither of which this gate measures.
+
+Still owed: windowed error replay, to be pre-registered as a TRADEOFF
+hypothesis rather than an improvement one — can it improve current-world
+fitting without giving up too much prior-world retention? Both halves
+measured. It is a hypothesis, not a policy that follows.
+A recency window can straddle a regime change — the ring is label-consistent
+here only because 20,000 B observations flushed all 8,192 slots, which is the
+fixture's timing and not a property of rings. Restricting error-weighting to
+recent observations changes the distribution it draws from, since its
+surprise values were recorded across both worlds. And a weighted sliding
+window has storage and bookkeeping costs nothing here has priced. Needs
+matched recent/uniform controls, observations placed AROUND the transition,
+and replication of the error policy itself — which this phase has just shown
+is not optional.
+
+Validation: G65 passes ReleaseSafe; G64 re-run unchanged after the allocator
+refactor; smoke set clean. G65 is the campaign's largest gate — thirteen
+sleeps and twenty-eight adaptation runs, ~7 min 30 s.

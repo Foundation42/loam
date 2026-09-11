@@ -57,6 +57,10 @@ pub const Options = struct {
     /// 4 off-diagonal, 8 weight. The default is all of them; it exists so a
     /// divergence can be attributed to a group rather than guessed at.
     groups: u4 = 0b1111,
+    /// Whether the per-region budgets must sum to EXACTLY the budget asked
+    /// for. See `allocate`. False is the incumbent and stays the default,
+    /// because G62 (b), G63 and G64 were measured under it.
+    exact: bool = false,
 };
 
 pub const Report = struct {
@@ -739,6 +743,90 @@ test "G59 (a) the conditional: where does synthesis actually pay?" {
 /// what the model HAS, and a child handed the truth would start life
 /// knowing something its parent had to learn. OBS-11 used the truth
 /// because it was measuring representational quality; a lifecycle cannot.
+/// How many kernels each region keeps.
+///
+/// `exact` is OBS-18's fix, and it is an EXPERIMENTAL-CONTRACT fix rather
+/// than a numerical one. The incumbent rounds each region's share
+/// independently, so a budget of 346 delivers between 345 and 347 depending
+/// on where the fractions fall — measured across G65's five arms at
+/// 347/345/347/345/347. Six tenths of a per cent cannot explain a gain of
+/// +0.34 against −0.42, and that is exactly why it had to be fixed rather
+/// than argued about: "equal N and equal k in every arm" was the design's
+/// own premise, and a header printing the budget REQUESTED was reporting a
+/// number that was not true. Astra found it in review.
+///
+/// False is the incumbent bit for bit, because three gates were measured
+/// under it and their numbers must keep reproducing. True is largest-
+/// remainder apportionment: floors first, then the leftover seats to the
+/// largest fractional parts, skipping regions that are already full. Every
+/// non-empty region still keeps at least one, which is the incumbent's rule
+/// and not an artefact of its rounding.
+///
+/// If the population itself is smaller than `keep` the loop runs out of
+/// room and returns short. The caller asserts the total; a budget that
+/// cannot be met should fail loudly rather than quietly become a smaller
+/// experiment.
+fn allocate(
+    gpa: std.mem.Allocator,
+    reff: []const f64,
+    room: []const usize,
+    keep: usize,
+    exact: bool,
+) ![]usize {
+    const n = reff.len;
+    var total: f64 = 0;
+    for (reff) |r| total += r;
+    const out = try gpa.alloc(usize, n);
+    errdefer gpa.free(out);
+    const frac = try gpa.alloc(f64, n);
+    defer gpa.free(frac);
+    for (0..n) |i| {
+        out[i] = 0;
+        frac[i] = 0;
+        if (room[i] == 0 or !(total > 0)) continue;
+        const share = reff[i] / total * @as(f64, @floatFromInt(keep));
+        if (!exact) {
+            out[i] = @min(room[i], @max(1, @as(usize, @intFromFloat(@round(share)))));
+            continue;
+        }
+        const fl = @floor(share);
+        frac[i] = share - fl;
+        out[i] = @min(room[i], @max(1, @as(usize, @intFromFloat(fl))));
+    }
+    if (!exact) return out;
+
+    var have: usize = 0;
+    for (out) |v| have += v;
+    // Over: take back from the smallest fractional parts, never below one,
+    // so no region is emptied by an accounting pass.
+    while (have > keep) {
+        var pick: ?usize = null;
+        for (0..n) |i| {
+            if (out[i] <= 1) continue;
+            if (pick == null or frac[i] < frac[pick.?]) pick = i;
+        }
+        if (pick == null) break;
+        out[pick.?] -= 1;
+        have -= 1;
+    }
+    // Under: hand out the leftover seats by largest fractional part, and
+    // keep going, because one pass is not enough once a region saturates.
+    // A seat spent drops that region's claim by one so the next goes
+    // elsewhere — otherwise one region with a large remainder takes them all.
+    while (have < keep) {
+        var pick: ?usize = null;
+        for (0..n) |i| {
+            if (out[i] >= room[i]) continue;
+            if (pick == null or frac[i] > frac[pick.?]) pick = i;
+        }
+        if (pick == null) break;
+        out[pick.?] += 1;
+        frac[pick.?] -= 1;
+        have += 1;
+    }
+    return out;
+}
+
 pub fn consolidate(
     gpa: std.mem.Allocator,
     parent: *marl.Model,
@@ -770,12 +858,17 @@ pub fn consolidate(
         total += reff[ri];
     }
 
+    const room = try gpa.alloc(usize, parent.regions.len);
+    defer gpa.free(room);
+    for (parent.regions, 0..) |*reg, ri| room[ri] = reg.own.items.len;
+    const budget = try allocate(gpa, reff, room, keep, o.exact);
+    defer gpa.free(budget);
+
     var out = std.ArrayListUnmanaged(marl.Kernel){};
     errdefer out.deinit(gpa);
     for (parent.regions, 0..) |*reg, ri| {
         if (reg.own.items.len == 0) continue;
-        const share = reff[ri] / total * @as(f64, @floatFromInt(keep));
-        const k = @min(reg.own.items.len, @max(1, @as(usize, @intFromFloat(@round(share)))));
+        const k = budget[ri];
         const tmp = try gpa.alloc(marl.Kernel, reg.own.items.len);
         defer gpa.free(tmp);
         for (reg.own.items, 0..) |g, i| tmp[i] = parent.kernels.items[g];
@@ -933,14 +1026,31 @@ test "G60 wake: was the discarded freedom useful plasticity, or clutter?" {
 pub const Replay = struct {
     x: [][3]f32,
     y: []f64,
+    /// A-Res keys, one per slot; the array is a MIN-HEAP on them, so the
+    /// weakest survivor is always at slot zero. Untouched by `.recent`.
+    key: []f64,
     n: usize = 0,
+    kind: Compose = .recent,
+    st: rng.Stream = rng.Stream.region(0, 0x5245_504C, 0), // "REPL"
 
     pub fn init(gpa: std.mem.Allocator, cap: usize) !Replay {
-        return .{ .x = try gpa.alloc([3]f32, cap), .y = try gpa.alloc(f64, cap) };
+        return initWith(gpa, cap, .recent, 0);
+    }
+    /// The default is `.recent` and the default is the INCUMBENT: every
+    /// gate before OBS-18 keeps the ring it was measured with, bit for bit.
+    pub fn initWith(gpa: std.mem.Allocator, cap: usize, kind: Compose, seed: u64) !Replay {
+        return .{
+            .x = try gpa.alloc([3]f32, cap),
+            .y = try gpa.alloc(f64, cap),
+            .key = try gpa.alloc(f64, cap),
+            .kind = kind,
+            .st = rng.Stream.region(seed, 0x5245_504C, 0),
+        };
     }
     pub fn deinit(self: Replay, gpa: std.mem.Allocator) void {
         gpa.free(self.x);
         gpa.free(self.y);
+        gpa.free(self.key);
     }
     /// A ring: the most recent `cap` observations, so a consolidation sees
     /// the measure the model has most lately been living under.
@@ -950,22 +1060,114 @@ pub const Replay = struct {
         self.y[i] = v;
         self.n += 1;
     }
+    /// Offer one observation, under whatever rule this buffer holds.
+    ///
+    /// The reservoirs keep the `cap` largest A-Res keys, `u^(1/w)`, held in
+    /// logs as `ln(u)/w` — the same order without underflowing at large w,
+    /// and every key negative so the comparison is on one side of zero.
+    pub fn admit(self: *Replay, q: [3]f32, v: f64, surprise: f32, cover: f32) void {
+        if (self.kind == .recent) return self.push(q, v);
+        const k = @log(@max(1e-12, @as(f64, self.st.unit()))) / self.kind.weight(surprise, cover);
+        if (self.n < self.x.len) {
+            self.x[self.n] = q;
+            self.y[self.n] = v;
+            self.key[self.n] = k;
+            self.n += 1;
+            if (self.n == self.x.len) self.heapify();
+            return;
+        }
+        self.n += 1;
+        // Weaker than the weakest survivor: the buffer never sees it.
+        if (k <= self.key[0]) return;
+        self.x[0] = q;
+        self.y[0] = v;
+        self.key[0] = k;
+        self.sift(0);
+    }
+    fn heapify(self: *Replay) void {
+        var i = self.x.len / 2;
+        while (i > 0) {
+            i -= 1;
+            self.sift(i);
+        }
+    }
+    fn sift(self: *Replay, from: usize) void {
+        var i = from;
+        while (true) {
+            var small = i;
+            const l = 2 * i + 1;
+            const r = l + 1;
+            if (l < self.x.len and self.key[l] < self.key[small]) small = l;
+            if (r < self.x.len and self.key[r] < self.key[small]) small = r;
+            if (small == i) return;
+            std.mem.swap([3]f32, &self.x[i], &self.x[small]);
+            std.mem.swap(f64, &self.y[i], &self.y[small]);
+            std.mem.swap(f64, &self.key[i], &self.key[small]);
+            i = small;
+        }
+    }
     pub fn filled(self: Replay) usize {
         return @min(self.n, self.x.len);
     }
 };
 
-/// Stream `n` exemplars of the model's current truth, keeping the last
-/// `buf.len` in the replay ring. The model's own `stream_n` with the
-/// observations retained.
-pub fn wake(m: *marl.Model, n: u64, buf: *Replay, st: *rng.Stream) !void {
+/// How a replay buffer decides what to keep — OBS-18's axis, and the first
+/// thing in this campaign that changes NEITHER the number of samples nor
+/// the number of parameters.
+///
+/// Every rule is an ADMISSION policy: it decides at observation time from
+/// what a learner already has in hand. Nothing here needs a second pass
+/// over history, so no arm is cheating on cost against the ring.
+///
+/// `uncovered` was very nearly `coverage`, which reads both ways — a buffer
+/// that seeks coverage and a buffer that has it are opposite objects.
+pub const Compose = enum {
+    /// A ring of the most recent `cap` observations. The incumbent: every
+    /// OBS phase from 14 to 17 was measured on exactly this.
+    recent,
+    /// Reservoir over the whole history — every observation ever made is
+    /// equally likely to be in the buffer.
+    uniform,
+    /// Weighted reservoir, w = the exemplar's surprise. Where the model was
+    /// wrong when it looked.
+    err,
+    /// Weighted reservoir, w = 1 − the exemplar's coverage. Where the model
+    /// has no basis, which is MARL's own birth statistic and NOT the same
+    /// question as where it is wrong: a point can be well covered and badly
+    /// fitted, or uncovered and accidentally right.
+    uncovered,
+
+    /// Weighted reservoir sampling at equal weights IS uniform reservoir
+    /// sampling, so three of the four rules are one algorithm differing in
+    /// this expression and nowhere else — which is what makes "differing
+    /// only in the measure" a fact about the code and not about the prose.
+    pub fn weight(self: Compose, surprise: f32, cover: f32) f64 {
+        return switch (self) {
+            .recent, .uniform => 1,
+            .err => @max(1e-9, @as(f64, surprise)),
+            .uncovered => @max(1e-9, 1 - @as(f64, cover)),
+        };
+    }
+};
+
+/// Stream `n` exemplars of the model's current truth past every buffer at
+/// once. ONE model, ONE stream, one exemplar offered to each rule — so two
+/// arms cannot differ by a draw, only by what they chose to keep.
+pub fn wakeAll(m: *marl.Model, n: u64, bufs: []const *Replay, st: *rng.Stream) !void {
     var i: u64 = 0;
     while (i < n) : (i += 1) {
         const q = [3]f32{ st.unit(), st.unit(), st.unit() };
         const v = marl.truthOf(m.opts.truth, q);
-        _ = try m.observe(q, .{v});
-        buf.push(q, v);
+        const ev = try m.observe(q, .{v});
+        for (bufs) |b| b.admit(q, v, ev.surprise, ev.cover);
     }
+}
+
+/// Stream `n` exemplars, keeping what one buffer's rule keeps. The model's
+/// own `stream_n` with the observations retained.
+pub fn wake(m: *marl.Model, n: u64, buf: *Replay, st: *rng.Stream) !void {
+    var one = [_]*Replay{buf};
+    return wakeAll(m, n, &one, st);
 }
 
 /// Sleep against whatever target is supplied at the replay points.
@@ -975,6 +1177,7 @@ fn sleepOn(
     pts: []const [3]f32,
     target: []const f64,
     keep: usize,
+    o: Options,
 ) !marl.Model {
     const reff = try gpa.alloc(f64, m.regions.len);
     defer gpa.free(reff);
@@ -994,12 +1197,17 @@ fn sleepOn(
         reff[ri] = novelty.effectiveRank(lam);
         total += reff[ri];
     }
+    const room = try gpa.alloc(usize, m.regions.len);
+    defer gpa.free(room);
+    for (m.regions, 0..) |*reg, ri| room[ri] = reg.own.items.len;
+    const budget = try allocate(gpa, reff, room, keep, o.exact);
+    defer gpa.free(budget);
+
     var out = std.ArrayListUnmanaged(marl.Kernel){};
     defer out.deinit(gpa);
     for (m.regions, 0..) |*reg, ri| {
         if (reg.own.items.len == 0) continue;
-        const share = reff[ri] / total * @as(f64, @floatFromInt(keep));
-        const k = @min(reg.own.items.len, @max(1, @as(usize, @intFromFloat(@round(share)))));
+        const k = budget[ri];
         const tmp = try gpa.alloc(marl.Kernel, reg.own.items.len);
         defer gpa.free(tmp);
         for (reg.own.items, 0..) |g, i| tmp[i] = m.kernels.items[g];
@@ -1014,7 +1222,7 @@ fn sleepOn(
     const w = try novelty.refit(gpa, picked, target);
     defer gpa.free(w);
     for (out.items, w) |*k, wv| k.p[marl.PARAMS - 1] = @floatCast(wv);
-    _ = try refine(gpa, out.items, pts, target, m.opts.regions, .{});
+    _ = try refine(gpa, out.items, pts, target, m.opts.regions, o);
     return adopt(gpa, m.opts, out.items);
 }
 
@@ -1064,9 +1272,9 @@ test "G61 the lineage: is the wake/sleep cycle a ratchet, or damage accumulating
     const before = try p0.rms(hs.p, hs.y, null);
 
     const half0 = p0.kernels.items.len / 2;
-    var s_self = try sleepOn(gpa, &p0, buf.x[0..BUF], self_t, half0);
+    var s_self = try sleepOn(gpa, &p0, buf.x[0..BUF], self_t, half0, .{});
     defer s_self.deinit();
-    var s_rep = try sleepOn(gpa, &p0, buf.x[0..BUF], buf.y[0..BUF], half0);
+    var s_rep = try sleepOn(gpa, &p0, buf.x[0..BUF], buf.y[0..BUF], half0, .{});
     defer s_rep.deinit();
     const r_self = try s_self.rms(hs.p, hs.y, null);
     const r_rep = try s_rep.rms(hs.p, hs.y, null);
@@ -1107,11 +1315,11 @@ test "G61 the lineage: is the wake/sleep cycle a ratchet, or damage accumulating
             // Each sleeps against ITS OWN replay. Sharing one ring would
             // hand the child the parent's experience, which is the whole
             // thing the lineage is supposed to keep apart.
-            const np = try sleepOn(gpa, &parent, pb.x[0..BUF], pb.y[0..BUF], parent.kernels.items.len / 2);
+            const np = try sleepOn(gpa, &parent, pb.x[0..BUF], pb.y[0..BUF], parent.kernels.items.len / 2, .{});
             parent.deinit();
             parent = np;
             parent.opts.truth = moved;
-            const nc = try sleepOn(gpa, &child, cb.x[0..BUF], cb.y[0..BUF], child.kernels.items.len / 2);
+            const nc = try sleepOn(gpa, &child, cb.x[0..BUF], cb.y[0..BUF], child.kernels.items.len / 2, .{});
             child.deinit();
             child = nc;
             child.opts.truth = moved;
@@ -1296,7 +1504,7 @@ test "G62 (b) when is a population ready to be rewritten?" {
 
         reads[mi] = readiness(&p0, 64);
         const before = try p0.rms(ho.p, ho.y, null);
-        var fork = try sleepOn(gpa, &p0, ring.x[0..RING], ring.y[0..RING], p0.kernels.items.len / 2);
+        var fork = try sleepOn(gpa, &p0, ring.x[0..RING], ring.y[0..RING], p0.kernels.items.len / 2, .{});
         defer fork.deinit();
         fork.opts.truth = moved;
         const after = try fork.rms(ho.p, ho.y, null);
@@ -1352,7 +1560,7 @@ test "G62 (b) when is a population ready to be rewritten?" {
     var lifted = false;
     for ([_]usize{ 2048, 8192, 32768 }) |n| {
         try (Measures{ .fit = ring.x[0..n], .sleep = ring.x[0..n], .eval = ho.p }).check();
-        var fork = try sleepOn(gpa, &p0, ring.x[0..n], ring.y[0..n], keep);
+        var fork = try sleepOn(gpa, &p0, ring.x[0..n], ring.y[0..n], keep, .{});
         defer fork.deinit();
         fork.opts.truth = moved;
         const after = try fork.rms(ho.p, ho.y, null);
@@ -1463,7 +1671,7 @@ test "G63 does maturity matter once the evidence is adequate?" {
             std.debug.assert(n <= BIG);
             // The guardrail, every cell.
             try (Measures{ .fit = ring.x[0..n], .sleep = ring.x[0..n], .eval = ho.p }).check();
-            var fork = try sleepOn(gpa, &base, ring.x[0..n], ring.y[0..n], KEEP);
+            var fork = try sleepOn(gpa, &base, ring.x[0..n], ring.y[0..n], KEEP, .{});
             defer fork.deinit();
             fork.opts.truth = moved;
             const after = try fork.rms(ho.p, ho.y, null);
@@ -1560,7 +1768,7 @@ test "G64 is rho a control law, or a description of one axis?" {
             if (k > m.kernels.items.len) continue;
             const rho = @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(k * marl.PARAMS));
             try (Measures{ .fit = ring.x[0..n], .sleep = ring.x[0..n], .eval = ho.p }).check();
-            var fork = try sleepOn(gpa, &m, ring.x[0..n], ring.y[0..n], k);
+            var fork = try sleepOn(gpa, &m, ring.x[0..n], ring.y[0..n], k, .{});
             defer fork.deinit();
             fork.opts.truth = moved;
             const after = try fork.rms(ho.p, ho.y, null);
@@ -1614,4 +1822,571 @@ test "G64 is rho a control law, or a description of one axis?" {
     try testing.expect(!agree);
     try testing.expect(k_monotone);
     try testing.expect(n_monotone);
+}
+
+/// What a replay buffer is MADE OF, in the only terms in which the question
+/// is observable.
+///
+/// A move shifts the shell and nothing else — `swell` never reads the shift
+/// — so outside the band union the two worlds are IDENTICAL and a stored
+/// sample is equally valid under both. Measured over 200 000 uniform
+/// points, 0.0950 of the cube is CONTESTED. Every claim anyone makes about
+/// stale replay is a claim about that tenth, and a "share of old samples"
+/// taken over the whole buffer would mostly be counting samples that cannot
+/// be old.
+pub const Composition = struct {
+    /// Share of the buffer where the two worlds disagree at all.
+    contested: f64,
+    /// Share of THOSE recorded under the old world.
+    stale: f64,
+    /// Share of the buffer past the window, where the target is exactly
+    /// zero in every world and nothing is ever born.
+    dead: f64,
+    /// Share of the buffer some kernel's support contains. The rest are
+    /// all-zero design rows: they cannot constrain the fit, and out past
+    /// the window the target is zero too, so the row is ZERO = ZERO —
+    /// not merely uninformative but empty on both sides.
+    reached: f64,
+};
+
+pub fn compositionOf(
+    b: Replay,
+    old: marl.TruthParams,
+    new: marl.TruthParams,
+    ks: []const marl.Kernel,
+) Composition {
+    const n = b.filled();
+    var contested: usize = 0;
+    var stale: usize = 0;
+    var dead: usize = 0;
+    var reached: usize = 0;
+    for (b.x[0..n], b.y[0..n]) |q, v| {
+        const ya: f64 = marl.truthOf(old, q);
+        const yb: f64 = marl.truthOf(new, q);
+        if (@abs(ya - yb) > 1e-3) {
+            contested += 1;
+            if (@abs(v - ya) < @abs(v - yb)) stale += 1;
+        }
+        if (q[0] > marl.Truth.WINDOW_HI) dead += 1;
+        for (ks) |*k| {
+            if (marl.gaussian(k.shape(), q) > 0) {
+                reached += 1;
+                break;
+            }
+        }
+    }
+    const fn_ = @as(f64, @floatFromInt(@max(1, n)));
+    return .{
+        .contested = @as(f64, @floatFromInt(contested)) / fn_,
+        .stale = if (contested == 0) 0 else @as(f64, @floatFromInt(stale)) / @as(f64, @floatFromInt(contested)),
+        .dead = @as(f64, @floatFromInt(dead)) / fn_,
+        .reached = @as(f64, @floatFromInt(reached)) / fn_,
+    };
+}
+
+/// Put a basis into a fresh model, point it at a world, and let it learn.
+///
+/// Returns what it reached AND what it paid. Births are MARL-9's currency:
+/// capacity is bought per THING LEARNED rather than per change, so a world
+/// the basis still holds is nearly free to revisit and one it has dropped
+/// costs full price. That is what makes this a retention measure rather
+/// than a scoring of a model on a world it is no longer fitting.
+fn adaptTo(
+    gpa: std.mem.Allocator,
+    o: marl.Options,
+    ks: []const marl.Kernel,
+    tp: marl.TruthParams,
+    n: u64,
+    pr: marl.Probes,
+) !struct { rms: f64, births: u64, kernels: usize } {
+    var m = try adopt(gpa, o, ks);
+    defer m.deinit();
+    m.opts.truth = tp;
+    const b0 = m.stats.births;
+    try m.stream_n(n);
+    return .{
+        .rms = try m.rms(pr.p, pr.y, null),
+        .births = m.stats.births - b0,
+        .kernels = m.kernels.items.len,
+    };
+}
+test "G65 replay composition: what does a replay policy actually choose?" {
+    // OBS-17 separated the two knobs a sleep has — f(N) estimation quality
+    // and g(k) information destruction — and left the obvious question
+    // open: nothing says what should be IN the N.
+    //
+    // Christian: "equal-sized rings, same N, same k, same optimiser,
+    // differing only in the measure. Nothing can then hide behind sample
+    // count or compression severity."
+    //
+    // The gate runs TWO experiments, and Astra's correction is that they
+    // are complementary rather than one superseding the other:
+    //
+    //   THE POLICY QUESTION   four admission rules as they would actually
+    //                         run. A rule over a non-stationary stream
+    //                         chooses WHEN to observe as well as WHERE, so
+    //                         it chooses which world its labels describe.
+    //                         That is part of the policy, not a confound
+    //                         in it.
+    //   THE LOCATION QUESTION the same points with every label re-read from
+    //                         the current world. Given these locations, and
+    //                         labels that all describe B, which
+    //                         distribution fits best? Needs an oracle, so
+    //                         it is a probe and not a deployable policy.
+    //
+    // `tools/obs18_predict.py` is where the REGISTERED numbers were frozen.
+    // Everything marked POST-HOC was measured because a run demanded it,
+    // and is labelled so a reader can tell a prediction from a repair.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const N: usize = 8192;
+    const WAKE: u64 = 20_000;
+    const ADAPT: u64 = 20_000;
+
+    const world_a = marl.TruthParams{};
+    var world_b = marl.TruthParams{};
+    world_b.shift = .{ 0, -0.10, 0 };
+    var world_c = marl.TruthParams{};
+    world_c.shift = .{ 0.12, 0, 0.22 };
+
+    const Arm = struct { name: []const u8, kind: Compose, seed: u64 };
+    const arms = [_]Arm{
+        .{ .name = "recent", .kind = .recent, .seed = 0 },
+        .{ .name = "uniform", .kind = .uniform, .seed = 0xA1 },
+        .{ .name = "error", .kind = .err, .seed = 0xB2 },
+        .{ .name = "uncovered", .kind = .uncovered, .seed = 0xC3 },
+        // THE REPLICATES: same rule, different reservoir stream, nothing
+        // else. Two arms give ONE observed gap, which is a sample of size
+        // one; three uniform arms give three. And `error` gets its own,
+        // because a spread measured on the uniform rule and then applied to
+        // a comparison involving the error rule assumes the two rules vary
+        // alike — an assumption that was being made silently.
+        //
+        // Even so this is a DESCRIPTIVE spread over a handful of draws, not
+        // a confidence bound, and the gate says so wherever it prints one.
+        .{ .name = "uniform'", .kind = .uniform, .seed = 0xD4 },
+        .{ .name = "uniform''", .kind = .uniform, .seed = 0xE5 },
+        .{ .name = "error'", .kind = .err, .seed = 0xF6 },
+    };
+    const REC = 0;
+    const UNI = 1;
+    const ERR = 2;
+    const UNC = 3;
+    const rules = [_]usize{ REC, UNI, ERR, UNC };
+    const uni_reps = [_]usize{ UNI, 4, 5 };
+    const err_reps = [_]usize{ ERR, 6 };
+
+    var bufs: [arms.len]Replay = undefined;
+    for (arms, 0..) |a, i| bufs[i] = try Replay.initWith(gpa, N, a.kind, a.seed);
+    defer for (&bufs) |*b| b.deinit(gpa);
+    var ptrs: [arms.len]*Replay = undefined;
+    for (&bufs, 0..) |*b, i| ptrs[i] = b;
+
+    var m = try marl.Model.init(gpa, o);
+    defer m.deinit();
+    var st = rng.Stream.region(1234, 0x4f31_3857, 0); // "O18W"
+    try wakeAll(&m, WAKE, &ptrs, &st);
+    m.opts.truth = world_b;
+    try wakeAll(&m, WAKE, &ptrs, &st);
+
+    // One probe SET across the three worlds — same points, three sets of
+    // values — so an arm is never compared on a different query set.
+    const ha = try marl.probesOf(gpa, world_a, 31337, 4096);
+    const hb = try marl.probesOf(gpa, world_b, 31337, 4096);
+    const hc = try marl.probesOf(gpa, world_c, 31337, 4096);
+    defer {
+        gpa.free(ha.p);
+        gpa.free(ha.y);
+        gpa.free(hb.p);
+        gpa.free(hb.y);
+        gpa.free(hc.p);
+        gpa.free(hc.y);
+    }
+
+    const keep = m.kernels.items.len / 2;
+    const before = try m.rms(hb.p, hb.y, null);
+    std.debug.print("\n  G65 [{s}] {d} kernels after two worlds, before {d:.5}; N = {d} and k = {d} in EVERY arm\n", .{
+        @tagName(builtin.mode), m.kernels.items.len, before, N, keep,
+    });
+
+    const ctl_a = try adaptTo(gpa, o, m.kernels.items, world_a, ADAPT, ha);
+    const ctl_c = try adaptTo(gpa, o, m.kernels.items, world_c, ADAPT, hc);
+    const ctl_held = try m.rms(ha.p, ha.y, null);
+    std.debug.print("  control, no sleep: {d} kernels, B {d:.5} | A held {d:.5}, re-fits to {d:.5} on +{d} births | C {d:.5} +{d} births\n", .{
+        m.kernels.items.len, before, ctl_held, ctl_a.rms, ctl_a.births, ctl_c.rms, ctl_c.births,
+    });
+
+    const Row = struct {
+        comp: Composition,
+        k: usize,
+        after: f64,
+        gain: f64,
+        /// What the sleep PRESERVED of the old world, scored before any
+        /// further learning. Astra's correction, and it carries a finding
+        /// the re-fit column cannot: relearning washes out what was kept.
+        held: f64,
+        ret: f64,
+        ret_births: u64,
+        plast: f64,
+        plast_births: u64,
+    };
+    // Four axes now, because "A held" and "A re-fit" are different
+    // questions and reporting only the second lost a result.
+    const AXES = 4;
+    const axes = [_][]const u8{ "immediate (B)", "A held", "A re-fit", "arriving at C" };
+    const pick = struct {
+        fn v(r: anytype, ax: usize) f64 {
+            return switch (ax) {
+                0 => -r.gain, // negated so every axis is lower-is-better
+                1 => r.held,
+                2 => r.ret,
+                else => r.plast,
+            };
+        }
+    }.v;
+
+    std.debug.print("  {s:<10} {s:>9} {s:>6} {s:>6} {s:>7} | {s:>4} {s:>8} {s:>8} | {s:>8} {s:>8} {s:>7} | {s:>8} {s:>7}\n", .{
+        "arm", "contested", "stale", "dead", "reached", "k", "after", "gain", "A held", "A re-fit", "births", "C RMS", "births",
+    });
+    var row: [arms.len]Row = undefined;
+    for (arms, 0..) |arm, ai| {
+        const comp = compositionOf(bufs[ai], world_a, world_b, m.kernels.items);
+        try (Measures{ .fit = bufs[ai].x[0..N], .sleep = bufs[ai].x[0..N], .eval = hb.p }).check();
+        var child = try sleepOn(gpa, &m, bufs[ai].x[0..N], bufs[ai].y[0..N], keep, .{ .exact = true });
+        defer child.deinit();
+        child.opts.truth = world_b;
+        const after = try child.rms(hb.p, hb.y, null);
+        const held = try child.rms(ha.p, ha.y, null);
+        const ret = try adaptTo(gpa, o, child.kernels.items, world_a, ADAPT, ha);
+        const plast = try adaptTo(gpa, o, child.kernels.items, world_c, ADAPT, hc);
+        row[ai] = .{
+            .comp = comp,
+            .k = child.kernels.items.len,
+            .after = after,
+            .gain = 1 - @as(f64, after) / @as(f64, before),
+            .held = held,
+            .ret = ret.rms,
+            .ret_births = ret.births,
+            .plast = plast.rms,
+            .plast_births = plast.births,
+        };
+        std.debug.print("  {s:<10} {d:>9.4} {d:>6.3} {d:>6.3} {d:>7.3} | {d:>4} {d:>8.5} {d:>8.4} | {d:>8.5} {d:>8.5} {d:>7} | {d:>8.5} {d:>7}\n", .{
+            arm.name, comp.contested, comp.stale, comp.dead, comp.reached,
+            row[ai].k, row[ai].after, row[ai].gain,
+            row[ai].held, row[ai].ret, row[ai].ret_births, row[ai].plast, row[ai].plast_births,
+        });
+    }
+
+    // (0) EQUAL k, asserted rather than announced. The incumbent allocator
+    // rounded each region independently and delivered 345 to 347 against a
+    // budget of 346 while the header printed 346 — a premise of the design
+    // reported as true when it was not. Astra found it in review.
+    for (row) |r| try testing.expectEqual(keep, r.k);
+
+    // The observed same-rule spread, per axis: every pair within a rule,
+    // worst taken. Reported per rule as well as pooled, because pooling
+    // them assumes the rules vary alike and that is exactly the assumption
+    // being leant on when an error-vs-uniform gap is read against it.
+    const spreadOfReps = struct {
+        fn go(r: []const Row, reps: []const usize, ax: usize) f64 {
+            var worst: f64 = 0;
+            for (reps, 0..) |a, i| {
+                for (reps[i + 1 ..]) |b| worst = @max(worst, @abs(pick(r[a], ax) - pick(r[b], ax)));
+            }
+            return worst;
+        }
+    }.go;
+    var noise: [AXES]f64 = undefined;
+    for (0..AXES) |ax| {
+        const u = spreadOfReps(&row, &uni_reps, ax);
+        const e = spreadOfReps(&row, &err_reps, ax);
+        noise[ax] = @max(u, e);
+    }
+    std.debug.print("  same-rule spread (DESCRIPTIVE, a handful of draws — not a confidence bound):\n", .{});
+    for (axes, 0..) |axis, ax| {
+        std.debug.print("    {s: <15} uniform x3 {d:.5}   error x2 {d:.5}   taken as {d:.5}\n", .{
+            axis, spreadOfReps(&row, &uni_reps, ax), spreadOfReps(&row, &err_reps, ax), noise[ax],
+        });
+    }
+
+    // **THE REGISTERED MECHANISM IS REFUTED AND `reached` IS HOW.**
+    //
+    // The prediction was that composition acts through EFFECTIVE evidence:
+    // a point no kernel reaches has an all-zero design row, and past the
+    // window the target is zero too, so the row is ZERO = ZERO. Every arm
+    // reads 1.000. There is no unreached ground, because a Gaussian basis
+    // must actively HOLD DOWN ITS OWN LEAKAGE. `mu0` is a kernel's BIRTH
+    // centre, so the two counts separate "born there" from "drifted there"
+    // instead of assuming it.
+    //
+    // This refutes the ROW-COUNT form of effective evidence and nothing
+    // wider: conditioning, redundant constraints and information spread
+    // unevenly across parameters are untouched by `reached`.
+    var centred: usize = 0;
+    var born: usize = 0;
+    for (m.kernels.items) |*k| {
+        if (k.p[0] > marl.Truth.WINDOW_HI) centred += 1;
+        if (k.mu0[0] > marl.Truth.WINDOW_HI) born += 1;
+    }
+    std.debug.print("  N_eff REFUTED: reached ~1.000 in every arm — of {d} kernels, {d} are centred past the window and {d} were BORN there\n", .{
+        m.kernels.items.len, centred, born,
+    });
+
+    // ── THE LOCATION QUESTION. Same points, every label re-read from the
+    // world the model is in. An oracle call per point, so a probe and not a
+    // policy — and a DIFFERENT question from the one above, not a repair of
+    // it. Astra's point 2, and it is right: which observation times a rule
+    // selects is part of what a replay policy IS.
+    //
+    // The ring needs no refresh, and that is the whole of what makes it
+    // self-consistent here: every point it holds was observed under the
+    // world it is being consolidated for. Checked, not assumed. Note the
+    // condition is the FIXTURE'S — 20 000 observations in world B flushed
+    // all 8 192 slots — and a ring whose window straddled the move would
+    // not be self-consistent at all.
+    var ring_current = true;
+    for (bufs[REC].x[0..N], bufs[REC].y[0..N]) |q, v| {
+        if (v != @as(f64, marl.truthOf(world_b, q))) ring_current = false;
+    }
+
+    const fresh = try gpa.alloc(f64, N);
+    defer gpa.free(fresh);
+    var fr: [arms.len]Row = undefined;
+    fr[REC] = row[REC];
+    std.debug.print("  THE LOCATION QUESTION: same points, labels re-read from the current world\n", .{});
+    std.debug.print("  (the ring is unchanged by a refresh — {s} of its {d} labels move — so it stands as its own arm)\n", .{
+        if (ring_current) "NONE" else "some", N,
+    });
+    std.debug.print("  {s:<10} {s:>10} {s:>9} {s:>9} | {s:>8} {s:>8} {s:>7} | {s:>8} {s:>7}\n", .{
+        "arm", "stale gain", "gain", "delta", "A held", "A re-fit", "births", "C RMS", "births",
+    });
+    for ([_]usize{ UNI, ERR, UNC, 4, 5, 6 }) |ai| {
+        for (bufs[ai].x[0..N], 0..) |q, i| fresh[i] = marl.truthOf(world_b, q);
+        var fc = try sleepOn(gpa, &m, bufs[ai].x[0..N], fresh, keep, .{ .exact = true });
+        defer fc.deinit();
+        fc.opts.truth = world_b;
+        const fa = try fc.rms(hb.p, hb.y, null);
+        const fheld = try fc.rms(ha.p, ha.y, null);
+        const fret = try adaptTo(gpa, o, fc.kernels.items, world_a, ADAPT, ha);
+        const fpla = try adaptTo(gpa, o, fc.kernels.items, world_c, ADAPT, hc);
+        fr[ai] = .{
+            .comp = row[ai].comp,
+            .k = fc.kernels.items.len,
+            .after = fa,
+            .gain = 1 - @as(f64, fa) / @as(f64, before),
+            .held = fheld,
+            .ret = fret.rms,
+            .ret_births = fret.births,
+            .plast = fpla.rms,
+            .plast_births = fpla.births,
+        };
+        std.debug.print("  {s:<10} {d:>10.4} {d:>9.4} {d:>9.4} | {d:>8.5} {d:>8.5} {d:>7} | {d:>8.5} {d:>7}\n", .{
+            arms[ai].name, row[ai].gain, fr[ai].gain, fr[ai].gain - row[ai].gain,
+            fr[ai].held, fr[ai].ret, fr[ai].ret_births, fr[ai].plast, fr[ai].plast_births,
+        });
+        try testing.expectEqual(keep, fr[ai].k);
+    }
+    var fnoise: [AXES]f64 = undefined;
+    for (0..AXES) |ax| {
+        fnoise[ax] = @max(spreadOfReps(&fr, &uni_reps, ax), spreadOfReps(&fr, &err_reps, ax));
+    }
+    std.debug.print("  its own same-rule spread: {d:.4} on gain, {d:.5} A held, {d:.5} A re-fit, {d:.5} C\n", .{
+        fnoise[0], fnoise[1], fnoise[2], fnoise[3],
+    });
+
+    // ── THE PARETO QUESTION, asked of both tables and in units of the
+    // observed spread, because a lead smaller than the same-rule spread is
+    // not a lead. Astra's point 3: this ratio SIZES a difference, it does
+    // not certify one.
+    const Verdict = struct { winner: usize, margin: f64, clears: bool };
+    const judge = struct {
+        fn go(r: []const Row, rs: []const usize, nz: []const f64, ax: usize) Verdict {
+            var w = rs[0];
+            for (rs) |ai| {
+                if (pick(r[ai], ax) < pick(r[w], ax)) w = ai;
+            }
+            var best: f64 = 0;
+            var first = true;
+            for (rs) |ai| {
+                if (ai == w) continue;
+                const d = pick(r[ai], ax) - pick(r[w], ax);
+                if (first or d < best) best = d;
+                first = false;
+            }
+            return .{ .winner = w, .margin = best, .clears = best > nz[ax] };
+        }
+    }.go;
+
+    // `judge` compares the leader to its NEAREST rival, so "the leader is
+    // not uniquely separated" says nothing whatever about the rest of the
+    // field: two nearly tied leaders hide every difference behind them.
+    // An earlier draft of this gate printed "NOTHING else separates" off
+    // exactly that test — and on the relabelled A-held axis four of six
+    // pairs separate. Astra caught it. The two questions are reported apart
+    // from here on, because they are different questions.
+    const Pairs = struct { n: usize, widest: f64, lo: usize, hi: usize };
+    const pairsOf = struct {
+        fn go(r: []const Row, rs: []const usize, sp: f64, ax: usize) Pairs {
+            var out = Pairs{ .n = 0, .widest = 0, .lo = rs[0], .hi = rs[0] };
+            for (rs, 0..) |a, i| {
+                for (rs[i + 1 ..]) |b| {
+                    const d = @abs(pick(r[a], ax) - pick(r[b], ax));
+                    if (d <= sp) continue;
+                    out.n += 1;
+                    if (d > out.widest) {
+                        out.widest = d;
+                        out.lo = a;
+                        out.hi = b;
+                    }
+                }
+            }
+            return out;
+        }
+    }.go;
+
+    var pol: [AXES]Verdict = undefined;
+    var loc: [AXES]Verdict = undefined;
+    std.debug.print("  {s:<16} {s:>26}   {s:>26}\n", .{ "axis", "AS A POLICY (own labels)", "AS A LOCATION (relabelled)" });
+    for (axes, 0..) |axis, ax| {
+        pol[ax] = judge(&row, &rules, &noise, ax);
+        loc[ax] = judge(&fr, &rules, &fnoise, ax);
+        std.debug.print("  {s:<16} {s:>10} by {d:>5.2}x {s:>7}   {s:>10} by {d:>5.2}x {s:>7}\n", .{
+            axis,
+            arms[pol[ax].winner].name, pol[ax].margin / @max(1e-9, noise[ax]), if (pol[ax].clears) "clears" else "(inside)",
+            arms[loc[ax].winner].name, loc[ax].margin / @max(1e-9, fnoise[ax]), if (loc[ax].clears) "clears" else "(inside)",
+        });
+    }
+
+    // ── THE FINDING, and Astra's point 1 is half of it.
+    //
+    // **The policy table already trades.** The ring wins the current world
+    // and is LAST at preserving the old one; the error-weighted buffer is
+    // the reverse. Historical observations really do preserve more of A —
+    // which the re-fit column cannot show, because 20 000 further
+    // observations wash out what was kept. Reporting only the re-fit column
+    // lost a result that was sitting in the same run.
+    var pol_trade = false;
+    if (pol[0].winner == REC and pol[1].winner != REC) pol_trade = true;
+    std.debug.print("  separated PAIRS, of six, at each table's own spread — a leader tied with its nearest rival hides none of these:\n", .{});
+    for (axes, 0..) |axis, ax| {
+        const pp = pairsOf(&row, &rules, noise[ax], ax);
+        const lp = pairsOf(&fr, &rules, fnoise[ax], ax);
+        std.debug.print("    {s: <15} policy {d}/6 (widest {s}/{s} {d:.5})   location {d}/6 (widest {s}/{s} {d:.5})\n", .{
+            axis,
+            pp.n, arms[pp.lo].name, arms[pp.hi].name, pp.widest,
+            lp.n, arms[lp.lo].name, arms[lp.hi].name, lp.widest,
+        });
+    }
+    std.debug.print("  AS A POLICY: {s} wins the current world, {s} preserves the old one — {s}\n", .{
+        arms[pol[0].winner].name, arms[pol[1].winner].name,
+        if (pol_trade) "the policy table trades ON ITS OWN" else "no trade in the policy table",
+    });
+    std.debug.print("  AS A LOCATION: {s} wins the current world by {d:.2}x — the ONLY axis with a uniquely separated leader (which is not the same as no differences)\n", .{
+        arms[loc[0].winner].name, loc[0].margin / @max(1e-9, fnoise[0]),
+    });
+    // **The error rule's own replicate is why that reads differently from
+    // the first attempt.** With a floor measured only on the uniform rule,
+    // error looked last on both adaptation axes by 13.5x and 8.4x. Its own
+    // two relabelled arms differ on A re-fit by an amount comparable to the
+    // largest gap between any two RULES — so those margins were an artefact
+    // of applying one rule's variability to another. Astra's point 3,
+    // earning its cost on the first run that included it.
+    var widest: f64 = 0;
+    for (rules, 0..) |a, i| {
+        for (rules[i + 1 ..]) |b| widest = @max(widest, @abs(fr[a].ret - fr[b].ret));
+    }
+    std.debug.print("  and the caution: the ERROR rule's own two relabelled arms differ by {d:.5} on A re-fit, against {d:.5} between the widest-separated RULES\n", .{
+        spreadOfReps(&fr, &err_reps, 2), widest,
+    });
+
+    // Retention is carried by the LABELS, not by the locations. Every rule's
+    // own points retain the old world WORSE once relabelled, because a
+    // buffer all of whose labels describe B holds no evidence about A —
+    // whatever its distribution.
+    std.debug.print("  relabelling and A held: ", .{});
+    for ([_]usize{ UNI, ERR, UNC }) |ai| {
+        std.debug.print("{s} {d:.5}->{d:.5}  ", .{ arms[ai].name, row[ai].held, fr[ai].held });
+    }
+    std.debug.print("(spread {d:.5}) — worse for EVERY rule; the relabelled leaders are not separated, but four of their six pairs are\n", .{noise[1]});
+    std.debug.print("  CHRISTIAN: a Pareto surface.  THE AGENT: the unbiased arms take everything.  — CHRISTIAN, and it lives in the POLICY table\n", .{});
+    std.debug.print("  a buffer's LOCATIONS decide how well it fits the world it is labelled for; its LABELS decide which world that is\n", .{});
+    // And the qualification the fixture itself supplies: only 0.0950 of this
+    // cube is CONTESTED, so a relabelled buffer has not lost its information
+    // about the old world — it has lost the A-SPECIFIC labels on the tenth
+    // where the two worlds disagree. Over the other nine tenths a world-B
+    // observation is a world-A observation.
+    std.debug.print("  and what a relabelled buffer loses is not evidence about the old world but its A-SPECIFIC labels on the {d:.1}% where the worlds disagree\n", .{
+        100 * row[UNI].comp.contested,
+    });
+
+    // ── REGISTERED: the buffers must actually differ, or the phase measures
+    // nothing. Mutation: give every arm `.recent` and all seven rows become
+    // one.
+    try testing.expectEqual(@as(f64, 0), row[REC].comp.stale);
+    try testing.expect(@abs(row[UNI].comp.stale - 0.5) < thresholds.OBS18_STALE_TOL);
+    try testing.expect(row[ERR].comp.contested > thresholds.OBS18_ERROR_CONTESTED * row[UNI].comp.contested);
+
+    // ── REGISTERED, and REFUTED. `OBS18_UNCOVERED_DEAD` and
+    // `OBS18_UNCOVERED_REACHED` are left standing and marked; what is
+    // asserted is the refutation and the mechanism that replaces it.
+    for (row) |r| try testing.expect(r.comp.reached > 0.99);
+    try testing.expect(centred > 0 and born > 0);
+    try testing.expect(row[UNC].comp.dead > row[UNI].comp.dead);
+
+    // ── POST-HOC: THE PARETO SURFACE, and it is in the POLICY table — the
+    // one an earlier draft of this gate called confounded. Two rules win
+    // two axes and both clear their own rule's observed spread: the ring
+    // takes the world being evaluated, the error-weighted buffer preserves
+    // the one before it.
+    try testing.expect(ring_current);
+    try testing.expect(pol[0].clears and pol[0].winner == REC);
+    try testing.expect(pol[1].clears and pol[1].winner == ERR);
+    try testing.expect(pol[0].winner != pol[1].winner);
+    for (rules) |ai| {
+        if (ai == REC) continue;
+        try testing.expect(row[REC].held > row[ai].held);
+    }
+
+    // ── POST-HOC: relabelling lifts the fit to the CURRENT world for every
+    // rule — which is not "stale data is corrupt" but "stale data is
+    // evidence about a different world, and you are being marked on this
+    // one".
+    for ([_]usize{ UNI, ERR, UNC }) |ai| {
+        try testing.expect(fr[ai].gain > 0);
+        try testing.expect(fr[ai].gain - row[ai].gain > noise[0]);
+    }
+
+    // ── POST-HOC: in the location table the immediate axis is the only one
+    // with a UNIQUELY SEPARATED LEADER. Asserted as a negative on purpose:
+    // the first version of this gate read a trade off these columns using a
+    // spread borrowed from another rule, and a gate silent about that would
+    // let the same mistake back in.
+    //
+    // But the negative is only about the LEADER, and the pair count above is
+    // what stops it being read as "no differences" — which is how it was
+    // written up before Astra pointed at the arithmetic. On the relabelled
+    // A-held axis the leader is tied with its nearest rival and four of six
+    // pairs still separate, so both facts are asserted together.
+    try testing.expect(loc[0].clears and loc[0].winner == ERR);
+    try testing.expect(fr[ERR].gain > fr[UNI].gain and fr[6].gain > fr[UNI].gain);
+    try testing.expect(!loc[1].clears and !loc[2].clears and !loc[3].clears);
+    try testing.expect(pairsOf(&fr, &rules, fnoise[1], 1).n > 0);
+
+    // ── POST-HOC: retention comes from the LABELS. Every rule's own points
+    // retain the old world worse once every label describes the new one, by
+    // more than the observed spread — including the arm that was BEST at it.
+    for ([_]usize{ UNI, ERR, UNC }) |ai| {
+        try testing.expect(fr[ai].held - row[ai].held > noise[1]);
+    }
+
+    // ── POST-HOC: a consolidation is paid for at the next regime change,
+    // in CAPACITY. Not a claim about wall clock or about adaptation speed.
+    var min_births = row[0].ret_births;
+    for (rules) |ai| min_births = @min(min_births, row[ai].ret_births);
+    std.debug.print("  returning to A: the control paid {d} births, the cheapest slept arm {d} — capacity, not wall clock\n", .{
+        ctl_a.births, min_births,
+    });
+    try testing.expect(ctl_a.births * 2 < min_births);
 }
