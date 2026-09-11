@@ -1094,8 +1094,25 @@ pub const Replay = struct {
     /// logs as `ln(u)/w` — the same order without underflowing at large w,
     /// and every key negative so the comparison is on one side of zero.
     pub fn admit(self: *Replay, q: [3]f32, v: f64, surprise: f32, cover: f32) void {
-        if (self.kind == .recent) return self.push(q, v);
-        const at = self.n;
+        return self.admitAt(q, v, surprise, cover, self.n);
+    }
+    /// The same admission with the observation index supplied.
+    ///
+    /// `admit` stamps `self.n`, which is right for a buffer fed by a live
+    /// stream and WRONG for one filled by selecting from a pool — there the
+    /// slot's index is the observation's, not the selection's. OBS-20 needs
+    /// the distinction because its statistics ask how old a selected slot
+    /// is, and a stamp of "seventh thing I looked at" answers nothing.
+    pub fn admitAt(self: *Replay, q: [3]f32, v: f64, surprise: f32, cover: f32, stamp: u64) void {
+        if (self.kind == .recent) {
+            const i = self.n % self.x.len;
+            self.x[i] = q;
+            self.y[i] = v;
+            self.t[i] = stamp;
+            self.n += 1;
+            return;
+        }
+        const at = stamp;
         const u = @max(1e-12, @as(f64, self.st.unit()));
         const w = self.kind.weight(surprise, cover);
         // OBS-19's window, and the whole of it: let the weight GROW with
@@ -1258,6 +1275,125 @@ pub const Compose = enum {
         };
     }
 };
+
+/// OBS-20's HARD CUTOFF: the last `span` observations, and nothing else.
+///
+/// Astra's contract for the phase — *identical eligible observations for the
+/// error and uniform selections, with the cutoff preventing either rule from
+/// retaining an expired sample* — decides this implementation.
+///
+/// A per-rule reservoir could have carried it, and an earlier draft of this
+/// comment claimed otherwise — wrongly. OBS-18's and OBS-19's reservoirs all
+/// received the SAME observation stream, and that two selection rules keep
+/// different subsets is what selection rules ARE, not a confound in
+/// comparing them (Astra).
+///
+/// What a LITERAL SHARED OBJECT adds is that hard-cutoff ELIGIBILITY becomes
+/// explicit and ENFORCEABLE: one deterministic ring, no sampling anywhere in
+/// it, every rule selecting its N from the same bytes, so "neither rule can
+/// retain an expired sample" is a property of the structure rather than
+/// something each arm has to be measured for. The gate asserts the contract
+/// instead of checking it per rule.
+///
+/// Selection happens AT THE SLEEP rather than at admission, which is exact:
+/// A-Res over a static pool IS weighted sampling without replacement. A hard
+/// cutoff has no incumbent to stay bit-identical to, so there is nothing to
+/// be gained by carrying keys forward.
+///
+/// **And this separates two things the previous phases held together.**
+///
+///     WHAT YOU KEEP            the window, W observations
+///     WHAT YOU CONSOLIDATE ON  the selection, N of them
+///
+/// The honest price of a hard cutoff is the first number. OBS-19's
+/// exponential form stored N and needed no expiry machinery at all; this
+/// stores W. That is the cost Astra said had not been priced.
+pub const Window = struct {
+    x: [][3]f32,
+    y: []f64,
+    /// Surprise and coverage AS OBSERVED. A selection made at sleep time
+    /// still weighs each exemplar by what the model knew when it saw it —
+    /// nothing here reprioritises with hindsight, which is the property
+    /// OBS-19 had to be corrected on.
+    s: []f32,
+    c: []f32,
+    t: []u64,
+    n: u64 = 0,
+
+    pub fn init(gpa: std.mem.Allocator, span: usize) !Window {
+        return .{
+            .x = try gpa.alloc([3]f32, span),
+            .y = try gpa.alloc(f64, span),
+            .s = try gpa.alloc(f32, span),
+            .c = try gpa.alloc(f32, span),
+            .t = try gpa.alloc(u64, span),
+        };
+    }
+    pub fn deinit(self: Window, gpa: std.mem.Allocator) void {
+        gpa.free(self.x);
+        gpa.free(self.y);
+        gpa.free(self.s);
+        gpa.free(self.c);
+        gpa.free(self.t);
+    }
+    pub fn push(self: *Window, q: [3]f32, v: f64, surprise: f32, cover: f32) void {
+        const i = self.n % self.x.len;
+        self.x[i] = q;
+        self.y[i] = v;
+        self.s[i] = surprise;
+        self.c[i] = cover;
+        self.t[i] = self.n;
+        self.n += 1;
+    }
+    pub fn filled(self: Window) usize {
+        return @min(self.n, @as(u64, self.x.len));
+    }
+    /// The share of the POOL recorded before `cut`. Deterministic — a window
+    /// is a ring, so arithmetic already says what this is, and the gate
+    /// checks the arithmetic rather than trusting it.
+    pub fn oldShare(self: Window, cut: u64) f64 {
+        const f = self.filled();
+        var old: usize = 0;
+        for (self.t[0..f]) |ti| {
+            if (ti < cut) old += 1;
+        }
+        return @as(f64, @floatFromInt(old)) / @as(f64, @floatFromInt(@max(1, f)));
+    }
+    /// Fill `out` by selecting under ITS rule from THIS pool.
+    ///
+    /// Offered oldest first, so that a `.recent` rule reduces to the ring
+    /// exactly — which is the degenerate check at W = N, where the pool is
+    /// the buffer and every rule must select all of it whatever its measure.
+    pub fn selectInto(self: Window, out: *Replay) void {
+        out.n = 0;
+        const f = self.filled();
+        const start = self.n - @as(u64, f);
+        var i: u64 = 0;
+        while (i < f) : (i += 1) {
+            const j: usize = @intCast((start + i) % @as(u64, self.x.len));
+            out.admitAt(self.x[j], self.y[j], self.s[j], self.c[j], self.t[j]);
+        }
+    }
+};
+
+/// Stream `n` exemplars past every buffer AND every window at once — one
+/// model, one stream, so no two arms can differ by a draw.
+pub fn wakeInto(
+    m: *marl.Model,
+    n: u64,
+    bufs: []const *Replay,
+    wins: []const *Window,
+    st: *rng.Stream,
+) !void {
+    var i: u64 = 0;
+    while (i < n) : (i += 1) {
+        const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+        const v = marl.truthOf(m.opts.truth, q);
+        const ev = try m.observe(q, .{v});
+        for (bufs) |b| b.admit(q, v, ev.surprise, ev.cover);
+        for (wins) |w| w.push(q, v, ev.surprise, ev.cover);
+    }
+}
 
 /// Stream `n` exemplars of the model's current truth past every buffer at
 /// once. ONE model, ONE stream, one exemplar offered to each rule — so two
@@ -2994,4 +3130,373 @@ test "G66 windowed error replay: can a window price staleness?" {
     try testing.expect(@abs(rows[1][ERR].old - rows[1][UNI].old) < 0.05);
     try testing.expect(rows[1][ERR].gain - rows[1][UNI].gain > @max(spanOf(&rows[1], groups[2], 0), spanOf(&rows[1], groups[1], 0)));
     try testing.expect(rows[1][UNI].held - rows[1][ERR].held > @max(spanOf(&rows[1], groups[2], 1), spanOf(&rows[1], groups[1], 1)));
+}
+
+test "G67 a hard cutoff: does error selection pay when the pool is shared?" {
+    // OBS-19 established that an EXPONENTIAL recency price can be PAID.
+    // Whatever survives such a window had to outbid it, and on a moved world
+    // what outbids it is adversely selected — A-era surprise already
+    // concentrates on the structure the two worlds will later disagree
+    // about, so `err@tau` carried 276 wrong labels of 8192 against
+    // `uni@tau`'s 37.
+    //
+    // It also established, under a same-points refresh control, that THE
+    // LOCATIONS ARE NOT THE PROBLEM: given current labels the error-selected
+    // points reached 0.02866 and 0.03004 against the ring's 0.04650, 38% and
+    // 35% lower error. That arm needed an oracle per point.
+    //
+    // A HARD cutoff cannot be bought past at any weight. So: does it deliver
+    // that arm honestly? Astra's specification, and its contract decides the
+    // whole design — *identical eligible observations for the error and
+    // uniform selections, with the cutoff preventing either rule from
+    // retaining an expired sample.* See `Window`: the pool is one shared
+    // object and the gate asserts the contract rather than arguing it.
+    //
+    // `tools/obs20_predict.py` is where the REGISTERED numbers were frozen.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const N: usize = 8192;
+    const WAKE_A: u64 = 30_000;
+    const M: u64 = 16_384; // M/N = 2.0, OBS-19's late offset exactly
+    const CLEAN = thresholds.OBS20_CLEAN_SPAN * N; // 2N: reaches back to the move and no further
+    const WIDE = 4 * N; // 4N: reaches 16384 observations PAST it
+    const TOTAL = WAKE_A + M;
+
+    const world_a = marl.TruthParams{};
+    var world_b = marl.TruthParams{};
+    world_b.shift = .{ 0, -0.10, 0 };
+
+    var w_deg = try Window.init(gpa, N);
+    defer w_deg.deinit(gpa);
+    var w_clean = try Window.init(gpa, CLEAN);
+    defer w_clean.deinit(gpa);
+    var w_wide = try Window.init(gpa, WIDE);
+    defer w_wide.deinit(gpa);
+
+    const Arm = struct { name: []const u8, kind: Compose, tau: f64, seed: u64, w: ?usize };
+    const arms = [_]Arm{
+        // Streaming: the incumbent ring, and OBS-19's exponential price for
+        // a direct comparison at matched N and k.
+        .{ .name = "recent", .kind = .recent, .tau = 0, .seed = 0, .w = null },
+        .{ .name = "err@tau", .kind = .err, .tau = thresholds.OBS19_WINDOW_TAU, .seed = 0x3C, .w = null },
+        .{ .name = "err@tau'", .kind = .err, .tau = thresholds.OBS19_WINDOW_TAU, .seed = 0x4D, .w = null },
+        // Selected from a SHARED hard-cutoff pool. Same window index means
+        // literally the same object, which is the contract.
+        .{ .name = "h-uni@2N", .kind = .uniform, .tau = 0, .seed = 0x11, .w = 1 },
+        .{ .name = "h-uni@2N'", .kind = .uniform, .tau = 0, .seed = 0x22, .w = 1 },
+        .{ .name = "h-err@2N", .kind = .err, .tau = 0, .seed = 0x33, .w = 1 },
+        .{ .name = "h-err@2N'", .kind = .err, .tau = 0, .seed = 0x44, .w = 1 },
+        .{ .name = "h-uni@4N", .kind = .uniform, .tau = 0, .seed = 0x55, .w = 2 },
+        .{ .name = "h-uni@4N'", .kind = .uniform, .tau = 0, .seed = 0x66, .w = 2 },
+        .{ .name = "h-err@4N", .kind = .err, .tau = 0, .seed = 0x77, .w = 2 },
+        .{ .name = "h-err@4N'", .kind = .err, .tau = 0, .seed = 0x88, .w = 2 },
+    };
+    const REC = 0;
+    const EXP = 1;
+    const U2 = 3;
+    const E2 = 5;
+    const U4 = 7;
+    const E4 = 9;
+    const rules = [_]usize{ REC, EXP, U2, E2, U4, E4 };
+    const groups = [_][]const usize{
+        &.{REC}, // deterministic in the stream: its spread is zero by construction
+        &.{ EXP, 2 },
+        &.{ U2, 4 },
+        &.{ E2, 6 },
+        &.{ U4, 8 },
+        &.{ E4, 10 },
+    };
+
+    var bufs: [arms.len]Replay = undefined;
+    for (arms, 0..) |a, i| bufs[i] = if (a.tau == 0)
+        try Replay.initWith(gpa, N, a.kind, a.seed)
+    else
+        try Replay.initWindowed(gpa, N, a.kind, a.seed, a.tau);
+    defer for (&bufs) |*b| b.deinit(gpa);
+
+    // Only the streaming arms are fed by the wake; the rest select afterwards.
+    var streaming: [3]*Replay = .{ &bufs[0], &bufs[1], &bufs[2] };
+    var wins: [3]*Window = .{ &w_deg, &w_clean, &w_wide };
+
+    var m = try marl.Model.init(gpa, o);
+    defer m.deinit();
+    var st = rng.Stream.region(1234, 0x4f32_3048, 0); // "O20H"
+    try wakeInto(&m, WAKE_A, &streaming, &wins, &st);
+    m.opts.truth = world_b;
+    try wakeInto(&m, M, &streaming, &wins, &st);
+
+    const ha = try marl.probesOf(gpa, world_a, 31337, 4096);
+    const hb = try marl.probesOf(gpa, world_b, 31337, 4096);
+    defer {
+        gpa.free(ha.p);
+        gpa.free(ha.y);
+        gpa.free(hb.p);
+        gpa.free(hb.y);
+    }
+
+    const keep = m.kernels.items.len / 2;
+    const before = try m.rms(hb.p, hb.y, null);
+    const ctl_held = try m.rms(ha.p, ha.y, null);
+    std.debug.print("\n  G67 [{s}] {d} kernels, k = {d}, N = {d}; W in {{N, 2N, 4N}} = {{{d}, {d}, {d}}} over {d} observations\n", .{
+        @tagName(builtin.mode), m.kernels.items.len, keep, N, N, CLEAN, WIDE, TOTAL,
+    });
+    std.debug.print("     control, no sleep: B {d:.5} | A held {d:.5}\n", .{ before, ctl_held });
+
+    // ── Q1, THE CONTRACT, asserted before anything is measured. A pool is a
+    // ring, so arithmetic already says what is in it; the gate checks the
+    // arithmetic rather than trusting it.
+    for (wins, [_]usize{ N, CLEAN, WIDE }) |w, span| {
+        try testing.expectEqual(span, w.filled());
+        for (w.t[0..span]) |ti| try testing.expect(ti >= TOTAL - @as(u64, span));
+    }
+    std.debug.print("     pool composition (DETERMINISTIC — a window is a ring):", .{});
+    for (wins, [_][]const u8{ "N", "2N", "4N" }) |w, nm| {
+        std.debug.print("  W={s} {d} obs, pre-move {d:.3}", .{ nm, w.filled(), w.oldShare(WAKE_A) });
+    }
+    std.debug.print("\n", .{});
+    try testing.expectEqual(@as(f64, 0), w_deg.oldShare(WAKE_A));
+    try testing.expectEqual(@as(f64, 0), w_clean.oldShare(WAKE_A));
+    try testing.expect(@abs(w_wide.oldShare(WAKE_A) - 0.5) < 1e-12);
+
+    // ── Q2, THE DEGENERATE CHECK. At W = N the pool IS the buffer, so every
+    // rule must select all of it whatever its measure — and the result is the
+    // ring. If this fails, the window and the measure are not wired to each
+    // other the way the phase assumes.
+    {
+        var d_uni = try Replay.initWith(gpa, N, .uniform, 0x99);
+        defer d_uni.deinit(gpa);
+        var d_err = try Replay.initWith(gpa, N, .err, 0xAA);
+        defer d_err.deinit(gpa);
+        w_deg.selectInto(&d_uni);
+        w_deg.selectInto(&d_err);
+        try testing.expectEqual(N, d_uni.filled());
+        try testing.expectEqual(N, d_err.filled());
+        for (d_uni.t[0..N]) |ti| try testing.expect(ti >= TOTAL - @as(u64, N));
+        for (d_err.t[0..N]) |ti| try testing.expect(ti >= TOTAL - @as(u64, N));
+        try testing.expectEqual(@as(f64, 0), bufs[REC].oldShare(TOTAL - N));
+        std.debug.print("     Q2 degenerate: at W = N every rule selects the whole pool, so uniform and error both reduce to the ring\n", .{});
+    }
+
+    // Fill the selected arms from their shared pools.
+    for (arms, 0..) |a, i| {
+        if (a.w) |wi| wins[wi].selectInto(&bufs[i]);
+    }
+
+    const Row = struct {
+        old: f64,
+        comp: Composition,
+        wrong: f64,
+        k: usize,
+        after: f64,
+        gain: f64,
+        held: f64,
+    };
+    const AXES = 2;
+    const axes = [_][]const u8{ "immediate (B)", "A held" };
+    const pick = struct {
+        fn v(r: anytype, ax: usize) f64 {
+            return if (ax == 0) -r.gain else r.held;
+        }
+    }.v;
+    const spanOf = struct {
+        fn go(r: []const Row, g: []const usize, ax: usize) f64 {
+            var worst: f64 = 0;
+            for (g, 0..) |a, i| {
+                for (g[i + 1 ..]) |b| worst = @max(worst, @abs(pick(r[a], ax) - pick(r[b], ax)));
+            }
+            return worst;
+        }
+    }.go;
+
+    std.debug.print("     {s:<11} {s:>6} {s:>9} {s:>6} {s:>7} {s:>6} | {s:>8} {s:>8} | {s:>8}\n", .{
+        "arm", "old", "contested", "stale", "wrong", "dead", "after", "gain", "A held",
+    });
+    var row: [arms.len]Row = undefined;
+    for (arms, 0..) |arm, ai| {
+        const comp = compositionOf(bufs[ai], world_a, world_b, m.kernels.items);
+        try (Measures{ .fit = bufs[ai].x[0..N], .sleep = bufs[ai].x[0..N], .eval = hb.p }).check();
+        var child = try sleepOn(gpa, &m, bufs[ai].x[0..N], bufs[ai].y[0..N], keep, .{ .exact = true });
+        defer child.deinit();
+        child.opts.truth = world_b;
+        const after = try child.rms(hb.p, hb.y, null);
+        row[ai] = .{
+            .old = bufs[ai].oldShare(WAKE_A),
+            .comp = comp,
+            .wrong = comp.stale * comp.contested * @as(f64, @floatFromInt(N)),
+            .k = child.kernels.items.len,
+            .after = after,
+            .gain = 1 - @as(f64, after) / @as(f64, before),
+            .held = try child.rms(ha.p, ha.y, null),
+        };
+        std.debug.print("     {s:<11} {d:>6.3} {d:>9.4} {d:>6.3} {d:>7.0} {d:>6.3} | {d:>8.5} {d:>8.4} | {d:>8.5}\n", .{
+            arm.name, row[ai].old, comp.contested, comp.stale, row[ai].wrong, comp.dead,
+            row[ai].after, row[ai].gain, row[ai].held,
+        });
+        try testing.expectEqual(keep, row[ai].k);
+    }
+
+    std.debug.print("     same-rule spread (DESCRIPTIVE, two draws a rule — not a confidence bound):", .{});
+    for (0..AXES) |ax| {
+        std.debug.print("  {s}", .{axes[ax]});
+        for (groups[1..]) |g| std.debug.print(" {d:.4}", .{spanOf(&row, g, ax)});
+    }
+    std.debug.print("\n", .{});
+    std.debug.print("     pairwise, in units of the WORSE of the two rules' own spreads (negative = the first is better):\n", .{});
+    for (0..AXES) |ax| {
+        std.debug.print("       {s: <15}", .{axes[ax]});
+        for (rules, 0..) |_, i| {
+            for (rules[i + 1 ..], i + 1..) |_, j| {
+                const sp = @max(spanOf(&row, groups[i], ax), spanOf(&row, groups[j], ax));
+                const d = (pick(row[rules[i]], ax) - pick(row[rules[j]], ax)) / @max(1e-12, sp);
+                if (@abs(d) <= 1) continue;
+                std.debug.print("  {s}/{s} {d:.2}x", .{ arms[rules[i]].name, arms[rules[j]].name, d });
+            }
+        }
+        std.debug.print("\n", .{});
+    }
+
+    // ── THE SAME-POINTS REFRESH CONTROL, now standing practice. If the hard
+    // cutoff has already removed every wrong label from the 2N arms, then
+    // refreshing them can change nothing — which is a far stronger check of
+    // the contract than counting labels.
+    const fresh = try gpa.alloc(f64, N);
+    defer gpa.free(fresh);
+    var refr: [arms.len]f64 = .{0} ** arms.len;
+    for ([_]usize{ E2, 6, E4, 10 }) |ai| {
+        for (bufs[ai].x[0..N], 0..) |q, i| fresh[i] = marl.truthOf(world_b, q);
+        var fc = try sleepOn(gpa, &m, bufs[ai].x[0..N], fresh, keep, .{ .exact = true });
+        defer fc.deinit();
+        fc.opts.truth = world_b;
+        refr[ai] = try fc.rms(hb.p, hb.y, null);
+    }
+    std.debug.print("     SAME-POINTS REFRESH (a probe, an oracle per point — NOT a policy):", .{});
+    for ([_]usize{ E2, 6, E4, 10 }) |ai| {
+        std.debug.print("  {s} {d:.5}->{d:.5}", .{ arms[ai].name, row[ai].after, refr[ai] });
+    }
+    std.debug.print("\n", .{});
+
+    // ── Q3: zero wrong labels at 2N BY CONSTRUCTION, both rules; and at 4N
+    // the error rule carries MORE than the uniform one — OBS-19's adverse
+    // selection surviving the change of mechanism. A cutoff removes the
+    // ability to BUY past the window; it does not remove the measure's
+    // preference for the contested band INSIDE it.
+    for ([_]usize{ U2, 4, E2, 6 }) |ai| {
+        try testing.expectEqual(@as(f64, 0), row[ai].old);
+        try testing.expectEqual(@as(f64, 0), row[ai].comp.stale);
+    }
+    for ([_]usize{ U4, 8, E4, 10 }) |ai| try testing.expect(row[ai].old > 0.3);
+    try testing.expect(row[E4].wrong > row[U4].wrong);
+    try testing.expect(row[10].wrong > row[8].wrong);
+    // The registered uniform figure, derived from the fixture's contested
+    // share and the pool's arithmetic rather than guessed.
+    try testing.expect(@abs(row[U4].wrong - thresholds.OBS20_STRADDLE_WRONG) < 120);
+
+    // ── Q3b: a refresh can change NOTHING at 2N, because there is nothing to
+    // refresh. The strongest available statement of the contract.
+    for ([_]usize{ E2, 6 }) |ai| try testing.expect(@abs(refr[ai] - row[ai].after) < 1e-12);
+    // ...and it CAN at 4N, where the window straddles.
+    try testing.expect(refr[E4] < row[E4].after);
+
+    std.debug.print("     a refresh changes NOTHING at W = 2N — there is nothing to refresh, which is the contract stated as a measurement rather than a count\n", .{});
+
+    // ── Q9, THE PRICE OF THE CUTOFF, reported rather than thresholded. It is
+    // STORAGE, and it is W rather than N: OBS-19's exponential form needed no
+    // expiry machinery and no extra slots, and this needs the window.
+    std.debug.print("     the cutoff's price is STORAGE: {d} observations retained at W = 2N and {d} at 4N, against the exponential form's {d}\n", .{
+        CLEAN, WIDE, N,
+    });
+
+    // ── Q4, THE HEADLINE. Error-selected locations with zero wrong labels,
+    // no oracle anywhere, beating the ring on the world being evaluated.
+    //
+    // **The ring comparison is NOT resource-matched, and that belongs beside
+    // the number.** Both hard arms retain W = 2N observations plus the
+    // selected N-slot buffer, against the ring's N, and they scan the pool at
+    // selection time. Against each other the two hard arms are matched
+    // exactly; against the ring they also buy a larger candidate pool.
+    //
+    // And the RESOURCE-MATCHED CONTROL is already in the table: `h-uni@2N`
+    // IS a ring of 2N subsampled uniformly to N — the same retained history
+    // as the error arms, the same k, differing only in the weight. It beats
+    // the N-ring at 0.05139 and 0.05069 against 0.05390, about 5%, and error
+    // weighting adds a further 26%. Reporting only the error arm against the
+    // N-ring would credit the measure with a gain eligibility already bought:
+    // roughly a sixth of the 30% is the pool, five sixths the measure.
+    try testing.expect(row[E2].gain - row[REC].gain > spanOf(&row, groups[3], 0));
+    try testing.expect(row[6].gain - row[REC].gain > spanOf(&row, groups[3], 0));
+
+    // ── Q5, THE MEASURE AT IDENTICAL ELIGIBILITY. The same `Window` object,
+    // identical k, identical selection/refit/refinement, differing only in
+    // the expression inside `Compose.weight`.
+    //
+    // This ISOLATES the selection rule cleanly. It is NOT the campaign's
+    // first legitimate comparison of selection rules — OBS-18 and OBS-19
+    // compared rules fed one stream, and rules keeping different subsets is
+    // what rules do (Astra). What is new is that eligibility is pinned, so
+    // the comparison is of selection ALONE rather than of selection plus
+    // whatever staleness each rule's own admissions happened to carry.
+    try testing.expect(row[E2].gain - row[U2].gain >
+        @max(spanOf(&row, groups[3], 0), spanOf(&row, groups[2], 0)));
+
+    // ── Q6, THE LIMIT. A hard cutoff cannot be bought past — but it can be
+    // set too WIDE, and nothing tells a policy where the last regime change
+    // was. At W = 4N half the pool is pre-move and every arm goes negative.
+    //
+    //     A hard cutoff guarantees ELIGIBILITY, never VALIDITY.
+    try testing.expect(row[E2].gain - row[E4].gain >
+        @max(spanOf(&row, groups[3], 0), spanOf(&row, groups[5], 0)));
+    for ([_]usize{ U4, 8, E4, 10 }) |ai| try testing.expect(row[ai].gain < 0);
+
+    // ── Q7, HARD AGAINST EXPONENTIAL, at matched N and k. OBS-19's price
+    // against OBS-20's cutoff, same fixture, same offset, same everything
+    // else.
+    try testing.expect(row[E2].gain - row[EXP].gain >
+        @max(spanOf(&row, groups[3], 0), spanOf(&row, groups[1], 0)));
+
+    // ── POST-HOC, AND THE SHARPEST THING IN THE TABLE. Refreshed, the WIDE
+    // window's error locations beat the CLEAN window's — 0.02918 and 0.02829
+    // against 0.03787 and 0.03733.
+    //
+    // So the cutoff is not free. It buys label validity by giving up
+    // SELECTION FREEDOM: `h-err@2N` chooses 8 192 from 16 384 where
+    // `h-err@4N` chooses from 32 768, and more pool makes better locations.
+    // Registered as an asymmetry BEFORE the run, in the expectation that it
+    // would cost the 2N arm; it does, and the refresh is what measures it.
+    //
+    // **What does NOT follow is that detecting the move would recover it.**
+    // The refreshed 4N arm's better locations INCLUDE pre-move observations,
+    // and cutting at the move REMOVES them rather than supplying their
+    // current labels — an exact detected cutoff is the 2N eligible history
+    // already tested here. Astra's correction, and it retires the next
+    // experiment an earlier draft proposed. What the refreshed arm shows is
+    // the value of a larger pool of VALIDLY LABELLED points, which on a moved
+    // world cannot come from selecting better.
+    try testing.expect(refr[E4] < refr[E2]);
+    try testing.expect(refr[10] < refr[6]);
+    std.debug.print("     SELECTION FREEDOM IS WORTH SOMETHING: refreshed, the WIDE window's locations beat the clean one's ({d:.5}/{d:.5} against {d:.5}/{d:.5}) — a wider window is the better instrument and the worse policy\n", .{
+        refr[E4], refr[10], refr[E2], refr[6],
+    });
+
+    // ── RETENTION is reported and NOT asserted, because the reading depends
+    // on whether first draws or replicate means are used: the ring against
+    // `h-err@2N` is 0.84x the spread on leaders and about 1.3x on means.
+    // Astra's OBS-19 catch was exactly this conflation, so the honest claim
+    // is "not materially worse" and the gate makes no separation claim.
+    std.debug.print("     retention, ring {d:.5} against h-err@2N {d:.5}/{d:.5} (spread {d:.4}): {d:.2}x on the leader, {d:.2}x on the mean — reported, NOT claimed\n", .{
+        row[REC].held, row[E2].held, row[6].held, spanOf(&row, groups[3], 1),
+        (row[E2].held - row[REC].held) / @max(1e-12, spanOf(&row, groups[3], 1)),
+        ((row[E2].held + row[6].held) / 2 - row[REC].held) / @max(1e-12, spanOf(&row, groups[3], 1)),
+    });
+    std.debug.print("     error-selected locations, zero wrong labels, no oracle: {d:.5}/{d:.5} against the ring's {d:.5} — {d:.0}% lower error, ON THIS FIXTURE AND AT THIS TIMING\n", .{
+        row[E2].after, row[6].after, row[REC].after,
+        100 * (row[REC].after - (row[E2].after + row[6].after) / 2) / row[REC].after,
+    });
+    std.debug.print("     and the gain DECOMPOSES: the wider eligible pool alone takes the ring's {d:.5} to {d:.5}/{d:.5} ({d:.0}%), and error weighting adds the rest ({d:.0}% of what is left)\n", .{
+        row[REC].after, row[U2].after, row[4].after,
+        100 * (row[REC].after - (row[U2].after + row[4].after) / 2) / row[REC].after,
+        100 * ((row[U2].after + row[4].after) / 2 - (row[E2].after + row[6].after) / 2) / ((row[U2].after + row[4].after) / 2),
+    });
+    std.debug.print("     NOT resource-matched against the ring: both hard arms retain W = {d} observations plus the selected {d}-slot buffer, and scan the pool at selection time. Against EACH OTHER they are matched exactly\n", .{ CLEAN, N });
 }

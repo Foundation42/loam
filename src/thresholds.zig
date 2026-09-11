@@ -3946,4 +3946,44 @@ pub const OBS19_DOMINATES: f64 = 0;
 /// t/tau reaches 1250 and both failures would fire.
 pub const OBS19_UNDERFLOW_T: f64 = 745;
 
+/// G67: the hard cutoff's span, as a multiple of N, at which the eligible
+/// pool is entirely post-move on this fixture. REGISTERED at 2.
+///
+/// Arithmetic, not a measurement: the sleep happens M = 16384 observations
+/// after the move and W = 2N = 16384, so the window reaches exactly back to
+/// the regime change and no further. W = 4N reaches 16384 observations past
+/// it, and HALF that pool is pre-move.
+///
+/// **That W = 2N is clean is the FIXTURE'S TIMING and not a property any
+/// policy knows.** A hard cutoff guarantees ELIGIBILITY, never VALIDITY: it
+/// cannot be bought past at any weight, which is the whole reason to prefer
+/// it to OBS-19's exponential price, but it can be set too WIDE and nothing
+/// tells a policy where the last regime change was.
+pub const OBS20_CLEAN_SPAN: usize = 2;
+
+/// G67: wrong labels a UNIFORM selection carries at W = 4N, out of N.
+/// PROPOSED at 388, derived rather than guessed.
+///
+/// Half the pool is pre-move and the fixture is 0.0947 contested, so
+/// 0.5 * 0.0947 * 8192 = 388. An ERROR selection must carry MORE, which is
+/// OBS-19's adverse selection surviving the change of mechanism — a cutoff
+/// removes the ability to BUY past the window, not the measure's preference
+/// for the contested band inside it.
+pub const OBS20_STRADDLE_WRONG: f64 = 388;
+
+/// G67: the synthesis itself — error-selected locations with zero wrong
+/// labels, and no oracle anywhere. Recorded as a SHAPE, asserted in the gate
+/// as an inequality against the ring and against the spread.
+///
+/// OBS-19's same-points refresh control reached 0.02866 and 0.03004 against
+/// the ring's 0.04650 by RELABELLING from the truth, which is a probe and
+/// not a policy. This phase asks whether a hard cutoff delivers that arm
+/// honestly.
+///
+/// **Not a straight cash-in, and must not be written up as one.** The
+/// refresh control chose its locations by error weighting over the WHOLE
+/// history and then stamped current labels on them; `hard-err@2N` chooses
+/// over the B era alone. Different location distributions.
+pub const OBS20_SYNTHESIS: f64 = 0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

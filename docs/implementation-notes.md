@@ -8254,3 +8254,113 @@ unchanged code — and Astra's instruction: do not spend 12:43 on two print
 strings. No assertion, arithmetic or control flow changed. G66 (a) in the smoke set. G65 re-run reproduces its recorded table
 cell for cell; G61 clean in Debug. Astra's audit reproduced the parent,
 stream and seeds independently without touching the working tree.
+
+OBS-20 / G67 — a hard cutoff, and the synthesis exists
+
+Astra's specification after OBS-19: a hard cutoff, error-weighted selection
+within its eligible pool, matched uniform selection, replicated policies.
+Key contract: IDENTICAL ELIGIBLE OBSERVATIONS for both selections, the cutoff
+preventing EITHER rule from retaining an expired sample.
+
+THE CONTRACT DECIDES THE IMPLEMENTATION — but not for the reason first
+written here. A per-rule reservoir COULD have carried it: OBS-18's and
+OBS-19's reservoirs all received the SAME observation stream, and two
+selection rules keeping different subsets is what selection rules ARE, not a
+confound in comparing them (Astra). What a shared object adds is that
+hard-cutoff ELIGIBILITY becomes explicit and ENFORCEABLE — "neither rule can
+retain an expired sample" becomes a property of the structure rather than
+something each arm must be measured for. So `consolidate.Window` is a LITERAL
+SHARED OBJECT: one deterministic ring of the last W, no
+sampling in it, every rule selecting its N from the same bytes. Selection
+happens AT THE SLEEP, which is exact — A-Res over a static pool IS weighted
+sampling without replacement — and surprise/cover are stored AS OBSERVED, so
+nothing reprioritises with hindsight. `Replay.admitAt` was added so a selected
+buffer carries the OBSERVATION index rather than its own selection order;
+`admit` delegates to it with `self.n` and is unchanged bit for bit.
+
+It separates WHAT YOU KEEP (W observations) from WHAT YOU CONSOLIDATE ON (N
+of them). The cutoff's honest price is the first: 2x at W = 2N, 4x at 4N,
+against the exponential form's N and no expiry machinery at all.
+
+THE POOL IS DETERMINISTIC so arithmetic says what is in it. The sleep is
+M = 16384 after the move: W = N degenerate (pool = buffer), W = 2N CLEAN
+(entirely post-move, because 2N = M exactly — THE FIXTURE'S TIMING, not
+something a policy knows), W = 4N straddles at .500 pre-move.
+
+THE SYNTHESIS EXISTS, on this fixture and at this timing. h-err@2N reaches
+.03787/.03733 against the ring's .05390 — 29.5x the spread, 30% lower error,
+replicated, zero wrong labels, NO ORACLE ANYWHERE. OBS-19's refresh control
+reached .02866/.03004 against its own ring's .04650 by relabelling from the
+truth; this earns the same shape honestly.
+
+AND THE GAIN DECOMPOSES, because the RESOURCE-MATCHED CONTROL IS ALREADY IN
+THE TABLE: h-uni@2N IS a ring of 2N subsampled uniformly to N — same retained
+history, same k, differing only in the weight. It beats the N-ring at
+.05139/.05069, about 5%; error weighting adds a further 26%. Roughly a sixth
+of the 30% is the POOL and five sixths the MEASURE. The comparison against the
+N-ring is NOT resource-matched — both hard arms retain W = 2N observations
+plus the selected N-slot buffer and scan the pool at selection time — and
+that belongs beside the number (Astra).
+
+THE MEASURE AT IDENTICAL ELIGIBILITY. h-err@2N beats h-uni@2N by 19.1x —
+same Window object, same k, same selection/refit/refinement, differing only in
+Compose.weight. This ISOLATES the selection rule. It is NOT the campaign's
+first legitimate comparison of selection rules; what is new is that
+eligibility is PINNED, so the comparison is of selection alone rather than of
+selection plus whatever staleness each rule's admissions happened to carry.
+
+THE CONTRACT AS A MEASUREMENT RATHER THAN A COUNT: refreshing the 2N arms
+changes the result by EXACTLY ZERO, .03787 -> .03787 bit for bit. There is
+nothing to refresh. Far stronger than counting labels, and only available
+because the cutoff makes the claim structural. At 4N the same refresh moves
+.09612 -> .02918.
+
+A HARD CUTOFF GUARANTEES ELIGIBILITY, NEVER VALIDITY. At W = 4N every arm
+goes NEGATIVE — worse than not consolidating — and the error rule carries
+1166/1129 wrong labels against uniform's 409/387, so OBS-19's adverse
+selection survives the change of mechanism: a cutoff removes the ability to
+BUY past the window, not the measure's preference for the contested band
+INSIDE it. Registered uniform figure 388, derived from the fixture's contested
+share and the pool's arithmetic.
+
+SELECTION FREEDOM IS WORTH SOMETHING, AND THE CUTOFF SPENDS IT. Registered as
+an asymmetry BEFORE the run: refreshed, the WIDE window's error locations BEAT
+the clean one's, .02918/.02829 against .03787/.03733. h-err@2N chooses 8192
+from 16384; h-err@4N from 32768. A WIDER WINDOW IS THE BETTER INSTRUMENT AND
+THE WORSE POLICY.
+
+WHAT DOES NOT FOLLOW is that detecting the move would recover it. The
+refreshed 4N arm's better locations INCLUDE pre-move observations, and cutting
+at the move REMOVES them rather than supplying their current labels — an exact
+detected cutoff is the 2N eligible history already tested. Astra's correction,
+and it retires the next experiment an earlier draft proposed. What the
+refreshed arm shows is the value of a larger pool of VALIDLY LABELLED points,
+which on a moved world cannot come from selecting better.
+
+NOT CLAIMED: retention, and therefore not dominance. Ring .12933 against
+h-err@2N .13184/.13486 is 0.83x the spread on first draws and 1.33x on
+replicate means — exactly the leader-versus-mean conflation Astra caught in
+OBS-19. The gate prints both and asserts neither. Q8 (retains worse than
+err@tau) is NOT established.
+
+A process note: Q4-Q7, the phase's headline predictions, were written as
+prose and left UNASSERTED in the first version of the gate. A gate that cannot
+fail on its own headline is decoration. Added and re-run.
+
+Owed: where a larger pool of VALIDLY LABELLED points could come from, since
+detection cannot supply it — observing longer before consolidating, or
+RE-OBSERVING old locations under the current world, which is a different
+mechanism from replay and is untested. W = 2N is clean by the fixture's
+timing, so every number is conditional on that coincidence; a sweep of the
+move time against fixed W would say how sharp the cliff is. A ring that SLEEPS
+on 2N points (as against h-uni@2N, which retains 2N and consolidates on N)
+changes the replay size rather than the selection and is a different question.
+No re-fit axis and no unslept reacquisition baseline, so nothing about
+capacity.
+
+Validation: G67 passes ReleaseSafe in 8:43 — thirteen sleeps. The validated
+numerical log is g67b; Astra's three reporting corrections above are COMMENT
+AND PRINT TEXT ONLY, verified by compilation and not re-run, per CODEX's rule
+on reusing passing checks of unchanged code. No assertion, arithmetic or
+control flow changed. Smoke clean; G66 re-run cell for cell after the admitAt
+refactor.

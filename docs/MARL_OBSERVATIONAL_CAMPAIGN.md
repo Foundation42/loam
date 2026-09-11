@@ -2659,3 +2659,220 @@ descent over 8 192 replay points; all nine adaptation runs together are
 correction, the mean-versus-draw catch and the five P8 confounds are
 Astra's, from an independent audit that reproduced the parent, stream and
 seeds without touching the working tree.*
+
+## OBS-20 / G67 — a hard cutoff, and the synthesis exists
+
+OBS-19 established that an **exponential** recency price can be *paid*.
+Whatever survives such a window had to outbid it, and on a moved world what
+outbids it is adversely selected: A-era surprise already concentrates on the
+structure the two worlds will later disagree about, so `err@τ` carried 276
+wrong labels of 8 192 against `uni@τ`'s 37.
+
+It also established, under a same-points refresh control, that **the
+locations are not the problem** — given current labels the error-selected
+points reached 0.02866 and 0.03004 against the ring's 0.04650. That arm
+needed an oracle per point.
+
+A **hard cutoff cannot be bought past at any weight.** So: does it deliver
+that arm honestly? Astra's specification, and its contract decided the whole
+design:
+
+> identical eligible observations for the error and uniform selections, with
+> the cutoff preventing either rule from retaining an expired sample.
+
+**It does — on this fixture and at this timing, and not at matched
+resources.** Both hard-cutoff policies beat the ring; error weighting adds
+the larger part.
+
+### The contract decides the implementation
+
+A per-rule reservoir could have carried it, and an earlier draft of this
+section said otherwise — wrongly. OBS-18's and OBS-19's reservoirs all
+received the *same* observation stream, and two selection rules keeping
+different subsets is what selection rules **are**, not a confound in
+comparing them. Astra's correction.
+
+What a **literal shared object** adds is that hard-cutoff *eligibility*
+becomes explicit and **enforceable**. `consolidate.Window` is one
+deterministic ring of the last W observations, no sampling anywhere in it,
+and every rule selects its N from the same bytes — so "neither rule can
+retain an expired sample" is a property of the structure rather than
+something each arm must be measured for. The gate asserts the contract
+instead of checking it per rule.
+
+Selection happens **at the sleep** rather than at admission, which is exact:
+A-Res over a static pool *is* weighted sampling without replacement. A hard
+cutoff has no incumbent to stay bit-identical to, so nothing is gained by
+carrying keys forward. Surprise and coverage are stored **as observed**, so
+nothing reprioritises with hindsight — the property OBS-19 had to be
+corrected on.
+
+**And this separates two things the previous phases held together:**
+
+| | |
+|---|---|
+| **what you keep** | the window, W observations |
+| **what you consolidate on** | the selection, N of them |
+
+The honest price of a hard cutoff is the first number. OBS-19's exponential
+form stored N and needed no expiry machinery at all; this stores W — 2× at
+W = 2N, 4× at W = 4N. That is the cost Astra said had not been priced.
+
+### The pool is deterministic, so arithmetic says what is in it
+
+The sleep happens M = 16 384 observations after the move, at OBS-19's late
+offset exactly.
+
+| W | pool | pre-move | share | |
+|---|---|---|---|---|
+| N | 8 192 | 0 | 0.000 | degenerate: pool = buffer, no selection |
+| 2N | 16 384 | 0 | 0.000 | **clean: entirely post-move** |
+| 4N | 32 768 | 16 384 | 0.500 | straddles the move |
+
+**W = 2N is clean because it exactly equals M — the fixture's timing, not a
+property any policy knows.** Recorded before the run and it governs the
+reading of everything below.
+
+### The table
+
+708 kernels, k = 354, control B 0.08011, control A held 0.12716.
+
+| arm | old | contested | stale | **wrong** | dead | after | gain | A held |
+|---|---|---|---|---|---|---|---|---|
+| recent | 0.000 | 0.0964 | 0.000 | **0** | 0.301 | 0.05390 | 0.3273 | 0.12933 |
+| err@τ | 0.086 | 0.2065 | 0.191 | 323 | 0.084 | 0.07787 | 0.0280 | 0.12792 |
+| err@τ' | 0.092 | 0.2048 | 0.183 | 307 | 0.084 | 0.07219 | 0.0989 | 0.11911 |
+| h-uni@2N | 0.000 | 0.0909 | 0.000 | **0** | 0.303 | 0.05139 | 0.3585 | 0.13259 |
+| h-uni@2N' | 0.000 | 0.0933 | 0.000 | **0** | 0.298 | 0.05069 | 0.3673 | 0.13154 |
+| **h-err@2N** | 0.000 | 0.1747 | 0.000 | **0** | 0.083 | **0.03787** | **0.5272** | 0.13184 |
+| **h-err@2N'** | 0.000 | 0.1761 | 0.000 | **0** | 0.078 | **0.03733** | **0.5340** | 0.13486 |
+| h-uni@4N | 0.503 | 0.0946 | 0.528 | 409 | 0.302 | 0.11987 | −0.4963 | 0.09662 |
+| h-uni@4N' | 0.496 | 0.0991 | 0.477 | 387 | 0.298 | 0.10862 | −0.3558 | 0.11870 |
+| h-err@4N | 0.482 | 0.2889 | 0.493 | 1166 | 0.054 | 0.09612 | −0.1997 | 0.09654 |
+| h-err@4N' | 0.487 | 0.2838 | 0.486 | 1129 | 0.052 | 0.10170 | −0.2694 | 0.10514 |
+
+**`h-err@2N` beats the ring by 29.5× the spread**, replicated — 0.03787 and
+0.03733 against 0.05390, **30% lower error on the world being evaluated**.
+
+**And the gain decomposes, because the resource-matched control is already
+in the table.** `h-uni@2N` *is* a ring of 2N subsampled uniformly to N — the
+same retained history as the error arms, the same k, the same everything but
+the expression in the weight. It beats the N-ring at 0.05139 and 0.05069,
+about **5%**. So:
+
+| | B RMS | |
+|---|---|---|
+| ring, N retained | 0.05390 | — |
+| `h-uni@2N` — the same retained history, uniform | 0.05104 | **−5%**, the wider pool alone |
+| `h-err@2N` — the same pool again, error-weighted | 0.03760 | **−26% further**, the measure |
+
+Reporting only the error arm against the N-ring would credit the measure
+with a gain that eligibility had already bought. Roughly a sixth of the 30%
+is the pool and five sixths is the measure.
+
+**The ring comparison is not resource-matched, and that belongs beside the
+number.** Both hard arms retain W = 2N observations *plus* the selected
+N-slot buffer, against the ring's N, and they scan the pool at selection
+time. Against *each other* the two hard arms are matched exactly; against the
+ring they also buy a larger candidate pool.
+
+### The measure at identical eligibility
+
+`h-err@2N` beats `h-uni@2N` by **19.1×**. Identical pools *by construction* —
+the same `Window` object — identical k, identical selection, refit and
+refinement, differing only in the expression inside `Compose.weight`.
+
+This **isolates the selection rule** cleanly. It is *not* the campaign's
+first legitimate comparison of selection rules — OBS-18 and OBS-19 compared
+rules fed one stream, and rules keeping different subsets is what rules do.
+What is new is that eligibility is pinned, so the comparison is of selection
+alone rather than of selection plus whatever staleness each rule's own
+admissions happened to carry.
+
+### The contract, stated as a measurement rather than a count
+
+Refreshing the 2N arms from the truth changes the result by **exactly
+zero** — `0.03787 → 0.03787` and `0.03733 → 0.03733`, bit for bit. There is
+nothing to refresh. That is a far stronger check than counting labels, and
+it is only available because the cutoff makes the claim structural.
+
+At 4N the same refresh moves 0.09612 → 0.02918 and 0.10170 → 0.02829.
+
+### A hard cutoff guarantees eligibility, never validity
+
+At W = 4N half the pool is pre-move and **every arm goes negative** — worse
+than not consolidating. The error rule carries 1166 and 1129 wrong labels
+against the uniform rule's 409 and 387, so OBS-19's adverse selection
+survives the change of mechanism intact: *a cutoff removes the ability to
+buy past the window; it does not remove the measure's preference for the
+contested band inside it.* The registered uniform figure was 388, derived
+from the fixture's contested share and the pool's arithmetic.
+
+A cutoff cannot be bought past — but it can be set too **wide**, and nothing
+tells a policy where the last regime change was.
+
+### Selection freedom is worth something, and the cutoff spends it
+
+The sharpest thing in the table, and it was registered as an asymmetry
+before the run in the expectation that it would cost the 2N arm. It does:
+
+> refreshed, the **wide** window's error locations beat the **clean**
+> window's — 0.02918 and 0.02829 against 0.03787 and 0.03733.
+
+`h-err@2N` chooses 8 192 from 16 384; `h-err@4N` chooses from 32 768. More
+pool makes better locations. **A wider window is the better instrument and
+the worse policy.**
+
+**What does *not* follow is that detecting the move would recover it.** An
+earlier draft of this section proposed exactly that as the next experiment,
+and it is vacuous: the refreshed 4N arm's better locations *include pre-move
+observations*, and cutting at the move **removes** them rather than supplying
+their current labels. An exact detected cutoff is the 2N eligible history
+already tested here. Astra's correction.
+
+What the refreshed arm does show is the value of a larger pool of **validly
+labelled** points — which, on a world that has moved, cannot be had by
+selecting better.
+
+### Registered, and what happened
+
+| | prediction | outcome |
+|---|---|---|
+| Q1 | pools byte-identical, nothing older than W | **held**, asserted structurally |
+| Q2 | at W = N every rule reduces to the ring | **held** |
+| Q3 | zero wrong labels at 2N; error carries more at 4N | **held**; 388 registered, 409/387 measured |
+| Q4 | `h-err@2N` beats the ring | **held**, 29.5× |
+| Q5 | `h-err@2N` beats `h-uni@2N` at identical pools | **held**, 19.1× |
+| Q6 | the advantage collapses at 4N | **held**, every arm negative |
+| Q7 | hard beats exponential | **held**, 7.05× |
+| Q8 | retains A worse than `err@τ` | **not established** |
+| Q9 | the price is storage, W not N | reported: 2× and 4× |
+
+**Q8 is not claimed, and neither is dominance.** Ring 0.12933 against
+`h-err@2N` 0.13184/0.13486 is 0.83× the spread on first draws and 1.33× on
+replicate means — precisely the leader-versus-mean conflation Astra caught in
+OBS-19. The gate prints both readings and asserts neither. The honest
+statement is that retention is *not materially worse*, not that the policy
+dominates.
+
+### Still owed
+
+- **Where a larger pool of validly labelled points could come from.** The
+  refreshed 4N arm says pool size pays *given* valid labels, and detection
+  cannot supply them — cutting at the move deletes those observations rather
+  than relabelling them. The levers that remain are observing longer before
+  consolidating, or *re-observing* old locations under the current world,
+  which is a different mechanism from replay and is untested.
+- **W = 2N is clean by the fixture's timing.** Every number above is
+  conditional on that coincidence, and a phase that swept the move time
+  against a fixed W would say how sharp the cliff is.
+- **A ring that *sleeps* on 2N points** — as against `h-uni@2N`, which
+  retains 2N and consolidates on N. That changes the replay size rather than
+  the selection, which OBS-17 showed is its own axis, so it is a different
+  question and is untested here.
+- **One offset, one fixture, one move.** As ever.
+- Retention is measured only as *A held*; no re-fit axis and no unslept
+  reacquisition baseline, so nothing is said about capacity.
+
+Cost: G67 is ~8 min 45 s — thirteen sleeps. `python3 tools/obs20_predict.py`
+for the pre-registration.

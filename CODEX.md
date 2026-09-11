@@ -56,7 +56,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
-| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..19; src/consolidate.zig, G58-G66 |
+| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..20; src/consolidate.zig, G58-G67 |
 | Complexity and fresh windows | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-4; src/observational_windows.zig, G51; docs/data/obs4 |
 | Adaptive inverse births | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-3; src/adaptive_inferred.zig, G50; docs/data/obs3 |
 | Hidden potential inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-2; src/inferred.zig, G49 |
@@ -137,127 +137,77 @@ Records in docs/data/obs4 include sensors, window-pre-update scores,
 evaluation history, coverage, requests and diagnostic. G51(a/b/c) passed
 separately; use smoke at commit, not the full suite.
 
-Latest: OBS-19 / G66, WINDOWED error replay (2026-09-11). OBS-18's queue item,
-pre-registered as a TRADEOFF: can error's locations and the ring's labels be
-had together? Not with an EXPONENTIAL window, and why is the phase. A hard
-cutoff is a different object and is UNTESTED — no impossibility established.
+Latest: OBS-20 / G67, the HARD CUTOFF (2026-09-11). Astra's specification
+after OBS-19, and its contract decided the design: IDENTICAL ELIGIBLE
+OBSERVATIONS for the error and uniform selections, the cutoff preventing
+EITHER rule from retaining an expired sample.
 
-A recency window costs LITTLE to keep. Let the A-Res weight grow with the
-observation index, w_eff = w*exp(t/tau); the key is ln(u)*exp(-t/tau)/w, fixed
-at admission and still correct later because exp(T/tau) is common to every
-slot. No expiry queue, no periodic scan, no second heap — a result about
-EXPONENTIAL WEIGHTING, NOT a costing of a hard sliding window; it adds
-arithmetic and `Replay.t` is 8 bytes a slot (64 KiB at N=8192, diagnostics
-only). tau is a PRICE, not a cutoff: dt = tau*ln(w2/w1) observations of age
-per factor of weight, and tau is an E-FOLDING time (half-life tau*ln2 = 2839).
-tau = N/2 is DERIVED — the soft edge is ~4tau wide and must span the fresh
-pool, or the window IS a ring whatever weight it carries.
+THE SYNTHESIS EXISTS, on this fixture and at this timing. h-err@2N reaches
+.03787/.03733 against the ring's .05390 — 29.5x the spread, 30% lower error,
+replicated, ZERO wrong labels, NO ORACLE. OBS-19 could only reach that shape
+by relabelling from the truth.
 
-Held as a LOG MAGNITUDE, K = -log(-ln u) + log w + t/tau. Written directly,
-exp(-t/tau) underflows past t/tau = 745 and an A-Res key is NEGATIVE, so the
-factor gives -0.0, which sorts ABOVE every live key: the oldest exemplars
-become unevictable. The rule does not break, it INVERTS. Clamping the exponent
-was rejected BEFORE any measurement — it trades inversion for SATURATION, the
-window becoming a uniform reservoir over the clamped tail. G66 (a) is the
-mutation and is in the SMOKE SET; the clamped form fails it at 700*tau.
-`Replay.t` is written by every rule and read by none — `admit` decides from
-the index in hand — so it cannot move a selection; tau = 0 is the incumbent
-arithmetic and G61/G65 reproduce.
+IT DECOMPOSES, and the resource-matched control is already in the table:
+h-uni@2N IS a ring of 2N subsampled uniformly to N — same retained history,
+same k, differing only in the weight — and it beats the N-ring at
+.05139/.05069, about 5%. Error weighting adds a further 26%. A SIXTH of the
+30% is the POOL, five sixths the MEASURE. The comparison against the N-ring is
+NOT resource-matched: both hard arms retain W = 2N plus the selected N-slot
+buffer and scan the pool at selection time.
 
-TWO SLEEPS IN ONE LIFE, M/N = 0.5 and 2.0, because OBS-18 slept 20,000 clear
-of the move and its ring was clean BY THE FIXTURE'S TIMING. Nine arms: a 2x2
-of measure x window, each cell replicated, plus the ring — which needs no
-replicate and that is not an omission, it is deterministic in the stream and
-its spread is zero by construction.
+A per-rule reservoir COULD have carried the contract — OBS-18's and OBS-19's
+reservoirs all got the SAME stream, and two rules keeping different subsets is
+what selection rules ARE, not a confound (Astra). What a shared object adds is
+that hard-cutoff ELIGIBILITY becomes explicit and ENFORCEABLE. So
+`consolidate.Window` is a LITERAL SHARED OBJECT — one deterministic ring of
+the last W, no sampling in it, every rule selecting from the same bytes.
+Selection happens AT THE SLEEP (A-Res over a static pool IS weighted sampling
+without replacement) and surprise/cover are stored AS OBSERVED, so nothing
+reprioritises with hindsight. `Replay.admitAt` lets a selected buffer carry
+the OBSERVATION index rather than its selection order; `admit` delegates to it
+and is unchanged bit for bit.
 
-AT M/N = 0.5 EVERY ARM LOSES. 4096 fresh observations for 8192 slots means at
-least half of EVERY buffer is pre-move, (N-M)/N = .500, the ring exactly on
-the floor; the un-slept model at .10270 beats its best child at .12352. A
-sibling of OBS-17's k_min — there is a t_min. But the MECHANISM is NOT
-isolated: the model is also less converged at the early offset (before .10270
-against .08002), so staleness and immaturity move together and the floor
-argument only says no rule can AVOID staleness, not that staleness does the
-damage. Retention
-goes the other way: error replay takes A from the control's .12504 to .05224,
-and the ring is WORST at retention, worse than not sleeping.
+It separates WHAT YOU KEEP (W observations) from WHAT YOU CONSOLIDATE ON (N).
+The cutoff's honest price is the first: 2x at W = 2N, 4x at 4N, against the
+exponential form's N and no expiry machinery at all.
 
-AT M/N = 2.0 THE RING WINS OUTRIGHT, 9.25x over windowed error and 4.14x over
-windowed uniform. OBS-18's oracle advantage does NOT survive being earned.
+THE MEASURE AT IDENTICAL ELIGIBILITY: h-err@2N beats h-uni@2N by 19.1x — same
+object, same k, differing only in Compose.weight. This ISOLATES the selection
+rule; it is NOT the campaign's first legitimate comparison of selection rules.
+What is new is that eligibility is PINNED.
 
-THE INTERVENTION, Astra's, and it is what makes the claim causal — the
-wrong-label count is descriptive and establishes nothing alone. Same parent,
-same locations, same keep count, same algorithm, only labels re-read from the
-world being evaluated (an oracle per point: a probe, not a policy):
-  uni@tau .06238->.04999   uni@tau' .05855->.05195
-  err@tau .06475->.02866   err@tau' .06672->.03004      ring .04650
-CHANGING LABELS ALONE REVERSES THE RANKING in both tested draws: .02866 and
-.03004 against the ring's .04650 — 38% and 35% LOWER error. Lead with those
-absolutes, not gap-closed percentages, which depend on each arm's original
-deficit. Bounded to the intervention: historical labels CAUSE substantial
-current-world loss through this pipeline; it does NOT show locations and
-labels act independently, since a label change moves selection, refit and
-refinement alike. The uniform draws close ~78%/~55% and do NOT reach the ring,
-so their residual is not labels alone. Refreshing COSTS the error arms
-retention (.12486->.13479, .12112->.13512).
+THE CONTRACT AS A MEASUREMENT: refreshing the 2N arms changes the result by
+EXACTLY ZERO, .03787 -> .03787 bit for bit. Nothing to refresh. Far stronger
+than counting labels.
 
-THE MECHANISM. `old` counts pre-move slots, but only .095 of this cube is
-contested, so what matters is contested AND stale. stale against old: recent
-.000/.000, uniform .648/.659, error .617/.639, uni@tau .045/.036 all track;
-err@tau .161/.076, +.085 replicated at +.082. AN EXPONENTIAL PRICE CAN BE
-PAID, AND WHAT PAYS IT IS ADVERSELY SELECTED. NOT because the rule discovers
-after the move that an old sample is wrong — ADMISSION SURPRISE IS FROZEN AT
-OBSERVATION TIME and nothing reprioritises an old entry (Astra) — but because
-A-era surprise already concentrates on the structure the worlds will LATER
-disagree about. At the same tau err@tau carries 276 wrong labels and uni@tau
-37; mean absolute discrepancy among wrong labels .324 and .393, total squared
-discrepancy 4.4% and 23.0% of squared B signal on each buffer's own points.
+A HARD CUTOFF GUARANTEES ELIGIBILITY, NEVER VALIDITY. At W = 4N half the pool
+is pre-move, EVERY arm goes negative, and the error rule carries 1166/1129
+wrong labels against uniform's 409/387 (registered 388) — OBS-19's adverse
+selection surviving the change of mechanism. A cutoff removes the ability to
+BUY past the window, not the measure's preference for the contested band
+inside it. And W = 2N is clean only because 2N = M exactly: THE FIXTURE'S
+TIMING, not something a policy knows.
 
-Enrichment goes 3.08x -> 2.09x at M/N = 0.5 and 3.66x -> 2.09x at M/N = 2.0.
-The two windowed values round alike (2.0901, 2.0864) but TWO CHECKPOINTS ARE
-TWO POINTS — no ceiling and no timing-independence established. What it does
-refute is P8's REASONING, which had the erasure specific to M < N.
+SELECTION FREEDOM IS WORTH SOMETHING AND THE CUTOFF SPENDS IT. Registered as
+an asymmetry BEFORE the run: refreshed, the WIDE window's locations BEAT the
+clean one's, .02918/.02829 against .03787/.03733. A WIDER WINDOW IS THE BETTER
+INSTRUMENT AND THE WORSE POLICY. But DETECTING THE MOVE DOES NOT RECOVER IT —
+those better locations INCLUDE pre-move observations, and cutting at the move
+REMOVES them rather than supplying current labels; an exact detected cutoff is
+the 2N history already tested (Astra).
 
-NOT REFUTED: the measure. At MATCHED staleness (.639 vs .659) error beats
-uniform on BOTH axes, 4.10x and 3.29x. What is refuted is that a WINDOW can
-deliver that at the ring's freshness. Ordering five rules by staleness is NOT
-a monotone trade — unbounded error beats unbounded uniform on BOTH axes — and
-one tau is one point, so "an exchange rate interpolates" is a hypothesis for a
-tau sweep, not a result. Windowed error IS on the Pareto surface, at the
-OPPOSITE corner from the prediction: retains better than the ring by 3.04x,
-worse than unbounded error by 7x. The ring's position is STRUCTURAL — the only
-rule whose membership is decided by TIME ALONE, so past M = N it carries
-exactly zero wrong labels.
+NOT CLAIMED: retention, so not dominance either. Ring .12933 against h-err@2N
+.13184/.13486 is 0.83x the spread on first draws and 1.33x on means — the
+leader-versus-mean conflation Astra caught in OBS-19. Both printed, neither
+asserted.
 
-Four of eight registered predictions refuted (P4, P5, P7, P8); thresholds left
-standing and marked. OBS19_WINDOW_OLD was derived on the UNIFORM rule (the
-predictor can only simulate w = 1) and is asserted THERE ALONE — err@tau reads
-.076 against the .05 ceiling, and that excess IS the finding. Spending one
-rule's number on another is this campaign's standing mistake.
+Next: where a larger pool of VALIDLY LABELLED points could come from, since
+detection cannot supply it — observing longer before consolidating, or
+RE-OBSERVING old locations under the current world, which is a different
+mechanism from replay. Then a sweep of the move time against fixed W, to say
+how sharp the cliff is.
 
-P8's NUMERICAL prediction failed and its MECHANISM is UNRESOLVED: the offsets
-differ in parent, convergence, replay contents, normalisation denominator and
-kept budget (343 vs 367) — five confounds, so no replacement is claimed.
-
-RECORDED FINDING: at the tested decay scale and checkpoints, exponential
-error-weighted replay retains more prior-world information and sacrifices
-current-world fit relative to the ring. Same-points refresh controls show
-historical labels cause substantial current-world loss, while error-selected
-locations remain effective when supplied current labels. HARD-WINDOW SYNTHESIS
-REMAINS UNTESTED.
-
-Next, and the phase points straight at it — Astra's specification, well posed
-as it stands: A HARD CUTOFF, ERROR-WEIGHTED SELECTION WITHIN ITS ELIGIBLE
-POOL, MATCHED UNIFORM SELECTION, REPLICATED POLICIES. A price can be paid, a
-cutoff cannot.
-ITS KEY CONTRACT: IDENTICAL ELIGIBLE OBSERVATIONS for the error and uniform
-selections, with the cutoff preventing EITHER rule from retaining an expired
-sample. That is what makes it a test of selection-within-eligibility rather
-than another comparison of two different pools. Then a tau sweep; a t_min swept at a FIXED model state; a
-windowed measure NOT correlated with the regime change (uncovered). The A re-fit column is exploratory with no unslept
-reacquisition baseline, so the gate prints the raw column and no pairwise
-ranking; err@tau's own replicates differ by .0250 on it.
-
-G66 is the campaign's largest gate — twenty-two sleeps, almost all of it, each
+G66 is the campaign's largest gate — twenty-two sleeps; G67 is ~8:45 with thirteen, almost all of it, each
 ~30 s and almost entirely the 400-step descent over 8192 replay points; all
 nine adaptation runs together are ~14 s. Use smoke plus the affected gate at
 commit, not the full suite.

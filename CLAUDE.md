@@ -117,6 +117,8 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/obs18_predict.py                 # ... its pre-registration; the N_eff mechanism refuted, and equal k announced but not delivered
     zig build test -Dtest-filter="G66"             # OBS-19: WINDOWED error replay -- a window is an EXCHANGE RATE, and M/N says whether it can be paid
     python3 tools/obs19_predict.py                 # ... its pre-registration; tau DERIVED from the soft edge, and a clamp rejected before the run
+    zig build test -Dtest-filter="G67"             # OBS-20: the HARD cutoff -- the synthesis exists; first replay policy to beat the ring
+    python3 tools/obs20_predict.py                 # ... its pre-registration; the pool is a SHARED object, so the contract is asserted not argued
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a
