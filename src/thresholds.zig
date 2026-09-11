@@ -3824,4 +3824,126 @@ pub const OBS18_UNCOVERED_REACHED: f64 = 0.60;
 /// one sleep's accuracy for the whole objective.
 pub const OBS18_PARETO: f64 = 0;
 
+/// G66: the recency window's E-FOLDING TIME, in observations. Registered at
+/// N/2 = 4096, and DERIVED rather than chosen.
+///
+/// An e-folding time and NOT a half-life, which is `tau * ln 2` = 2839
+/// observations. Astra's correction; the derivation below is unaffected
+/// because it sizes the SOFT EDGE, which is ~4 tau either way.
+///
+/// An exponentially biased reservoir keeps the N newest exemplars with a
+/// soft edge about `4 * tau` wide: an item at index t survives with
+/// p = 1 - exp(-c*w*exp(t/tau)), which is ~0 four tau below the crossing
+/// and ~1 two tau above it. If that edge is much narrower than the fresh
+/// pool it never reaches back past the newest N, and the measure has
+/// nothing left to choose between — **a window that tight IS a ring,
+/// whatever weight it carries.** Spanning the fresh pool at the late
+/// offset is therefore `4*tau ~ M_late = 2N`, so `tau = N/2`.
+///
+/// `tools/obs19_predict.py` simulates the admission and confirms it: at
+/// M/N = 2.0 this leaves 0.035 of the buffer recorded before the move,
+/// against the unbounded reservoir's 0.646.
+///
+/// HELD, and closely: the run reads 0.036 for the uniform rule against a
+/// simulated 0.035. The derivation is sound and the window is a window.
+pub const OBS19_WINDOW_TAU: f64 = 4096;
+
+/// G66: the staleness a windowed rule must reach at the LATE offset, where
+/// a fresh pool of 2N exists to fill N slots. PROPOSED as a ceiling at
+/// 0.05, predicted at 0.035.
+///
+/// This is the phase's precondition, not its result: if a windowed buffer
+/// is not materially fresher than an unbounded one, every comparison below
+/// it is between two names for the same object.
+///
+/// HELD for the rule it was derived on — uni@tau reads 0.036 — and the
+/// gate asserts it THERE ALONE. `obs19_predict.py` can only simulate w = 1,
+/// because the error weights are the model's own surprise trajectory and do
+/// not exist outside the run; spending a uniform-derived number on the error
+/// arm would be this campaign's standing mistake, which Astra caught in
+/// OBS-18. It would also have been WRONG: err@tau reads 0.076, half again
+/// over the ceiling, and that excess is the phase's whole finding.
+pub const OBS19_WINDOW_OLD: f64 = 0.05;
+
+/// G66: the arithmetic floor under staleness, `(N - M) / N`, asserted as an
+/// equality at the EARLY offset rather than as a bound.
+///
+/// With only 4 096 observations since the move and 8 192 slots to fill, at
+/// least half of EVERY buffer was recorded under the old world — the ring
+/// included, and the ring achieves the floor exactly. OBS-18's ring read
+/// 0.000 here and that was **the fixture's timing, not a property of
+/// rings** (Astra). PROPOSED at 0.500; a failure means the sleep is not
+/// where the phase says it is and every EARLY number is OBS-18 again.
+///
+/// HELD EXACTLY. The ring reads 0.500 and every other rule reads above it.
+pub const OBS19_STALE_FLOOR: f64 = 0.5;
+
+/// G66: the headline, and the reason the phase exists. Windowed error
+/// replay must fit the CURRENT world better than the ring at the late
+/// offset, by more than the observed same-rule spread.
+///
+/// OBS-18 measured the oracle version of this and could not deploy it: at
+/// current labels, error-chosen LOCATIONS beat uniform's by 3.07x its
+/// spread (gain 0.6399 against 0.3896) where the ring's own policy gain
+/// was 0.3456. `err@tau` is that arm built with no oracle anywhere — the
+/// error measure supplies the locations, the window supplies the labels.
+///
+/// Registered as a SHAPE and not a value, on OBS-18's rule: the number a
+/// phase exists to find is not pre-committed. Zero means "asserted as an
+/// inequality against the spread, in the gate".
+///
+/// **REFUTED as a policy, and the reason is narrower than it first looked.**
+/// The RING wins the current world at M/N = 2.0, beating windowed error by
+/// 9.25x its spread and windowed uniform by 4.14x (both on first draws; on
+/// replicate means the uniform comparison is ~3.64x).
+///
+/// But the LOCATIONS were never the problem. Astra's same-points refresh
+/// control — identical parent, locations, keep count and algorithm, only the
+/// labels re-read from the world being evaluated — puts err@tau at 0.02866
+/// and 0.03004 against the ring's 0.04650. The error-selected points are the
+/// best measured anywhere in this phase. What sinks them as a POLICY is that
+/// they arrive with 276 wrong labels of 8 192 against uni@tau's 37.
+///
+/// The mechanism is that an EXPONENTIAL price CAN BE PAID: whatever survives
+/// the window had to outbid it, and what outbids it is adversely selected.
+/// Admission surprise is FROZEN at observation time and nothing reprioritises
+/// an old entry — A-era surprise simply already concentrates on the structure
+/// the worlds will LATER disagree about. A HARD cutoff cannot be bought past
+/// at any weight, is a different object, and is UNTESTED: no impossibility of
+/// synthesis is established.
+///
+/// What is NOT refuted is the measure. At MATCHED staleness — 0.639 against
+/// 0.659 of the buffer — the error rule beats the uniform one on BOTH axes.
+///
+/// The tradeoff the phase was asked about is real and windowed error sits on
+/// it at the opposite corner from the one predicted: it retains the old world
+/// BETTER than the ring by 3.04x its spread (P7, registered as "not
+/// separated" and refuted favourably) and WORSE than unbounded error by 7x
+/// (P6, held). That five rules ORDER by staleness is not a monotone trade —
+/// unbounded error beats unbounded uniform on both axes — and one tau is one
+/// point, so "an exchange rate interpolates" is a hypothesis for a tau sweep
+/// rather than a result.
+pub const OBS19_DOMINATES: f64 = 0;
+
+/// G66: the observation index, in units of tau, at which a NAIVELY written
+/// recency window inverts. REGISTERED as a clamp at 700 and SUPERSEDED
+/// before the run — recorded here because the reasoning is the useful part.
+///
+/// `exp(-t/tau)` underflows to zero past `t/tau = 745`, and an A-Res key is
+/// NEGATIVE — so an underflowed factor yields -0.0, which sorts ABOVE every
+/// live key and makes the OLDEST exemplars unevictable. The rule does not
+/// break, it INVERTS, and a run would look like a perfectly ordinary buffer
+/// full of the wrong world.
+///
+/// The clamp was the first fix and is the wrong one: past it every exemplar
+/// shares a single decay factor, so the window stops discriminating and
+/// becomes a uniform reservoir over the clamped tail. It trades a
+/// catastrophic failure for a silent one. `Replay.admit` holds the key as a
+/// LOG MAGNITUDE instead, which makes the recency term linear in t and
+/// leaves nothing to underflow at any tau.
+///
+/// What survives is the number: G66 (a) runs tau = 4 over 5 000 offers, so
+/// t/tau reaches 1250 and both failures would fire.
+pub const OBS19_UNDERFLOW_T: f64 = 745;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

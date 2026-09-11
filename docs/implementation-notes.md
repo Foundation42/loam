@@ -8107,3 +8107,150 @@ is not optional.
 Validation: G65 passes ReleaseSafe; G64 re-run unchanged after the allocator
 refactor; smoke set clean. G65 is the campaign's largest gate — thirteen
 sleeps and twenty-eight adaptation runs, ~7 min 30 s.
+
+OBS-19 / G66 — a recency window is an exchange rate, and a price can be paid
+
+The queue item OBS-18 left: can windowed error replay improve current-world
+fitting without giving up too much prior-world retention? Registered as a
+TRADEOFF, both halves measured. tools/obs19_predict.py froze the numbers.
+
+AS A POLICY it does not, on this fixture — the ring wins the current world at
+M/N = 2.0 by 9.25x windowed error's spread and 4.14x windowed uniform's (both
+on FIRST DRAWS; on replicate means the uniform comparison is ~3.64x against
+the same observed spread). But the LOCATIONS were never the problem, and the
+first draft of this entry had the reason wrong.
+
+ASTRA'S SAME-POINTS REFRESH CONTROL is the intervention the claim needed; the
+wrong-label count is descriptive and establishes nothing causal alone. Same
+parent, same locations, same keep count, same selection/refit/refinement,
+only the labels re-read from the world being evaluated (an oracle per point,
+so a probe and not a policy):
+
+  uni@tau  .06238 -> .04999   uni@tau' .05855 -> .05195
+  err@tau  .06475 -> .02866   err@tau' .06672 -> .03004     ring .04650
+
+CHANGING LABELS ALONE REVERSES THE RANKING in both tested draws: .02866 and
+.03004 against the ring's .04650, which is 38% and 35% LOWER error on the
+current world. Lead with the absolute figures, not the gap-closed percentages
+(198%/181% for the error draws): those are correct but depend on each arm's
+original deficit (Astra). Bounded to the intervention, this establishes that
+HISTORICAL LABELS CAUSE SUBSTANTIAL CURRENT-WORLD LOSS through this pipeline;
+it does NOT show locations and labels act independently, since a label change
+moves selection, linear refit and non-linear refinement alike. The uniform
+draws close ~78% and ~55% of their gap and do NOT reach the ring, so their
+residual deficit is not labels alone and leaves room for a location effect.
+Refreshing COSTS the error arms their retention (.12486 -> .13479, .12112 ->
+.13512): OBS-18's finding reproduced, retention is carried by labels. Four
+post-hoc interventions on one parent and one stream; they do not isolate the
+above-threshold labels from smaller discrepancies, nor separate selection,
+linear refit and non-linear refinement.
+
+THE MECHANISM, corrected. An EXPONENTIAL price CAN BE PAID: whatever survives
+the window had to outbid it, and what outbids it is adversely selected.
+`old` counts pre-move slots, but only .095 of this cube is contested, so the
+quantity that matters is contested AND stale. stale against old: recent
+.000/.000, uniform .648/.659, error .617/.639, uni@tau .045/.036 all track;
+err@tau .161/.076, a gap of +.085 replicated at +.082. It is NOT that the
+rule discovers after the move that an old sample is wrong — ADMISSION
+SURPRISE IS FROZEN AT OBSERVATION TIME and nothing reprioritises an old entry
+(Astra). A-era surprise already concentrates on the structure the worlds will
+LATER disagree about, because the contested band is the shell and the shell
+is where the residual always lived. At the same tau err@tau carries 276 wrong
+labels and uni@tau 37; among wrong labels the mean absolute discrepancy is
+.324 and .393, and total squared discrepancy is 4.4% and 23.0% of the squared
+B signal on each buffer's own points. ("Wrong by most of the shell amplitude"
+was an overstatement: the max is .899, the typical value a third of that.)
+
+A HARD cutoff cannot be bought past at any weight. It is a different object,
+it is UNTESTED, and NO IMPOSSIBILITY OF SYNTHESIS IS ESTABLISHED. That is the
+named next experiment.
+
+A window costs LOW, not zero. No expiry queue, no periodic scan, no second
+heap — a real result about EXPONENTIAL WEIGHTING and not a costing of a hard
+sliding window. It adds arithmetic per admission and `Replay.t` is 8 bytes a
+slot, 64 KiB at N = 8192, read only by diagnostics. tau is an E-FOLDING time,
+not a half-life; the half-life is tau*ln2 = 2839 (Astra).
+
+Held as a LOG MAGNITUDE, K = -log(-ln u) + log w + t/tau. Written directly,
+exp(-t/tau) underflows past t/tau = 745 and an A-Res key is NEGATIVE, so the
+factor gives -0.0, which sorts ABOVE every live key: the oldest exemplars
+become unevictable. The rule does not break, it INVERTS. Clamping the
+exponent was rejected BEFORE ANY MEASUREMENT — it trades inversion for
+SATURATION, the window becoming a uniform reservoir over the clamped tail.
+G66 (a) is the mutation, tau = 4 over 5000 offers; the clamped form fails at
+an oldest survivor of 2874, which is 700*tau to three figures. In the smoke
+set. `Replay.t` is written by every rule and READ BY NONE — `admit` decides
+from the index in hand — so it cannot move a selection; tau = 0 is the
+incumbent arithmetic and G61/G65 reproduce.
+
+TWO SLEEPS IN ONE LIFE, M/N = 0.5 and 2.0, because OBS-18 slept 20,000 clear
+of the move and its ring was clean BY THE FIXTURE'S TIMING. Nine arms: a 2x2
+of measure x window, each replicated, plus the ring — which needs no
+replicate and that is not an omission, it is deterministic in the stream.
+
+AT M/N = 0.5 EVERY ARM LOSES: the un-slept model at .10270 beats its best
+child at .12352. A sibling of k_min — there is a t_min. The MECHANISM is NOT
+isolated: the counting argument establishes unavoidable OLD MEMBERSHIP when
+M < N, not unavoidable DAMAGING LABELS nor destructive consolidation, and the
+model is also less converged (before .10270 against .08002) with a different
+budget (343 against 367). Retention goes the other way — error replay takes A
+from the control's .12504 to .05224 — and the ring is WORST at retention,
+worse than not sleeping.
+
+NOT REFUTED: the measure. At MATCHED staleness (.639 vs .659) error beats
+uniform on BOTH axes, 4.10x and 3.29x. Ordering five rules by staleness is
+NOT a monotone trade — unbounded error beats unbounded uniform on both — and
+one tau is one point, so "an exchange rate interpolates" is a hypothesis for
+a tau sweep, not a result.
+
+Four of eight registered predictions refuted (P4, P5, P7, P8); thresholds
+left standing and marked. P8's NUMERICAL prediction failed and its mechanism
+is UNRESOLVED — the offsets differ in parent, convergence, replay contents,
+normalisation denominator and kept budget, five confounds at once, so no
+replacement is claimed. An earlier draft argued the EARLY margins were small
+BECAUSE every gain there is negative; that is not a bound on a pairwise lead
+and is withdrawn. The enrichment values 2.0901 and 2.0864 round alike but two
+checkpoints establish neither a ceiling nor independence from timing.
+
+OBS19_WINDOW_OLD was derived on the UNIFORM rule (the predictor can only
+simulate w = 1) and is asserted THERE ALONE — err@tau reads .076 against the
+.05 ceiling, and that excess IS the finding. Spending one rule's number on
+another is this campaign's standing mistake.
+
+The A re-fit axis is EXPLORATORY and gets no pairwise ranking: there is no
+unslept reacquisition baseline, so a highlighted comparison would read as a
+claim the gate cannot support. Raw column and per-rule spreads stay.
+
+THE FINDING AS RECORDED: at the tested decay scale and checkpoints,
+exponential error-weighted replay retains more prior-world information and
+sacrifices current-world fit relative to the ring. Same-points refresh
+controls show that historical labels cause substantial current-world loss,
+while the error-selected locations remain effective when supplied current
+labels. Hard-window synthesis remains untested.
+
+Three process notes, all mine. A python edit and a ten-minute run were chained
+into one backgrounded command and the edit's output never checked — the pkill
+in the same command matched its own wrapper and killed the job, so a full run
+executed against an unmodified gate. The first draft asserted inside the
+offset loop, so the first refutation threw away the offset it had not reached.
+And the first write-up claimed "the synthesis does not exist" from a result
+that only tested one of the two window shapes.
+
+Owed, and Astra's specification is well posed as it stands: A HARD CUTOFF,
+ERROR-WEIGHTED SELECTION WITHIN ITS ELIGIBLE POOL, MATCHED UNIFORM SELECTION,
+REPLICATED POLICIES. Its key contract: IDENTICAL ELIGIBLE OBSERVATIONS for
+both selections, the cutoff preventing EITHER rule from retaining an expired
+sample — a test of selection-within-eligibility rather than another
+comparison of two different pools. Then a tau sweep; a t_min swept at a FIXED model state;
+a windowed measure NOT correlated with the regime change (uncovered).
+
+Validation: G66 passes ReleaseSafe in 12:43 — twenty-two sleeps, almost all
+of the gate, each ~30 s and almost entirely the 400-step descent over 8192
+replay points. The validated numerical log is g66d; PRINT STRINGS ONLY were
+edited after it (the refuted-summary wording, a column header, and leading the
+refresh line with absolute RMS rather than gap-closed), verified by
+compilation and NOT re-run. CODEX's own rule — reuse passing checks of
+unchanged code — and Astra's instruction: do not spend 12:43 on two print
+strings. No assertion, arithmetic or control flow changed. G66 (a) in the smoke set. G65 re-run reproduces its recorded table
+cell for cell; G61 clean in Debug. Astra's audit reproduced the parent,
+stream and seeds independently without touching the working tree.

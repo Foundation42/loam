@@ -2313,3 +2313,349 @@ sleep per lineage.
 Cost: G65 is the campaign's largest gate — thirteen sleeps and twenty-eight
 adaptation runs, ~7 min 30 s. `python3 tools/obs18_predict.py` for the
 pre-registration.
+
+## OBS-19 / G66 — a recency window is an exchange rate, and a price can be paid
+
+OBS-18 closed by separating the two halves of a replay buffer:
+
+> a buffer's **locations** decide how well it fits the world it is labelled
+> for; its **labels** decide which world that is
+
+and its Pareto surface was that split showing through. The ring took the
+current world because every one of its labels describes it; the unbounded
+error reservoir preserved the old one because half of its labels still
+describe *that*. **Windowed error replay is the synthesis the split
+proposes** — error's locations, the ring's labels, and no oracle anywhere.
+OBS-18 could only reach that arm by relabelling from the truth, which is a
+probe and not a policy.
+
+Christian's queue item, as Astra sharpened it: *can windowed error replay
+improve current-world fitting without giving up too much prior-world
+retention?* A **tradeoff** hypothesis, with both halves measured.
+
+**As a policy it does not, on this fixture: the ring wins the current world
+outright.** But the reason is not the one the first draft of this section
+gave. Under a matched same-points intervention that changes **only the
+labels**, the error-selected locations reach **0.02866 and 0.03004 against
+the ring's 0.04650** — 38% and 35% lower error on the current world. An
+**exponential** recency price can be *paid*: an exemplar carrying enough
+surprise buys its way past any decay, and the exemplars that do are
+adversely selected. A **hard** cutoff cannot be bought past at any weight,
+and is untested. Nothing here shows a synthesis is impossible.
+
+### The mechanism: one multiplication, and no expiry machinery
+
+Astra's third recorded risk was that *a weighted sliding window has its own
+storage and bookkeeping cost, which nothing here has priced.*
+
+A-Res holds `key = u^(1/w)`. Bias it for recency by letting the weight grow
+with the observation index, `w_eff = w · exp(t/τ)`; the key becomes
+`ln(u)·exp(−t/τ)/w`, fixed at admission and still correct at every later
+time, because `exp(T/τ)` is a factor common to every slot and cannot
+reorder them. **No expiry queue, no periodic scan, no second heap.**
+
+That is a real result about *exponential weighting* and **not** a costing of
+a hard sliding window, which is a different mechanism. And it is low rather
+than free: it adds arithmetic per admission, and `Replay.t` is eight bytes a
+slot — 64 KiB at N = 8192 — which only the diagnostics read.
+
+What τ buys is a *price* rather than a cutoff:
+
+> an exemplar may be **`Δt = τ·ln(w₂/w₁)`** observations older for every
+> factor `w₂/w₁` of extra weight it carries.
+
+τ is an **e-folding time**, not a half-life; the half-life is `τ·ln 2` =
+2 839 observations. At τ = 4096 a factor of *e* of surprise buys 4 096
+observations of age and a factor of 55 buys 16 384 — twice the buffer. A
+hard window cannot express this at all: inside it every point is equal and
+outside it none exists.
+
+**τ is derived, not chosen.** The soft edge of an exponentially biased
+reservoir is about `4τ` wide, and it must span the fresh pool or the measure
+has nothing left to choose between — *a window that tight IS a ring,
+whatever weight it carries.* Spanning the fresh pool at the late offset is
+`4τ ≈ M = 2N`, so `τ = N/2 = 4096`. `tools/obs19_predict.py` simulates the
+admission and predicts 0.035 of the buffer left pre-move; the run reads
+**0.036**.
+
+### Held as a log magnitude, and that is correctness rather than tidiness
+
+Written directly, `exp(−t/τ)` underflows to zero past `t/τ = 745` — and an
+A-Res key is **negative**, so an underflowed factor yields `−0.0`, which
+sorts *above* every live key and makes the **oldest** exemplars unevictable.
+The rule does not break, it **inverts**, and the run looks like a perfectly
+ordinary buffer full of the wrong world.
+
+Clamping the exponent was the first fix and was **rejected before any
+measurement**: it trades inversion for *saturation* — past the clamp every
+exemplar shares one decay factor, so the window stops discriminating and
+silently becomes a uniform reservoir over the clamped tail. A late failure
+instead of a catastrophic one is still a failure the numbers cannot show
+you. The key is held as
+
+    K = −log(−ln u) + log w + t/τ
+
+which orders identically (it is `−log` of the key's magnitude, and the key
+is negative) and whose recency term is *linear* in t, so there is nothing
+left to underflow at any τ. G66 (a) is the executable mutation, at τ = 4
+over 5 000 offers — `t/τ` reaches 1250. The clamped form fails it at an
+oldest survivor of **2874**, which is `700τ` to three figures: the
+saturation point, measured rather than argued. It is in the smoke set; it
+costs milliseconds and nothing else in the suite would notice that failure.
+
+### The design: two sleeps in one life
+
+OBS-18 slept 20 000 observations clear of the move, so its ring was
+label-consistent **by the fixture's timing** and not by any property of
+rings — Astra's risk note, and the reason the sleep happens twice here, at
+`M/N = 0.5` where the ring straddles the move and `M/N = 2.0` where it does
+not. One model, one stream, one set of buffers, two moments.
+
+Nine arms: a 2×2 of measure (uniform, error) × window (∞, τ), each cell
+replicated, plus the ring. **The ring needs no replicate and that is not an
+omission** — it is a deterministic function of the stream, so its same-rule
+spread is zero by construction, and a ring-vs-X comparison correctly uses
+X's own spread.
+
+### EARLY, M/N = 0.5 — nothing gains, and the floor is arithmetic
+
+686 kernels, k = 343, control B 0.10270, control A held 0.12504.
+
+| arm | old | contested | stale | dead | after | gain | A held |
+|---|---|---|---|---|---|---|---|
+| recent | **0.500** | 0.0964 | 0.506 | 0.297 | 0.12487 | −0.2158 | 0.12814 |
+| uniform | 0.883 | 0.0920 | 0.875 | 0.297 | 0.13484 | −0.3129 | 0.07399 |
+| uniform' | 0.880 | 0.0918 | 0.886 | 0.298 | 0.13752 | −0.3390 | 0.07302 |
+| error | 0.868 | 0.2832 | 0.863 | 0.052 | 0.12706 | −0.2371 | 0.05631 |
+| error' | 0.871 | 0.2847 | 0.861 | 0.047 | 0.12676 | −0.2342 | **0.05224** |
+| uni@τ | 0.544 | 0.0962 | 0.551 | 0.291 | 0.12352 | **−0.2027** | 0.10885 |
+| uni@τ' | 0.549 | 0.0963 | 0.553 | 0.296 | 0.12654 | −0.2321 | 0.10545 |
+| err@τ | 0.643 | 0.2010 | **0.767** | 0.098 | 0.13202 | −0.2854 | 0.07152 |
+| err@τ' | 0.642 | 0.2021 | **0.767** | 0.102 | 0.13011 | −0.2668 | 0.07399 |
+
+**Every arm has negative gain.** With 4 096 fresh observations for 8 192
+slots, at least half of *every* buffer was recorded under the old world —
+`(N−M)/N = 0.500`, and the ring achieves it exactly. The un-slept model at
+0.10270 beats its best child at 0.12352.
+
+That is a sibling of OBS-17's `k_min`: **there is a `t_min` as well** — a
+consolidation near a transition is not merely less useful, it is worse than
+not consolidating.
+
+**The mechanism is not isolated, and the gate cannot isolate it.** The
+counting argument establishes unavoidable *old membership* when `M < N`; it
+does not establish unavoidable *damaging labels*, nor that staleness rather
+than something else does the damage. The model is also less converged here
+(`before` 0.10270 against 0.08002) and the kept budget differs (343 against
+367). A general `t_min` needs the offset swept at a fixed model state, which
+is a different experiment.
+
+The old world goes the other way: a sleep against historical error-weighted
+replay more than halves it, **0.12504 → 0.05224**, and the ring is the worst
+arm at retention (0.12814, *worse* than not sleeping at all). At `M/N = 0.5`
+the ring's OBS-18 advantage is entirely gone.
+
+### LATE, M/N = 2.0 — the ring wins the current world
+
+735 kernels, k = 367, control B 0.08002, control A held 0.12801.
+
+| arm | old | contested | stale | **wrong** | after | gain | A held | A re-fit | births |
+|---|---|---|---|---|---|---|---|---|---|
+| recent | 0.000 | 0.0973 | 0.000 | **0** | 0.04650 | **0.4190** | 0.13623 | 0.07676 | 335 |
+| uniform | 0.659 | 0.0923 | 0.648 | 490 | 0.12344 | −0.5425 | 0.10233 | 0.08144 | 351 |
+| uniform' | 0.642 | 0.0905 | 0.649 | 481 | 0.12209 | −0.5256 | 0.10289 | 0.07363 | 351 |
+| error | 0.639 | 0.3374 | 0.617 | 1706 | 0.10686 | −0.3354 | **0.08231** | 0.06300 | 389 |
+| error' | 0.640 | 0.3364 | 0.618 | 1703 | 0.11090 | −0.3858 | 0.08840 | 0.06945 | 382 |
+| uni@τ | 0.036 | 0.1003 | 0.045 | 37 | 0.06238 | 0.2205 | 0.13542 | 0.07444 | 327 |
+| uni@τ' | 0.037 | 0.0981 | 0.040 | 32 | 0.05855 | 0.2684 | 0.13440 | 0.07523 | 342 |
+| err@τ | 0.076 | 0.2094 | **0.161** | **276** | 0.06475 | 0.1909 | 0.12486 | 0.07683 | 381 |
+| err@τ' | 0.078 | 0.2069 | **0.160** | **271** | 0.06672 | 0.1662 | 0.12112 | 0.10183 | 411 |
+
+*`wrong` counts slots that are **contested and stale** — an actual wrong
+label, as against a pre-move observation that happens to still be correct.
+It is a post-hoc descriptive statistic on the existing `|A−B| > 1e−3`
+threshold, and it establishes nothing causal by itself.*
+
+The ring beats windowed error by **9.25×** its spread and windowed uniform
+by **4.14×**. Both ratios use each rule's **first draw**; on replicate means
+the windowed-uniform comparison is about 3.64× against the same observed
+spread. *(An earlier draft of this section quoted the 4.14× beside the
+replicate-mean gain of 0.2445, which belongs to neither — the first draw's
+gain is 0.2205. Astra's catch.)*
+
+### The intervention: same points, refreshed labels
+
+The wrong-label count is descriptive. **The control that makes it causal is
+Astra's**, and it is the same probe OBS-18 used: identical parent, identical
+locations, identical keep count and identical selection/refit/refinement —
+only the labels re-read from the world being evaluated. It needs an oracle
+per point, so it is a probe and not a deployable policy.
+
+| arm | policy B RMS | refreshed B RMS | vs ring | policy A held | refreshed A held |
+|---|---|---|---|---|---|
+| uni@τ | 0.06238 | 0.04999 | +7% | 0.13542 | 0.13491 |
+| uni@τ' | 0.05855 | 0.05195 | +12% | 0.13440 | 0.13543 |
+| **err@τ** | 0.06475 | **0.02866** | **−38%** | 0.12486 | 0.13479 |
+| **err@τ'** | 0.06672 | **0.03004** | **−35%** | 0.12112 | 0.13512 |
+
+The ring is 0.04650. *(The gate also prints each arm's gap-closed
+percentage — ~78% and ~55% for the uniform draws, 198% and 181% for the
+error ones. Those are correct but depend on each arm's original deficit, so
+the absolute RMS is the interpretable number. Astra's framing.)*
+
+**Changing the labels alone reverses the ranking, in both tested draws** —
+0.02866 and 0.03004 against 0.04650, which is 38% and 35% lower error on the
+current world. The error-selected locations are the most effective measured
+anywhere in this phase, and that is OBS-18's location result standing up
+under a matched control.
+
+Bounded to what the intervention shows: it establishes that **historical
+labels cause substantial current-world loss through this pipeline**. It does
+**not** show that locations and labels act independently — a label change
+moves selection, linear refit and non-linear refinement alike, and those are
+not separated here.
+
+Two further readings. The uniform arms close most of their gap but do
+**not** reach the ring, so their residual deficit is not explained by labels
+alone and leaves room for a location effect. And refreshing **costs** the
+error arms their retention (0.12486 → 0.13479, 0.12112 → 0.13512), which is
+OBS-18's finding reproduced: retention is carried by labels.
+
+These are four post-hoc same-points interventions conditional on one parent
+and one stream. They do not isolate the above-threshold labels from smaller
+discrepancies, and a label change can move selection, linear refit and
+non-linear refinement alike — they are not separated here.
+
+### Why the measure loses to itself: the price is paid by the wrong exemplars
+
+`old` counts slots recorded before the move — but only **0.095** of this
+cube is contested, so over nine tenths of it a pre-move observation is a
+perfectly good post-move observation. Compare the share of *contested* slots
+that are stale against the share of *all* slots that are stale:
+
+| arm | old | stale | stale − old |
+|---|---|---|---|
+| recent | 0.000 | 0.000 | 0.000 |
+| uniform | 0.659 | 0.648 | −0.011 |
+| error | 0.639 | 0.617 | −0.022 |
+| uni@τ | 0.036 | 0.045 | +0.009 |
+| **err@τ** | **0.076** | **0.161** | **+0.085** |
+
+For every other rule the two track. For windowed error they do not, and the
+replicate reproduces it (+0.082). **What survives an exponential window had
+to outbid it, and what outbids it is adversely selected.**
+
+The mechanism is *not* that the rule discovers after the move that an old
+sample is wrong. **Admission surprise is frozen at observation time** and
+nothing reprioritises an old entry — Astra's correction, and it matters. It
+is that A-era surprise already concentrates on the structure the two worlds
+will *later* disagree about, because the contested band is the shell and the
+shell is where the residual always lived. So the correlation is there before
+the move ever happens, and the window's exemption hands the budget to it.
+
+At the same τ, `err@τ` carries **276** wrong labels and `uni@τ` carries
+**37**. Their energy, measured: among wrong labels the mean absolute
+discrepancy is 0.324 (uni@τ) and 0.393 (err@τ), and the total squared
+discrepancy is **4.4%** and **23.0%** of the squared B signal on each
+buffer's own points. *(An earlier draft said such a label is "wrong by most
+of the shell's amplitude"; the maximum is 0.899 but the typical value is a
+third of that.)*
+
+The measure's enrichment over its matched uniform control falls from 3.08×
+to 2.09× at `M/N = 0.5` and from 3.66× to 2.09× at `M/N = 2.0`. That the two
+windowed values round alike (2.0901 and 2.0864) is **not** a ceiling and
+**not** independence from timing — two checkpoints are two points. What it
+does refute is P8's *reasoning*, which had the erasure specific to `M < N`.
+
+### What is not refuted: the measure
+
+At `M/N = 2.0` the unbounded error and unbounded uniform rules sit at
+essentially the same staleness — 0.639 against 0.659 — and the error rule
+beats the uniform one on **both** axes: −0.3354 against −0.5425 on the
+current world (4.10× the spread) and 0.08231 against 0.10233 on the old one
+(3.29×). Error weighting is worth having. What this phase refutes is that an
+*exponential* window can deliver it at the ring's freshness.
+
+Note what that implies for the ordering by staleness: it is **not** a
+monotone fit/retention trade across all five rules, because unbounded error
+beats unbounded uniform on both axes at matched staleness. One τ is one
+point; "an exchange rate interpolates" is a hypothesis a τ sweep would test,
+not something this phase established.
+
+And the ring's position is structural rather than lucky. **It is the only
+rule whose membership is decided by time alone**, so when the fresh pool
+exceeds the buffer it carries exactly zero wrong labels. Every measure-based
+rule admits some.
+
+### Registered, and what happened
+
+| | prediction | outcome |
+|---|---|---|
+| P1/P2 | the ring straddles at `M/N = 0.5` (0.500 exactly) and is clean at 2.0 | **held exactly** |
+| P3 | uni@τ `old` < 0.05 | **held**, 0.036 against a simulated 0.035 |
+| P4 | err@τ keeps OBS-18's 2.5× enrichment | **refuted at both offsets**, 2.09× |
+| P5 | windowed error beats the ring on the current world | **refuted**, the ring wins by 9.25× |
+| P6 | it retains worse than unbounded error | **held**, by 7× the spread |
+| P7 | not separated from the ring on retention | **refuted favourably**, better by 3.04× |
+| P8 | the ring's lead shrinks as `M/N` rises | **numerically refuted; mechanism unresolved** |
+
+P8 deserves its own line. The cross-offset comparison is confounded in five
+ways at once — the offsets differ in parent, convergence, replay contents,
+the normalisation denominator and the kept budget (343 against 367) — so the
+refutation of its direction supports no replacement claim. An earlier draft
+argued the EARLY margins were small *because* every gain there is negative;
+that is not a bound on a pairwise lead and the argument is withdrawn.
+
+`OBS19_WINDOW_OLD` is worth a note of its own. It was derived on the uniform
+rule — `obs19_predict.py` can only simulate `w = 1`, because the error
+weights are the model's own surprise trajectory and do not exist outside the
+run — and the gate asserts it **there alone**. Spending it on the error arm
+would have been this campaign's standing mistake, the one Astra caught in
+OBS-18. It would also have been wrong: err@τ reads 0.076, half again over
+the ceiling, and that excess is the entire finding.
+
+### The finding, as recorded
+
+> At the tested decay scale and checkpoints, exponential error-weighted
+> replay retains more prior-world information and sacrifices current-world
+> fit relative to the ring. Same-points refresh controls show that
+> historical labels cause substantial current-world loss, while the
+> error-selected locations remain effective when supplied current labels.
+> Hard-window synthesis remains untested.
+
+### Still owed
+
+- **A hard cutoff with error weighting inside it.** The named next
+  experiment, and the one the phase points at: a price can be paid, a cutoff
+  cannot. It is a different object and no result here bears on it. Astra's
+  specification, which is well posed as it stands: *a hard cutoff,
+  error-weighted selection within its eligible pool, matched uniform
+  selection, and replicated policies.*
+  Its key contract, also Astra's: **identical eligible observations** for the
+  error and uniform selections, with the cutoff preventing *either* rule from
+  retaining an expired sample. That is what makes it a test of
+  selection-within-eligibility rather than one more comparison of two
+  different pools — and it is precisely the property an exponential price
+  cannot have, since any exemplar can outbid it.
+- **A τ sweep.** One τ is one point on a response curve; the interpolation
+  reading is a hypothesis, not a measurement.
+- **`t_min`.** Two offsets that differ in five ways are not a curve.
+- **A windowed measure not correlated with the regime change.** The
+  antagonism is between recency and a measure that *happens* to correlate
+  with where the worlds will disagree. `uncovered` may not, and was not run.
+- **The A re-fit column is exploratory** and carries no unslept
+  reacquisition baseline, so the gate prints the raw column and the per-rule
+  spreads and no pairwise ranking. err@τ's own two draws differ by 0.0250 on
+  it.
+
+Untested, as before: one N, one k, one fixture, one move size, one direction.
+
+Cost: G66 is the campaign's largest gate — **twenty-two sleeps**, which are
+almost all of it. A sleep is ~30 s and is almost entirely the 400-step Adam
+descent over 8 192 replay points; all nine adaptation runs together are
+~14 s. `python3 tools/obs19_predict.py` for the pre-registration.
+
+*The refresh controls, the label-energy measurements, the e-folding
+correction, the mean-versus-draw catch and the five P8 confounds are
+Astra's, from an independent audit that reproduced the parent, stream and
+seeds without touching the working tree.*

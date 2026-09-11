@@ -1029,8 +1029,21 @@ pub const Replay = struct {
     /// A-Res keys, one per slot; the array is a MIN-HEAP on them, so the
     /// weakest survivor is always at slot zero. Untouched by `.recent`.
     key: []f64,
+    /// The observation index each slot was admitted at. Written by every
+    /// rule and READ BY NONE of them — `admit` decides from the index it
+    /// has in hand — so it cannot move a selection. It exists because a
+    /// recency window is a function of this quantity and there is no other
+    /// way to ask, afterwards, how stale a buffer actually IS.
+    t: []u64,
     n: usize = 0,
     kind: Compose = .recent,
+    /// OBS-19's recency E-FOLDING TIME, in observations. Zero is NO window
+    /// and is the incumbent: the key is then untouched arithmetic for
+    /// arithmetic, so G61-G65 keep the buffers they were measured with.
+    ///
+    /// An e-folding time and NOT a half-life — Astra's correction. At
+    /// tau = 4096 the half-life is `tau * ln 2` = 2839 observations.
+    tau: f64 = 0,
     st: rng.Stream = rng.Stream.region(0, 0x5245_504C, 0), // "REPL"
 
     pub fn init(gpa: std.mem.Allocator, cap: usize) !Replay {
@@ -1043,14 +1056,28 @@ pub const Replay = struct {
             .x = try gpa.alloc([3]f32, cap),
             .y = try gpa.alloc(f64, cap),
             .key = try gpa.alloc(f64, cap),
+            .t = try gpa.alloc(u64, cap),
             .kind = kind,
             .st = rng.Stream.region(seed, 0x5245_504C, 0),
         };
+    }
+    /// The same buffer with a recency price on it — OBS-19's axis.
+    ///
+    /// `.recent` is refused rather than ignored: a ring IS a window, and a
+    /// ring carrying a second one would be two mechanisms answering to one
+    /// name. Loud, never a guess.
+    pub fn initWindowed(gpa: std.mem.Allocator, cap: usize, kind: Compose, seed: u64, tau: f64) !Replay {
+        std.debug.assert(kind != .recent);
+        std.debug.assert(tau > 0);
+        var r = try initWith(gpa, cap, kind, seed);
+        r.tau = tau;
+        return r;
     }
     pub fn deinit(self: Replay, gpa: std.mem.Allocator) void {
         gpa.free(self.x);
         gpa.free(self.y);
         gpa.free(self.key);
+        gpa.free(self.t);
     }
     /// A ring: the most recent `cap` observations, so a consolidation sees
     /// the measure the model has most lately been living under.
@@ -1058,6 +1085,7 @@ pub const Replay = struct {
         const i = self.n % self.x.len;
         self.x[i] = q;
         self.y[i] = v;
+        self.t[i] = self.n;
         self.n += 1;
     }
     /// Offer one observation, under whatever rule this buffer holds.
@@ -1067,11 +1095,73 @@ pub const Replay = struct {
     /// and every key negative so the comparison is on one side of zero.
     pub fn admit(self: *Replay, q: [3]f32, v: f64, surprise: f32, cover: f32) void {
         if (self.kind == .recent) return self.push(q, v);
-        const k = @log(@max(1e-12, @as(f64, self.st.unit()))) / self.kind.weight(surprise, cover);
+        const at = self.n;
+        const u = @max(1e-12, @as(f64, self.st.unit()));
+        const w = self.kind.weight(surprise, cover);
+        // OBS-19's window, and the whole of it: let the weight GROW with
+        // the observation index, `w_eff = w * exp(t/tau)`, so the A-Res key
+        // becomes `ln(u) * exp(-t/tau) / w`. It is fixed at admission and
+        // still correct at every later time, because `exp(T/tau)` is a
+        // factor common to every slot and cannot reorder them.
+        //
+        // So a window is not a second rule bolted to a first. It is a
+        // PRICE: an exemplar may be `tau * ln(w2/w1)` observations older
+        // for every factor `w2/w1` of extra weight it carries. A hard
+        // window cannot say this — inside it every point is equal and
+        // outside it none exists.
+        //
+        // **And that is exactly what OBS-19 found against it.** A price can
+        // be PAID. An exemplar carrying enough surprise buys its way past
+        // any exponential decay, and the exemplars that do are adversely
+        // selected — so the window's stale remnant is enriched in the
+        // labels the window exists to exclude. A hard cutoff cannot be
+        // bought past at any weight and is a different object; it is
+        // untested, and nothing here shows a synthesis is impossible.
+        //
+        // The cost is LOW, not zero. No expiry queue, no periodic scan, no
+        // second heap — which is a real result about exponential weighting
+        // and NOT a costing of a hard sliding window. It adds arithmetic
+        // per admission, and `t` is 8 bytes a slot (64 KiB at N = 8192)
+        // that only the diagnostics read.
+        //
+        // **Held as a LOG MAGNITUDE, and that is a correctness decision
+        // rather than a tidiness one.** Written directly, `exp(-t/tau)`
+        // underflows to zero past `t/tau = 745`, and an A-Res key is
+        // NEGATIVE — so an underflowed factor yields -0.0, which sorts
+        // ABOVE every live key and makes the OLDEST exemplars unevictable.
+        // The rule would not break, it would INVERT, and the run would look
+        // like a perfectly ordinary buffer full of the wrong world.
+        //
+        // Clamping the exponent was the first fix and was REJECTED before
+        // any measurement: it trades inversion for SATURATION — past the
+        // clamp every exemplar shares one decay factor, so the window stops
+        // discriminating and silently becomes a uniform reservoir over the
+        // clamped tail. A late failure instead of a catastrophic one is
+        // still a failure the numbers cannot show you.
+        //
+        //     K = -log(-ln u) + log w + t/tau
+        //
+        // orders IDENTICALLY — it is `-log` of the key's magnitude, and the
+        // key is negative, so larger K is the stronger exemplar exactly as
+        // larger key was. The recency term is now LINEAR in t, so there is
+        // nothing left to underflow at any tau, and the heap keeps its
+        // direction: `key[0]` is still the weakest survivor. G66 (a) is the
+        // executable mutation, at a tau that drives t/tau to 1250.
+        //
+        // The unwindowed key keeps the incumbent's arithmetic untouched,
+        // because G61-G65's selections are the numbers this campaign has
+        // already recorded.
+        var k: f64 = undefined;
+        if (self.tau == 0) {
+            k = @log(u) / w;
+        } else {
+            k = -@log(@max(1e-300, -@log(u))) + @log(w) + @as(f64, @floatFromInt(at)) / self.tau;
+        }
         if (self.n < self.x.len) {
             self.x[self.n] = q;
             self.y[self.n] = v;
             self.key[self.n] = k;
+            self.t[self.n] = at;
             self.n += 1;
             if (self.n == self.x.len) self.heapify();
             return;
@@ -1082,6 +1172,7 @@ pub const Replay = struct {
         self.x[0] = q;
         self.y[0] = v;
         self.key[0] = k;
+        self.t[0] = at;
         self.sift(0);
     }
     fn heapify(self: *Replay) void {
@@ -1103,11 +1194,29 @@ pub const Replay = struct {
             std.mem.swap([3]f32, &self.x[i], &self.x[small]);
             std.mem.swap(f64, &self.y[i], &self.y[small]);
             std.mem.swap(f64, &self.key[i], &self.key[small]);
+            std.mem.swap(u64, &self.t[i], &self.t[small]);
             i = small;
         }
     }
     pub fn filled(self: Replay) usize {
         return @min(self.n, self.x.len);
+    }
+    /// The share of slots recorded BEFORE `cut` — staleness by time rather
+    /// than by label.
+    ///
+    /// OBS-18's `stale` conditions on the contested points, which are a
+    /// tenth of this fixture, so it answers the same question through ~780
+    /// samples and a binomial sd of 0.018. This one is exact, and OBS-19
+    /// turns on an exact floor: with M observations since a move and N
+    /// slots to fill, EVERY buffer is at least (N-M)/N stale, the ring
+    /// included.
+    pub fn oldShare(self: Replay, cut: u64) f64 {
+        const n = self.filled();
+        var old: usize = 0;
+        for (self.t[0..n]) |ti| {
+            if (ti < cut) old += 1;
+        }
+        return @as(f64, @floatFromInt(old)) / @as(f64, @floatFromInt(@max(1, n)));
     }
 };
 
@@ -2389,4 +2498,500 @@ test "G65 replay composition: what does a replay policy actually choose?" {
         ctl_a.births, min_births,
     });
     try testing.expect(ctl_a.births * 2 < min_births);
+}
+
+test "G66 (a) a recency window must not invert when its decay underflows" {
+    // The mutation, executable: write the window as `key *= exp(-t/tau)`
+    // and run it here. Past `t/tau = 745` the factor underflows to zero,
+    // the NEGATIVE key becomes -0.0, and -0.0 sorts ABOVE every live key —
+    // so the OLDEST exemplars become unevictable and the buffer fills with
+    // precisely the wrong end of history. Clamping the exponent passes no
+    // better: past the clamp every exemplar shares one decay factor, so the
+    // buffer becomes a uniform reservoir over the clamped tail and this
+    // assertion fails at about t = 2 800 instead of inverting at 0.
+    //
+    // tau = 4 over 5 000 offers drives t/tau to 1250, so both failures fire
+    // and the log-magnitude form is the only one that passes.
+    const gpa = testing.allocator;
+    const TINY: f64 = 4;
+    const OFFERS: u64 = 5_000;
+    var b = try Replay.initWindowed(gpa, 64, .uniform, 7, TINY);
+    defer b.deinit(gpa);
+    var st = rng.Stream.region(9, 0x4736_3641, 0); // "G66A"
+    var i: u64 = 0;
+    while (i < OFFERS) : (i += 1) {
+        const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+        b.admit(q, 0, 1, 0);
+    }
+    var oldest: u64 = std.math.maxInt(u64);
+    for (b.t[0..b.filled()]) |t| oldest = @min(oldest, t);
+    std.debug.print("\n  G66 (a) [{s}] tau = {d} over {d} offers reaches t/tau = {d} (inverts past {d}); oldest survivor {d}\n", .{
+        @tagName(builtin.mode), TINY, OFFERS, @as(u64, @intFromFloat(@as(f64, @floatFromInt(OFFERS)) / TINY)),
+        @as(u64, @intFromFloat(thresholds.OBS19_UNDERFLOW_T)), oldest,
+    });
+    // 4*tau = 16 is the soft edge and the buffer is 64 slots, so 256 is
+    // four times the width the rule may legitimately reach back.
+    try testing.expect(oldest > OFFERS - 256);
+}
+
+test "G66 windowed error replay: can a window price staleness?" {
+    // OBS-18 closed with the two halves of a replay buffer separated:
+    //
+    //     a buffer's LOCATIONS decide how well it fits the world it is
+    //     labelled for; its LABELS decide which world that is
+    //
+    // and its Pareto surface was that split showing through. The ring took
+    // the current world because every one of its labels describes it; the
+    // unbounded error reservoir preserved the old one because half of its
+    // labels still describe THAT. Windowed error replay is the synthesis
+    // the split proposes — error's locations, the ring's labels, and no
+    // oracle anywhere. OBS-18 could only reach it by relabelling from the
+    // truth, which is a probe and not a policy.
+    //
+    // Two debts recorded at that phase's close, both paid here:
+    //
+    //   THE TIMING   OBS-18 slept 20 000 observations clear of the move, so
+    //                its ring was label-consistent BY THE FIXTURE'S TIMING
+    //                and not by any property of rings (Astra). The sleep
+    //                happens TWICE in one life here, at M/N = 0.5 where the
+    //                ring straddles and at M/N = 2.0 where it does not.
+    //   THE FLOOR    every rule this gate makes a claim about is
+    //                replicated, and a comparison uses the spread of the
+    //                rules IN it. `recent` is the one exception and it is
+    //                not an omission: a ring is a deterministic function of
+    //                the stream, so its same-rule spread is zero by
+    //                construction.
+    //
+    // `tools/obs19_predict.py` is where the REGISTERED numbers were frozen.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const N: usize = 8192;
+    const WAKE_A: u64 = 30_000;
+    const EARLY: u64 = 4_096; // M/N = 0.5: the ring straddles the move
+    const LATE: u64 = 16_384; // M/N = 2.0: a fresh pool twice the buffer
+    const ADAPT: u64 = 20_000;
+    const TAU = thresholds.OBS19_WINDOW_TAU;
+
+    const world_a = marl.TruthParams{};
+    var world_b = marl.TruthParams{};
+    world_b.shift = .{ 0, -0.10, 0 };
+
+    const Arm = struct { name: []const u8, kind: Compose, tau: f64, seed: u64 };
+    const arms = [_]Arm{
+        .{ .name = "recent", .kind = .recent, .tau = 0, .seed = 0 },
+        .{ .name = "uniform", .kind = .uniform, .tau = 0, .seed = 0xA1 },
+        .{ .name = "uniform'", .kind = .uniform, .tau = 0, .seed = 0xD4 },
+        .{ .name = "error", .kind = .err, .tau = 0, .seed = 0xB2 },
+        .{ .name = "error'", .kind = .err, .tau = 0, .seed = 0xF6 },
+        .{ .name = "uni@tau", .kind = .uniform, .tau = TAU, .seed = 0x1A },
+        .{ .name = "uni@tau'", .kind = .uniform, .tau = TAU, .seed = 0x2B },
+        .{ .name = "err@tau", .kind = .err, .tau = TAU, .seed = 0x3C },
+        .{ .name = "err@tau'", .kind = .err, .tau = TAU, .seed = 0x4D },
+    };
+    const REC = 0;
+    const UNI = 1;
+    const ERR = 3;
+    const UNIW = 5;
+    const ERRW = 7;
+    // One entry per RULE, in the same order, so `rules[i]` is led by
+    // `groups[i]`. A comparison between two rules takes the worst spread of
+    // the two groups involved — never one rule's variability spent on
+    // another's margin, which is the mistake OBS-18 shipped a draft of.
+    const rules = [_]usize{ REC, UNI, ERR, UNIW, ERRW };
+    const groups = [_][]const usize{
+        &.{REC},
+        &.{ UNI, 2 },
+        &.{ ERR, 4 },
+        &.{ UNIW, 6 },
+        &.{ ERRW, 8 },
+    };
+
+    var bufs: [arms.len]Replay = undefined;
+    for (arms, 0..) |a, i| bufs[i] = if (a.tau == 0)
+        try Replay.initWith(gpa, N, a.kind, a.seed)
+    else
+        try Replay.initWindowed(gpa, N, a.kind, a.seed, a.tau);
+    defer for (&bufs) |*b| b.deinit(gpa);
+    var ptrs: [arms.len]*Replay = undefined;
+    for (&bufs, 0..) |*b, i| ptrs[i] = b;
+
+    var m = try marl.Model.init(gpa, o);
+    defer m.deinit();
+    var st = rng.Stream.region(1234, 0x4f31_3957, 0); // "O19W"
+    try wakeAll(&m, WAKE_A, &ptrs, &st);
+    m.opts.truth = world_b;
+    try wakeAll(&m, EARLY, &ptrs, &st);
+
+    const ha = try marl.probesOf(gpa, world_a, 31337, 4096);
+    const hb = try marl.probesOf(gpa, world_b, 31337, 4096);
+    defer {
+        gpa.free(ha.p);
+        gpa.free(ha.y);
+        gpa.free(hb.p);
+        gpa.free(hb.y);
+    }
+
+    const Row = struct {
+        old: f64,
+        comp: Composition,
+        k: usize,
+        after: f64,
+        gain: f64,
+        /// What the sleep PRESERVED of the old world, scored before any
+        /// further learning. OBS-18's axis: relearning washes out what a
+        /// consolidation kept, so the re-fit column cannot show it.
+        held: f64,
+        ret: f64 = 0,
+        ret_births: u64 = 0,
+    };
+    const AXES = 3;
+    const axes = [_][]const u8{ "immediate (B)", "A held", "A re-fit" };
+    const pick = struct {
+        fn v(r: anytype, ax: usize) f64 {
+            return switch (ax) {
+                0 => -r.gain, // negated so every axis is lower-is-better
+                1 => r.held,
+                else => r.ret,
+            };
+        }
+    }.v;
+    const spanOf = struct {
+        fn go(r: []const Row, g: []const usize, ax: usize) f64 {
+            var worst: f64 = 0;
+            for (g, 0..) |a, i| {
+                for (g[i + 1 ..]) |b| worst = @max(worst, @abs(pick(r[a], ax) - pick(r[b], ax)));
+            }
+            return worst;
+        }
+    }.go;
+
+    std.debug.print("\n  G66 [{s}] N = {d}, tau = {d} (= N/2), one life, two sleeps\n", .{
+        @tagName(builtin.mode), N, TAU,
+    });
+    var rows: [2][arms.len]Row = undefined;
+    var margin: [2]f64 = .{ 0, 0 };
+    var held_gap: [2]f64 = .{ 0, 0 };
+    for (0..2) |offset| {
+        const late = offset == 1;
+        if (late) try wakeAll(&m, LATE - EARLY, &ptrs, &st);
+        const M: u64 = if (late) LATE else EARLY;
+        const floor = @as(f64, @floatFromInt(N -| M)) / @as(f64, @floatFromInt(N));
+        const keep = m.kernels.items.len / 2;
+        const before = try m.rms(hb.p, hb.y, null);
+        const ctl_held = try m.rms(ha.p, ha.y, null);
+        std.debug.print("\n  ── {s}: {d} observations since the move, M/N = {d:.2}; {d} kernels, k = {d}, before {d:.5}\n", .{
+            if (late) "LATE " else "EARLY", M,
+            @as(f64, @floatFromInt(M)) / @as(f64, @floatFromInt(N)),
+            m.kernels.items.len, keep, before,
+        });
+        std.debug.print("     the staleness FLOOR is arithmetic: (N-M)/N = {d:.3} — with {d} fresh observations for {d} slots, no rule can beat it\n", .{
+            floor, M, N,
+        });
+        std.debug.print("     control, no sleep: B {d:.5} | A held {d:.5}\n", .{ before, ctl_held });
+        std.debug.print("     {s:<9} {s:>6} {s:>9} {s:>6} {s:>6} | {s:>8} {s:>8} | {s:>8}", .{
+            "arm", "old", "contested", "stale", "dead", "after", "gain", "A held",
+        });
+        if (late) std.debug.print(" | {s:>8} {s:>7}", .{ "A re-fit", "births" });
+        std.debug.print("\n", .{});
+
+        const row = &rows[offset];
+        for (arms, 0..) |arm, ai| {
+            const comp = compositionOf(bufs[ai], world_a, world_b, m.kernels.items);
+            try (Measures{ .fit = bufs[ai].x[0..N], .sleep = bufs[ai].x[0..N], .eval = hb.p }).check();
+            var child = try sleepOn(gpa, &m, bufs[ai].x[0..N], bufs[ai].y[0..N], keep, .{ .exact = true });
+            defer child.deinit();
+            child.opts.truth = world_b;
+            const after = try child.rms(hb.p, hb.y, null);
+            row[ai] = .{
+                .old = bufs[ai].oldShare(WAKE_A),
+                .comp = comp,
+                .k = child.kernels.items.len,
+                .after = after,
+                .gain = 1 - @as(f64, after) / @as(f64, before),
+                .held = try child.rms(ha.p, ha.y, null),
+            };
+            if (late) {
+                const ret = try adaptTo(gpa, o, child.kernels.items, world_a, ADAPT, ha);
+                row[ai].ret = ret.rms;
+                row[ai].ret_births = ret.births;
+            }
+            std.debug.print("     {s:<9} {d:>6.3} {d:>9.4} {d:>6.3} {d:>6.3} | {d:>8.5} {d:>8.4} | {d:>8.5}", .{
+                arm.name, row[ai].old, comp.contested, comp.stale, comp.dead,
+                row[ai].after, row[ai].gain, row[ai].held,
+            });
+            if (late) std.debug.print(" | {d:>8.5} {d:>7}", .{ row[ai].ret, row[ai].ret_births });
+            std.debug.print("\n", .{});
+            // Equal k, asserted rather than announced — OBS-18 shipped a
+            // draft that printed a budget it did not deliver.
+            try testing.expectEqual(keep, row[ai].k);
+        }
+
+        const nax: usize = if (late) AXES else 2;
+        std.debug.print("     same-rule spread (DESCRIPTIVE, two draws a rule — not a confidence bound):", .{});
+        for (0..nax) |ax| {
+            std.debug.print("  {s} u{d:.4}/e{d:.4}/uw{d:.4}/ew{d:.4}", .{
+                axes[ax],
+                spanOf(row, groups[1], ax), spanOf(row, groups[2], ax),
+                spanOf(row, groups[3], ax), spanOf(row, groups[4], ax),
+            });
+        }
+        std.debug.print("\n", .{});
+
+        // A pair separates when it clears the WORSE of the two rules' own
+        // spreads. Reported for every pair, because a leader tied with its
+        // nearest rival hides every difference behind it — OBS-18's draft
+        // read "nothing separates" off exactly that and was wrong about
+        // four pairs of six.
+        const sep = struct {
+            fn go(r: []const Row, g: []const []const usize, a: usize, b: usize, ax: usize) f64 {
+                const sp = @max(spanOf(r, g[a], ax), spanOf(r, g[b], ax));
+                return (pick(r[g[a][0]], ax) - pick(r[g[b][0]], ax)) / @max(1e-12, sp);
+            }
+        }.go;
+        std.debug.print("     pairwise, in units of the WORSE of the two rules' own spreads (negative = the first is better):\n", .{});
+        // The A re-fit axis is EXPLORATORY and gets no pairwise ranking:
+        // there is no unslept reacquisition baseline here, so a highlighted
+        // comparison would read as a claim the gate cannot support. The raw
+        // column and the per-rule spreads stay; err@tau's own two draws
+        // differ by 0.0250 on it, which is the whole reason.
+        for (0..@min(nax, 2)) |ax| {
+            std.debug.print("       {s: <15}", .{axes[ax]});
+            for (rules, 0..) |_, i| {
+                for (rules[i + 1 ..], i + 1..) |_, j| {
+                    const s = sep(row, &groups, i, j, ax);
+                    if (@abs(s) <= 1) continue;
+                    std.debug.print("  {s}/{s} {d:.2}x", .{ arms[rules[i]].name, arms[rules[j]].name, s });
+                }
+            }
+            std.debug.print("\n", .{});
+        }
+
+        // The measure's own strength, as an enrichment of contested share
+        // over its matched uniform control. Printed at BOTH offsets and
+        // asserted at only one, because P8 predicts the window erases it
+        // where the fresh pool is smaller than the buffer.
+        std.debug.print("     the measure as an enrichment of contested share over its matched uniform control: unbounded {d:.2}x   windowed {d:.2}x\n", .{
+            row[ERR].comp.contested / row[UNI].comp.contested,
+            row[ERRW].comp.contested / row[UNIW].comp.contested,
+        });
+        // THE DERIVED QUANTITY THE FIRST DRAFT OF THIS TABLE WAS MISSING.
+        //
+        // `old` counts slots recorded before the move, but over nine tenths
+        // of this cube the two worlds AGREE — so a pre-move observation is
+        // usually a perfectly good post-move observation. What actually
+        // misleads a consolidation is the product: contested AND stale.
+        // On this fixture such a label is wrong by most of the shell's
+        // amplitude, against a target whose mean magnitude is 0.075, so a
+        // few hundred of them carry a sizeable share of the buffer's whole
+        // squared signal.
+        std.debug.print("     WRONG LABELS (contested AND stale), out of {d}:", .{N});
+        for (rules) |ai| std.debug.print("  {s} {d}", .{
+            arms[ai].name, @as(usize, @intFromFloat(@round(row[ai].comp.stale * row[ai].comp.contested * @as(f64, @floatFromInt(N))))),
+        });
+        std.debug.print("\n", .{});
+
+        // THE ANTAGONISM, and it is the phase's finding. For every other
+        // rule the share of CONTESTED slots that are stale tracks the share
+        // of ALL slots that are stale. For windowed error it does not.
+        std.debug.print("     staleness CONCENTRATION, stale - old (positive = the stale remnant is enriched in contested):", .{});
+        for (rules) |ai| std.debug.print("  {s} {d:.3}", .{ arms[ai].name, row[ai].comp.stale - row[ai].old });
+        std.debug.print("\n", .{});
+
+        margin[offset] = row[ERRW].gain - row[REC].gain;
+        held_gap[offset] = row[ERRW].held - row[REC].held;
+    }
+
+    // ── THE SAME-POINTS REFRESH CONTROL. Astra's, and it is the
+    // INTERVENTION the phase's central claim needed — the wrong-label count
+    // is a descriptive statistic and cannot establish a cause on its own.
+    //
+    // Same parent, same locations, same keep count, same selection/refit/
+    // refinement; ONLY the labels change, re-read from the world being
+    // evaluated. It needs an oracle per point, so it is a probe and not a
+    // deployable policy — OBS-18's framing, and the same caveat: a label
+    // change can move all three stages of a sleep, and this does not
+    // separate them.
+    const keep_late = m.kernels.items.len / 2;
+    const fresh = try gpa.alloc(f64, N);
+    defer gpa.free(fresh);
+    var refr: [arms.len]f64 = .{0} ** arms.len;
+    var refr_held: [arms.len]f64 = .{0} ** arms.len;
+    const windowed = [_]usize{ UNIW, 6, ERRW, 8 };
+    std.debug.print("\n  ── SAME-POINTS REFRESH (post-hoc probe, an oracle per point — NOT a policy). Ring B RMS {d:.5}\n", .{rows[1][REC].after});
+    std.debug.print("     {s:<9} {s:>9} {s:>10} {s:>9} | {s:>9} {s:>10}   (gap closed over 100% = the refreshed arm BEATS the ring)\n", .{ "arm", "policy B", "refreshed", "gap closed", "policy A", "refreshed" });
+    for (windowed) |ai| {
+        for (bufs[ai].x[0..N], 0..) |q, i| fresh[i] = marl.truthOf(world_b, q);
+        try (Measures{ .fit = bufs[ai].x[0..N], .sleep = bufs[ai].x[0..N], .eval = hb.p }).check();
+        var fc = try sleepOn(gpa, &m, bufs[ai].x[0..N], fresh, keep_late, .{ .exact = true });
+        defer fc.deinit();
+        fc.opts.truth = world_b;
+        refr[ai] = try fc.rms(hb.p, hb.y, null);
+        refr_held[ai] = try fc.rms(ha.p, ha.y, null);
+        try testing.expectEqual(keep_late, fc.kernels.items.len);
+        const gap = rows[1][ai].after - rows[1][REC].after;
+        std.debug.print("     {s:<9} {d:>9.5} {d:>10.5} {d:>8.0}% | {d:>9.5} {d:>10.5}\n", .{
+            arms[ai].name, rows[1][ai].after, refr[ai],
+            100 * (rows[1][ai].after - refr[ai]) / @max(1e-9, gap),
+            rows[1][ai].held, refr_held[ai],
+        });
+    }
+    std.debug.print("     CHANGING LABELS ALONE REVERSES THE RANKING, in both tested draws: {d:.5} and {d:.5} against the ring's {d:.5} — {d:.0}% and {d:.0}% lower error on the current world\n", .{
+        refr[ERRW], refr[8], rows[1][REC].after,
+        100 * (rows[1][REC].after - refr[ERRW]) / rows[1][REC].after,
+        100 * (rows[1][REC].after - refr[8]) / rows[1][REC].after,
+    });
+    std.debug.print("     the uniform draws close most of their gap and do NOT reach the ring, so their residual deficit is not labels alone. The gap-closed column is correct but depends on each arm's ORIGINAL deficit; the absolute RMS above is the interpretable number (Astra)\n", .{});
+    std.debug.print("     this bounds the claim to the INTERVENTION — it does not show locations and labels act independently through selection, refit and refinement\n", .{});
+
+    // ── WHAT THE REFRESH ESTABLISHES. Historical labels cause substantial
+    // current-world loss through this pipeline: refreshing reverses BOTH
+    // error draws' ordering against the ring and closes most of the uniform
+    // draws' gap. So `err@tau` is not selecting bad locations — it is
+    // selecting good ones and carrying bad labels on them, which is exactly
+    // what a window is supposed to prevent and this window does not.
+    for ([_]usize{ ERRW, 8 }) |ai| {
+        try testing.expect(refr[ai] < rows[1][REC].after);
+        // And refreshing COSTS the old world, as OBS-18 found for every rule
+        // it tested: the error arm's retention is carried by its labels.
+        try testing.expect(refr_held[ai] > rows[1][ai].held);
+    }
+    for ([_]usize{ UNIW, 6 }) |ai| {
+        try testing.expect(refr[ai] < rows[1][ai].after);
+        // ...but it does NOT reach the ring, so the uniform arm's residual
+        // deficit is not explained by labels alone and leaves room for a
+        // location effect. Asserted so a future change that closes it is
+        // noticed rather than assumed.
+        try testing.expect(refr[ai] > rows[1][REC].after);
+    }
+
+    std.debug.print("\n  err@tau against the ring, immediate fit: EARLY {d:.4}  LATE {d:.4}  (positive = the window wins)\n", .{ margin[0], margin[1] });
+    std.debug.print("  err@tau against the ring, A held:        EARLY {d:.5}  LATE {d:.5}  (negative = the window retains BETTER)\n", .{ held_gap[0], held_gap[1] });
+    std.debug.print("  REGISTERED and REFUTED: P4 (OBS-18's 2.5x enrichment not reached at EITHER offset, 2.09x both — and two checkpoints are two points, so no ceiling is claimed), P5 (the RING wins the current world), P7 (err@tau retains BETTER than the ring, the favourable direction), P8 (numerically refuted, MECHANISM UNRESOLVED — the offsets differ in parent, convergence, replay, normalisation denominator and kept budget)\n", .{});
+    std.debug.print("  an EXPONENTIAL recency price can be BOUGHT PAST, and what buys its way past is adversely selected\n", .{});
+    std.debug.print("  admission surprise is FROZEN at observation time — nothing reprioritises an old exemplar after the move — but A-era surprise already concentrates on the structure the worlds will later disagree about, so the exemplars that outbid the window are enriched in the labels it exists to exclude\n", .{});
+    std.debug.print("  a HARD cutoff cannot be bought past at any weight, and is UNTESTED: no impossibility of synthesis is established here\n", .{});
+
+    // ── Every assertion lives here, AFTER every print. A refuted
+    // prediction must still leave its table behind: the first run of this
+    // gate aborted inside the loop and threw away the offset it had not
+    // reached yet.
+
+    // ── REGISTERED P1/P2: THE PREMISE — where the sleep actually is. HELD.
+    // The ring achieves the arithmetic floor EXACTLY at the early offset,
+    // which is the whole of what OBS-18's 0.000 was: the fixture's timing.
+    try testing.expect(@abs(rows[0][REC].old - thresholds.OBS19_STALE_FLOOR) < 1e-12);
+    for (rows[0]) |r| try testing.expect(r.old >= thresholds.OBS19_STALE_FLOOR - 1e-12);
+    try testing.expectEqual(@as(f64, 0), rows[1][REC].old);
+    try testing.expectEqual(@as(f64, 0), rows[1][REC].comp.stale);
+
+    // ── REGISTERED P3: the window is a window. HELD, at 0.036 against a
+    // registered 0.05 and a simulated 0.035.
+    //
+    // The ceiling is asserted on the UNIFORM rule alone, because that is
+    // the rule it was derived on — `obs19_predict.py` simulates w = 1
+    // exactly. Spending it on the error arm would be this campaign's own
+    // standing mistake, a number measured on one rule applied to another,
+    // which is what Astra caught in OBS-18. The error arm carries the
+    // ordinal claim and prints its value — and reads 0.076, which is to
+    // say the ceiling would have been WRONG for it.
+    try testing.expect(rows[1][UNIW].old < thresholds.OBS19_WINDOW_OLD);
+    for (0..2) |i| {
+        try testing.expect(rows[i][UNIW].old < rows[i][UNI].old);
+        try testing.expect(rows[i][ERRW].old < rows[i][ERR].old);
+    }
+
+    // ── REGISTERED P4: REFUTED AT BOTH OFFSETS, and the refutation is
+    // asserted so that a change of sign is caught.
+    //
+    // The measure survives a window in the sense that it still enriches —
+    // but a window COSTS it a third of its enrichment, and the registered
+    // 2.5x (OBS-18's own, carried over) is not reached at EITHER offset:
+    // 3.08x -> 2.09x at M/N = 0.5 and 3.66x -> 2.09x at M/N = 2.0.
+    //
+    // That the two windowed values round alike (2.0901 and 2.0864) is NOT a
+    // ceiling and NOT independence from timing — Astra's correction, and it
+    // is right: two checkpoints are two points. What it does refute is P8's
+    // REASONING, which had the erasure specific to M < N; the erasure is
+    // present at both offsets measured.
+    const enrich = struct {
+        fn go(r: []const Row, w: bool) f64 {
+            return if (w) r[ERRW].comp.contested / r[UNIW].comp.contested else r[ERR].comp.contested / r[UNI].comp.contested;
+        }
+    }.go;
+    for (0..2) |i| {
+        try testing.expect(rows[i][ERR].comp.contested > thresholds.OBS18_ERROR_CONTESTED * rows[i][UNI].comp.contested);
+        try testing.expect(rows[i][ERRW].comp.contested > rows[i][UNIW].comp.contested);
+        try testing.expect(enrich(&rows[i], true) < enrich(&rows[i], false));
+        try testing.expect(enrich(&rows[i], true) < thresholds.OBS18_ERROR_CONTESTED);
+    }
+
+    // ── REGISTERED P5: REFUTED, and decisively. The RING wins the current
+    // world at the late offset, beating every other rule by more than that
+    // rule's own spread — windowed error by 9.25x and windowed uniform by
+    // 4.14x. OBS-18's oracle result does NOT survive being earned honestly.
+    //
+    // The ring is the only rule whose membership is decided by TIME ALONE,
+    // so when the fresh pool exceeds the buffer it carries EXACTLY zero
+    // wrong labels. Every measure-based rule admits some, and an error
+    // measure admits disproportionately the harmful ones.
+    for (rules, 0..) |ai, gi| {
+        if (ai == REC) continue;
+        try testing.expect(rows[1][REC].gain - rows[1][ai].gain > spanOf(&rows[1], groups[gi], 0));
+    }
+
+    // ── REGISTERED P6: HELD. Windowed error retains the old world worse
+    // than the unbounded error rule does, clearing the worse of the two
+    // spreads. The tradeoff the phase was asked to test is real.
+    try testing.expect(rows[1][ERRW].held - rows[1][ERR].held >
+        @max(spanOf(&rows[1], groups[4], 1), spanOf(&rows[1], groups[2], 1)));
+
+    // ── REGISTERED P7: REFUTED, in the FAVOURABLE direction. Registered as
+    // "not separated from the ring on retention"; windowed error in fact
+    // retains BETTER than the ring, by 3.04x its own spread. So the Pareto
+    // surface survives with windowed error on it — just at the opposite
+    // corner from the one predicted. It buys retention and pays in
+    // immediate fit, where the prediction had it the other way round.
+    try testing.expect(rows[1][REC].held - rows[1][ERRW].held > spanOf(&rows[1], groups[4], 1));
+
+    // ── REGISTERED P8: its NUMERICAL prediction failed and its MECHANISM
+    // is unresolved. The registered direction does not hold; no replacement
+    // is claimed.
+    //
+    // The cross-offset comparison is confounded in five ways at once — the
+    // two offsets differ in parent, convergence, replay contents, the
+    // normalisation denominator (`before`, 0.10270 against 0.08002) and the
+    // kept budget (343 against 367). An earlier draft argued the EARLY
+    // margins were small because every gain there is negative; that is not
+    // a bound on a pairwise lead and the argument is withdrawn.
+    try testing.expect(margin[1] < margin[0]);
+
+    // ── AND THE MECHANISM THAT REPLACES IT. An error measure and a recency
+    // window select against each other. The window exists to drop pre-move
+    // observations; the measure's highest weights sit on the contested
+    // band, which is exactly where a pre-move observation is most wrong. So
+    // what survives the window is ENRICHED in the labels the window was
+    // built to exclude — and windowed error is the only rule for which the
+    // stale remnant is enriched at all.
+    //
+    // Mutation: give `err@tau` the uniform weight and the concentration
+    // collapses to `uni@tau`'s, which is zero to within a draw.
+    for (0..2) |i| {
+        const conc = rows[i][ERRW].comp.stale - rows[i][ERRW].old;
+        try testing.expect(conc > 0.05);
+        for (rules) |ai| {
+            if (ai == ERRW) continue;
+            try testing.expect(conc > (rows[i][ai].comp.stale - rows[i][ai].old) + 0.05);
+        }
+    }
+
+    // ── AND WHAT THE MEASURE IS STILL WORTH. At MATCHED staleness the
+    // error rule dominates the uniform one on BOTH axes — 0.639 against
+    // 0.659 of the buffer stale, and better on the current world AND on the
+    // old one. So the measure is not refuted; what is refuted is the idea
+    // that a window can deliver it at the ring's freshness.
+    try testing.expect(@abs(rows[1][ERR].old - rows[1][UNI].old) < 0.05);
+    try testing.expect(rows[1][ERR].gain - rows[1][UNI].gain > @max(spanOf(&rows[1], groups[2], 0), spanOf(&rows[1], groups[1], 0)));
+    try testing.expect(rows[1][UNI].held - rows[1][ERR].held > @max(spanOf(&rows[1], groups[2], 1), spanOf(&rows[1], groups[1], 1)));
 }

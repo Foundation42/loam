@@ -132,6 +132,12 @@ pub fn build(b: *std.Build) void {
             "G17 (e)", // held-out learning gain, with disabled-learner mutation
             "G44 (i)", // transformed support
             "G47 (c)", // deferred read
+            // A recency window whose decay underflows does not break, it
+            // INVERTS — the oldest exemplars become unevictable and the
+            // buffer fills with the wrong end of history, looking entirely
+            // ordinary while it does. Milliseconds, and nothing else in the
+            // suite would notice.
+            "G66 (a)", // replay window inversion
         };
     }
     const run_tests = b.addRunArtifact(tests);
