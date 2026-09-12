@@ -1,0 +1,123 @@
+test
++- run test stderr
+  G70 (a) [ReleaseSafe] the OBS-23 lattice on the REAL controller, sleep stubbed; 12000 observations, r = 1000, budget 3, check 500
+     arm            paid  monitored  revisits  started  sleeps       stream hash            prefix
+     none          12000      12000         0        0       0  d70e7915a75bfb44  66c26b40cc0f2ff0
+     revisit       12000       9000      3000        3       0  66c26b40cc0f2ff0  66c26b40cc0f2ff0
+     sleep@t       12000      12000         0        3       3  d70e7915a75bfb44  66c26b40cc0f2ff0
+     sleep@t+r     12000      12000         0        3       3  d70e7915a75bfb44  66c26b40cc0f2ff0
+     both          12000       9000      3000        3       3  66c26b40cc0f2ff0  66c26b40cc0f2ff0
+     unguarded     12000       9000      3000        3       3  66c26b40cc0f2ff0  66c26b40cc0f2ff0
+     stream: none == sleep@t == sleep@t+r over 12000 fresh draws; revisit == both == unguarded == none's first 9000. The LOCATIONS match; the paid times, labels and learner histories need not
+     arm          checks  dupes  sleep@check sleep->check  check<sleep  start@check  check<start
+     none             24      0            0            0            0            0            0
+     revisit          24      0            0            0            0            3            3
+     sleep@t          24      0            3            3            0            3            0
+     sleep@t+r        24      0            3            3            0            3            0
+     both             24      0            3            3            0            3            3
+     unguarded        24      0            3            3            0            3            3
+     ordering: every sleep lands ON a checkpoint and precedes its score, on the immediate path AND the deferred one; every revisiting start has its own checkpoint already behind it
+     revisit: 3 starts, 0 sleep events, 3000 revisits — the aiming half in full and nothing else
+     clock:  sleep@t+r at { 6000, 8000, 11000 }, both at { 6000, 8000, 11000 }, sleep@t at { 5000, 7000, 10000 }
+     arm              err_sum   checks  k_final   k_peak    mean k   births
+     none            2.799891       24      278      278     228.0      278
+     revisit         2.658907       24      265      265     223.8      265
+     sleep@t         2.799891       24      278      278     228.0      278
+     sleep@t+r       2.799891       24      278      278     228.0      278
+     both            2.658907       24      265      265     223.8      265
+     unguarded       2.658907       24      265      265     223.8      265
+     collapse: six arms -> TWO trajectories with the sleep stubbed, matched on outputs and not merely on drawn locations. Every G70 difference is therefore the consolidation or the spend, never the runner.
+     capacity: mean population over checkpoints 228.0 (fresh stream) and 223.8 (revisiting), peaks 278 and 265 — reported alongside error, never instead of it
+
+  G70 [ReleaseSafe] OBS-23: what does an intervention cost? 6 arms x 2 acquisition trajectories, 104000 observations each
+     ACCOUNTING and the stream contract — the locations match; the paid times, labels and learner histories need not
+     arm           acq     paid  monitored  revisits  started  sleeps  rejections       stream hash
+     none         1234   104000     104000         0        0       0           0  df00e8bd973912f3
+     none         5678   104000     104000         0        0       0           0  806200dc39c9f73c
+     revisit      1234   104000      91712     12288        3       0           0  b3d67452d8207062
+     revisit      5678   104000      91712     12288        3       0           0  ccdca01e4fe1ee78
+     sleep@t      1234   104000     104000         0        3       3           0  df00e8bd973912f3
+     sleep@t      5678   104000     104000         0        3       3           0  806200dc39c9f73c
+     sleep@t+r    1234   104000     104000         0        3       3           0  df00e8bd973912f3
+     sleep@t+r    5678   104000     104000         0        3       3           0  806200dc39c9f73c
+     both         1234   104000      91712     12288        3       3           0  b3d67452d8207062
+     both         5678   104000      91712     12288        3       3           0  ccdca01e4fe1ee78
+     unguarded    1234   104000      91712     12288        3       3           0  b3d67452d8207062
+     unguarded    5678   104000      91712     12288        3       3           0  ccdca01e4fe1ee78
+     TIME-AVERAGED ERROR (mean RMS over checkpoints, not pooled MSE)
+     arm         whole 1234 whole 5678       mean    tail 1234  tail 5678       mean
+     none           0.08542    0.08441    0.08492      0.08781    0.08876    0.08828
+     revisit        0.08151    0.08030    0.08090      0.08613    0.08602    0.08607
+     sleep@t        0.09056    0.09511    0.09284      0.10269    0.11342    0.10806
+     sleep@t+r      0.09663    0.14489    0.12076      0.10395    0.22312    0.16354
+     both           0.08638    0.09520    0.09079      0.10186    0.12402    0.11294
+     unguarded      0.08638    0.09520    0.09079      0.10186    0.12402    0.11294
+     PAIRED CONTRASTS, formed within a trajectory — WHOLE. NEGATIVE means the first term has the LOWER error
+     contrast                         1234       5678       mean   |between|   what it is
+     C1  revisit - none           -0.00391   -0.00411   -0.00401     0.00020   the aiming half, without a consolidation
+     C2  sleep@t+r - none          0.01120    0.06048    0.03584     0.04928   the consolidation half, without revisiting
+     C3  both - revisit            0.00486    0.01491    0.00989     0.01004   consolidation's effect WITH revisiting
+     C4  both - sleep@t+r         -0.01025   -0.04969   -0.02997     0.03944   revisiting's effect WITH consolidation
+     C5  INTERACTION              -0.00634   -0.04557   -0.02596     0.03923   both - revisit - sleep@t+r + none
+     C6  sleep@t+r - sleep@t       0.00607    0.04978    0.02792     0.04371   the r-observation offset, alone
+     PAIRED CONTRASTS, formed within a trajectory — DRIFT+TAIL. NEGATIVE means the first term has the LOWER error
+     contrast                         1234       5678       mean   |between|   what it is
+     C1  revisit - none           -0.00168   -0.00274   -0.00221     0.00107   the aiming half, without a consolidation
+     C2  sleep@t+r - none          0.01615    0.13436    0.07525     0.11821   the consolidation half, without revisiting
+     C3  both - revisit            0.01574    0.03801    0.02687     0.02227   consolidation's effect WITH revisiting
+     C4  both - sleep@t+r         -0.00209   -0.09910   -0.05059     0.09701   revisiting's effect WITH consolidation
+     C5  INTERACTION              -0.00041   -0.09635   -0.04838     0.09594   both - revisit - sleep@t+r + none
+     C6  sleep@t+r - sleep@t       0.00126    0.10970    0.05548     0.10844   the r-observation offset, alone
+     CAPACITY — reported alongside error, never instead of it
+     arm         k_fin 1234 k_fin 5678     k_peak     mean k     births     sleeps   k/none
+     none               854        834      844.0      709.0      844.0          0    1.000
+     revisit            854        836      845.0      703.1      845.0          0    1.001
+     sleep@t            770        790      817.5      624.5     1902.5          6    0.924
+     sleep@t+r          720        866      900.5      668.7     1982.0          6    0.940
+     both               702        782      900.5      658.3     1903.5          6    0.879
+     unguarded          702        782      900.5      658.3     1903.5          6    0.879
+     ERROR BY PHASE (mean RMS over that phase's checkpoints), averaged over the two acquisition trajectories
+     arm               cold     stat A       step     stat B      drift       tail
+     none           0.08953    0.07839    0.09024    0.06976    0.09152    0.08136
+     revisit        0.08953    0.07839    0.07673    0.06335    0.09248    0.07234
+     sleep@t        0.08953    0.07957    0.09141    0.06237    0.10574    0.11303
+     sleep@t+r      0.08953    0.07839    0.10403    0.08378    0.12112    0.25443
+     both           0.08953    0.07839    0.07181    0.05788    0.10920    0.12096
+     unguarded      0.08953    0.07839    0.07181    0.05788    0.10920    0.12096
+     PER-CHECKPOINT ERROR, one row per arm per trajectory, seeds kept APART; column k is the score at (k + 1) x 2000, identical instants across arms.
+     The first visible separation says WHERE TO INVESTIGATE, not where the causal difference originated — an early intervention can act late.
+       none        1234  0.10295 0.10040 0.09986 0.08424 0.08009 0.07683 0.08052 0.07627 0.08044 0.07394 0.06995 0.06812 0.07390 0.06394 0.13007 0.11404 0.10418 0.10146 0.10241 0.08654 0.08523 0.08034 0.07951 0.07542 0.06978 0.07516 0.07187 0.07227 0.06433 0.06620 0.07413 0.08078 0.08937 0.09026 0.08650 0.09517 0.08710 0.10019 0.08772 0.10260 0.09768 0.10356 0.09180 0.08056 0.09273 0.08800 0.08507 0.08907 0.07910 0.07593 0.07651 0.07789
+       none        5678  0.09861 0.09613 0.08573 0.08403 0.08900 0.07653 0.07255 0.08385 0.07977 0.06326 0.07100 0.06590 0.06059 0.06038 0.13660 0.10740 0.11048 0.09353 0.07943 0.08511 0.08413 0.08799 0.07232 0.07475 0.07207 0.07127 0.06906 0.06723 0.06934 0.06853 0.07392 0.08502 0.08825 0.10831 0.09704 0.09094 0.09238 0.09977 0.10338 0.08847 0.09416 0.08912 0.09101 0.09001 0.09352 0.08273 0.08482 0.08599 0.08366 0.08484 0.07086 0.07451
+       revisit     1234  0.10295 0.10040 0.09986 0.08424 0.08009 0.07683 0.08052 0.07627 0.08044 0.07394 0.06995 0.06812 0.07390 0.06394 0.13007 0.08885 0.07840 0.07553 0.08797 0.08042 0.08224 0.07294 0.07066 0.06857 0.06567 0.06200 0.07056 0.06051 0.05959 0.05835 0.06555 0.08645 0.10379 0.09519 0.09057 0.09048 0.09878 0.09257 0.09031 0.09658 0.09580 0.09502 0.09414 0.09576 0.09404 0.08254 0.07259 0.07691 0.07670 0.07260 0.06720 0.06127
+       revisit     5678  0.09861 0.09613 0.08573 0.08403 0.08900 0.07653 0.07255 0.08385 0.07977 0.06326 0.07100 0.06590 0.06059 0.06038 0.13660 0.07931 0.08356 0.07947 0.07650 0.07485 0.06852 0.07385 0.07224 0.06721 0.06287 0.06793 0.06469 0.06282 0.06417 0.06107 0.06797 0.08756 0.08889 0.09408 0.10416 0.08977 0.09470 0.08886 0.10132 0.09582 0.09465 0.09024 0.09342 0.09913 0.09886 0.08109 0.07431 0.07193 0.07228 0.06399 0.07060 0.06876
+       sleep@t     1234  0.10295 0.10040 0.09986 0.08424 0.08009 0.07683 0.08052 0.07627 0.08044 0.07394 0.06995 0.06812 0.07390 0.06394 0.13983 0.10727 0.09866 0.09486 0.08919 0.08940 0.08020 0.08202 0.07582 0.07927 0.07502 0.07172 0.06865 0.06848 0.06776 0.03025 0.06085 0.09231 0.11034 0.10009 0.10405 0.10649 0.09745 0.10074 0.09363 0.09987 0.10422 0.11280 0.10804 0.10578 0.12297 0.12223 0.11467 0.11648 0.10669 0.09821 0.08764 0.09365
+       sleep@t     5678  0.09861 0.09613 0.08573 0.08403 0.08900 0.07653 0.07255 0.08385 0.07977 0.06326 0.07100 0.06590 0.06059 0.06038 0.14804 0.12116 0.11439 0.10198 0.09391 0.09180 0.08630 0.08638 0.07628 0.07654 0.07187 0.07073 0.06883 0.06010 0.06319 0.03186 0.05524 0.08672 0.09748 0.10999 0.10699 0.11082 0.09893 0.10846 0.11275 0.10570 0.10121 0.11412 0.18287 0.13690 0.12426 0.14117 0.12258 0.12664 0.12183 0.11638 0.10941 0.10481
+       sleep@t+r   1234  0.10295 0.10040 0.09986 0.08424 0.08009 0.07683 0.08052 0.07627 0.08044 0.07394 0.06995 0.06812 0.07390 0.06394 0.13007 0.11404 0.10418 0.11812 0.10375 0.11250 0.10888 0.10277 0.09889 0.09302 0.08442 0.08680 0.08722 0.09238 0.08767 0.08154 0.08676 0.10412 0.11778 0.12081 0.11045 0.11081 0.10257 0.09755 0.09906 0.11323 0.10797 0.13676 0.10885 0.10256 0.11804 0.09345 0.09956 0.09382 0.08473 0.09078 0.09266 0.09460
+       sleep@t+r   5678  0.09861 0.09613 0.08573 0.08403 0.08900 0.07653 0.07255 0.08385 0.07977 0.06326 0.07100 0.06590 0.06059 0.06038 0.13660 0.10740 0.11048 0.11992 0.10096 0.11057 0.10575 0.09897 0.08328 0.07912 0.08279 0.08124 0.08819 0.07788 0.08242 0.07276 0.07763 0.09601 0.10207 0.11439 0.11426 0.09866 0.11148 0.12866 0.14072 0.11431 0.13464 0.13650 0.35224 0.14017 0.13452 0.23044 0.16067 0.92824 0.90681 0.21799 0.25972 0.20848
+       both        1234  0.10295 0.10040 0.09986 0.08424 0.08009 0.07683 0.08052 0.07627 0.08044 0.07394 0.06995 0.06812 0.07390 0.06394 0.13007 0.08885 0.07840 0.07342 0.07738 0.07112 0.06944 0.06123 0.06221 0.06216 0.05940 0.05813 0.06019 0.05887 0.05342 0.05484 0.05740 0.08980 0.11818 0.11363 0.10569 0.11158 0.11686 0.10744 0.10271 0.10124 0.10772 0.10393 0.10179 0.10498 0.10353 0.10591 0.13568 0.12398 0.08767 0.09229 0.07878 0.07025
+       both        5678  0.09861 0.09613 0.08573 0.08403 0.08900 0.07653 0.07255 0.08385 0.07977 0.06326 0.07100 0.06590 0.06059 0.06038 0.13660 0.07931 0.08356 0.07822 0.07679 0.06675 0.07338 0.06068 0.06466 0.06509 0.05822 0.06156 0.06258 0.05628 0.05463 0.05645 0.05266 0.08393 0.09296 0.09255 0.10918 0.09337 0.10302 0.16013 0.13143 0.14206 0.12830 0.13630 0.12461 0.14586 0.13327 0.16849 0.15298 0.13194 0.13008 0.12710 0.13152 0.15676
+       unguarded   1234  0.10295 0.10040 0.09986 0.08424 0.08009 0.07683 0.08052 0.07627 0.08044 0.07394 0.06995 0.06812 0.07390 0.06394 0.13007 0.08885 0.07840 0.07342 0.07738 0.07112 0.06944 0.06123 0.06221 0.06216 0.05940 0.05813 0.06019 0.05887 0.05342 0.05484 0.05740 0.08980 0.11818 0.11363 0.10569 0.11158 0.11686 0.10744 0.10271 0.10124 0.10772 0.10393 0.10179 0.10498 0.10353 0.10591 0.13568 0.12398 0.08767 0.09229 0.07878 0.07025
+       unguarded   5678  0.09861 0.09613 0.08573 0.08403 0.08900 0.07653 0.07255 0.08385 0.07977 0.06326 0.07100 0.06590 0.06059 0.06038 0.13660 0.07931 0.08356 0.07822 0.07679 0.06675 0.07338 0.06068 0.06466 0.06509 0.05822 0.06156 0.06258 0.05628 0.05463 0.05645 0.05266 0.08393 0.09296 0.09255 0.10918 0.09337 0.10302 0.16013 0.13143 0.14206 0.12830 0.13630 0.12461 0.14586 0.13327 0.16849 0.15298 0.13194 0.13008 0.12710 0.13152 0.15676
+     REVISIT TARGETING — do the revisiting arms aim at the same places once one of them has consolidated?
+       acq 1234  intervention 0: revisit vs both IDENTICAL both vs unguarded IDENTICAL
+       acq 1234  intervention 1: revisit vs both differs   both vs unguarded IDENTICAL
+       acq 1234  intervention 2: revisit vs both differs   both vs unguarded IDENTICAL
+       acq 5678  intervention 0: revisit vs both IDENTICAL both vs unguarded IDENTICAL
+       acq 5678  intervention 1: revisit vs both differs   both vs unguarded IDENTICAL
+       acq 5678  intervention 2: revisit vs both differs   both vs unguarded IDENTICAL
+     VERDICT
+       Q1  C1 = revisit - none            registered < 0            measured -0.00401   HELD
+       Q2  C2 = sleep@t+r - none          registered > 0            measured 0.03584   HELD
+       Q2' C2 exceeds OBS-22's deficit    registered > 0.00587     measured 0.03584   HELD
+       Q3  C5 = the interaction           registered < 0            measured -0.02596   HELD
+       Q4  k_final(both)/k_final(none)    registered [0.40, 0.80]   measured 0.87983    REFUTED
+       Q5  guard rejections               registered 0              measured 0          HELD
+       Q4 stands REGISTERED AND REFUTED and is NOT asserted below. The bound is wrong rather than the code, and it is left
+       standing to be struck rather than tuned to fit. **The saving MISSED the prediction; it did not disappear** — final
+       population 0.880 of `none`'s, checkpoint-mean 0.929, while PEAK is 1.067, above one. So there IS an accuracy-capacity
+       trade, smaller than registered and UNPRICED: nothing here says what ~12 per cent of the kernels is worth against the error.
+     SCOPE: one fixture, one placement set, one r, one budget, one compression ratio. This estimates a REPEATED POLICY —
+     three interventions interacting through the model — and a consolidation's effect INCLUDES its feedback into what later
+     revisits target, so no contrast here separates 'sleep uses repaired evidence better' from 'sleep changes what is revisited next'.
+zig build test -Dtest-filter="G70"  973.34s user 1.87s system 102% cpu 15:55.19 total
+G70 EXIT=0

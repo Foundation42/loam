@@ -145,6 +145,13 @@ pub fn build(b: *std.Build) void {
             // expensive comparison, because OBS-21 discovered its headline
             // contract was underspecified only on the first full run.
             "G69 (a)", // trajectory contract
+            // OBS-23's lattice, and the reason it can attribute anything:
+            // with the sleep stubbed the six arms must collapse to exactly
+            // TWO trajectories, matched on outputs and not merely on drawn
+            // locations. It also pins the registered event order on BOTH
+            // sleep paths — the immediate one reintroduced OBS-22's
+            // score-ordering bug the day it was added. Seconds, no sleeps.
+            "G70 (a)", // lattice contract
         };
     }
     const run_tests = b.addRunArtifact(tests);

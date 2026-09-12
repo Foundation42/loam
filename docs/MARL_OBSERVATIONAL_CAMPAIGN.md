@@ -3241,3 +3241,348 @@ violation, the frozen-score control, the change-boundary oracle, the
 hits/repairs distinction, the sleep/score ordering bug, the `budget_at_drift`
 bug, the peak-contrast conflation and the no-move counterfactual are all
 Astra's.*
+
+## OBS-23 / G70 — what does an intervention actually cost?
+
+OBS-22's headline was a negative result: *no intervention policy tested beat
+`none`*. It was also **unattributed**, because what that phase called "an
+intervention" is two mechanisms bundled together:
+
+1. **4096 targeted revisits**, paid out of the same observation horizon — so
+   an intervening arm makes 12 288 fewer *fresh* observations over the same
+   life.
+2. **a consolidation**, which halves the population and refits against a
+   window carrying historical labels.
+
+OBS-22 measured their sum against zero. The campaign's own rule — *when a
+correction changes several things at once, report the delta and attribute
+none of it* — says that result cannot name which half failed to earn its
+keep. This phase is the 2×2 that can.
+
+The placement is held at OBS-22's privileged `informed` timing throughout, so
+the trigger is not a third factor. OBS-22 established the trigger is its own
+problem.
+
+### Why the lattice has six arms and not four
+
+The clock forces it. **An arm that spends `r` observations on revisits cannot
+also consolidate at the fire instant** — its revisits advance the common
+clock, so its consolidation lands at `t + r`. The matched no-revisit cell is
+therefore *placed at* `t + r` and consolidates immediately, having spent its
+`r` on ordinary fresh draws.
+
+| arm | `r` spent on | consolidates at | guard |
+|---|---|---|---|
+| `none` | fresh | — | — |
+| `revisit` | revisits | — | — |
+| `sleep@t+r` | fresh | 34096, 64096, 94096 | on |
+| `both` | revisits | 34096, 64096, 94096 | on |
+| `sleep@t` | fresh | 30000, 60000, 90000 | on |
+| `unguarded` | revisits | 34096, 64096, 94096 | **off** |
+
+The first four are the cells. `sleep@t` isolates the 4096-observation offset
+alone. `unguarded` measures the trajectory effect of the acceptance rule
+rather than assuming it free — **an exploding descent is a possible cost of
+the unguarded intervention, so guarding does not remove a distortion, it
+changes the policy being evaluated.**
+
+### The contract that makes attribution possible
+
+The fresh-draw RNG advances once per fresh observation and never for a
+revisit. So by construction `none`, `sleep@t` and `sleep@t+r` draw the
+*identical* 104 000 locations in the identical order, and the revisiting arms
+draw a *prefix* — the first 91 712 of the same ones. Each arm carries a
+running hash over its fresh draws plus that hash snapshotted at 91 712, and
+the gate asserts equality both ways.
+
+**Identical hashes are not enough on their own**, because a controller side
+effect need not move a single drawn location. So G70 (a) runs the whole
+lattice with the consolidation stubbed and asserts that the six arms collapse
+to exactly **two** trajectories — matched on error by phase, population,
+peak, births, not merely on the queries. If that holds, every difference the
+expensive gate reports is the consolidation or the spend, and never the
+runner.
+
+And what the shared prefix is *not* is shared evidence: the same locations
+arrive at different paid times in a revisiting arm, so within the drift they
+carry different labels and are learned from by a model with a different
+history. The common clock makes that part of the policy effect.
+
+### The clock bug the cheap gate was built to find
+
+Astra found it by reading the loop, before any sleep was paid for. The
+immediate-sleep path did not exist when OBS-22 was written, and adding it
+**reintroduced OBS-22's own score-ordering bug on the new branch**: an arm
+consolidating at 30 000, 60 000 and 90 000 scored those checkpoints *before*
+consolidating, while a revisiting arm correctly deferred a checkpoint landing
+on its last query.
+
+The registered order is observation → the completed intervention's sleep →
+score, and the two halves complete at different instants:
+
+- an arm spending `r` completes `r` **later** than it starts, so a checkpoint
+  at its start instant belongs *before* the intervention;
+- an arm spending none completes at the instant it starts, so the checkpoint
+  already reached there must **wait**.
+
+G70 (a) now picks toy timings where *every* sleep in the lattice lands
+exactly on a checkpoint — the immediate path at `t`, the deferred path at
+`t + r` — and asserts both, with exactly one score per checkpoint:
+
+| arm | checks | dupes | sleep@check | sleep→check | check<sleep | start@check | check<start |
+|---|---|---|---|---|---|---|---|
+| none | 24 | 0 | 0 | 0 | 0 | 0 | 0 |
+| revisit | 24 | 0 | 0 | 0 | 0 | 3 | 3 |
+| sleep@t | 24 | 0 | 3 | 3 | **0** | 3 | 0 |
+| both | 24 | 0 | 3 | 3 | **0** | 3 | 3 |
+
+Restoring the old behaviour drives `check<sleep` from 0 to 3 on exactly the
+immediate-sleep arms and fails the gate, so it is not decoration. The fix
+cannot move G69: none of its sleeps lands on a checkpoint (30 096, 56 096,
+82 096, 34 096, 64 096, 94 096, 20 480, 40 960, 73 747 against `check` =
+2000) and every G69 arm revisits. G69 was re-run rather than argued.
+
+### What it cost, and which half
+
+| arm | whole | drift+tail |
+|---|---|---|
+| **revisit** | **0.08090** | **0.08607** |
+| none | 0.08492 | 0.08828 |
+| both | 0.09079 | 0.11294 |
+| unguarded | 0.09079 | 0.11294 |
+| sleep@t | 0.09284 | 0.10806 |
+| sleep@t+r | 0.12076 | 0.16354 |
+
+**`revisit` lowers both objectives on both trajectories** — about 4.7% on
+whole-trajectory error and 2.5% on drift-and-tail. It is the first
+intervention policy in this campaign to beat not intervening, conditional on
+this fixture and this privileged timing.
+
+`both` reproduces OBS-22's `informed` arm to every digit, per trajectory
+(0.08638 / 0.09520 whole, 0.10186 / 0.12402 drift-and-tail). **That
+validates that arm's numerical continuity, not the lattice** — the evidence
+for the other five paths is G70 (a)'s structural checks, which is why they
+exist.
+
+The paired contrasts, each formed within a trajectory and only then averaged:
+
+| | mean | \|between\| | |
+|---|---|---|---|
+| C1 revisit − none | **−0.00401** | 0.00020 | aiming alone **pays** |
+| C2 sleep@t+r − none | **+0.03584** | 0.04928 | consolidating alone costs **6×** OBS-22's whole deficit |
+| C3 both − revisit | +0.00989 | 0.01004 | consolidation still worsens error even with revisiting |
+| C4 both − sleep@t+r | −0.02997 | 0.03944 | revisiting helps far more when a sleep follows |
+| C5 **interaction** | **−0.02596** | 0.03923 | strongly sub-additive |
+| C6 sleep@t+r − sleep@t | +0.02792 | 0.04371 | delaying all three sleeps by `r` is worse |
+
+**Every contrast has the same sign on both trajectories. C2, C5 and C6 have
+between-trajectory differences LARGER than their means.** The signs
+replicate; the magnitudes do not, and two trajectories are descriptive
+replication rather than an interval.
+
+The interaction is large and favourable, but it does not rescue the
+consolidation: **C3 is positive on both trajectories**, so consolidating
+still worsens error relative to revisiting alone. Revisiting *reduces the
+penalty*; it does not make a consolidation pay.
+
+### The statement
+
+> At the tested timings, targeted revisiting improved trajectory error on
+> both seeds. Adding consolidation worsened it, although revisiting reduced
+> the penalty relative to consolidation alone. Delaying all three
+> consolidations by 4096 observations increased error on both seeds, with
+> strongly seed-dependent magnitude; the responsible intervention and
+> mechanism remain unlocalised.
+
+Astra's wording, and it is the phase. The checkpoint traces added afterwards
+narrow *where to look* — a 0.93 excursion after the third consolidation on
+5678 — without changing that last clause: appearing after an operation is not
+being caused by it.
+
+### Q4 refuted, and the resource account inverts
+
+Registered at `k_final(both)/k_final(none)` in [0.40, 0.80] from OBS-22's own
+regrowth counts. **Measured 0.87983.**
+
+| arm | k_final | k_peak | mean k | births | sleeps |
+|---|---|---|---|---|---|
+| none | 844.0 | 844.0 | 709.0 | 844.0 | 0 |
+| revisit | 845.0 | 845.0 | 703.1 | 845.0 | 0 |
+| sleep@t | 780.0 | 817.5 | 624.5 | **1902.5** | 6 |
+| sleep@t+r | 793.0 | 900.5 | 668.7 | **1982.0** | 6 |
+| both | 742.0 | 900.5 | 658.3 | **1903.5** | 6 |
+
+**The saving missed the prediction; it did not disappear.** `both` ends with
+roughly 12% fewer kernels and a 7% lower checkpoint-mean population, while
+scoring worse and peaking *higher* — a consolidation is followed by a
+regrowth that overshoots. OBS-22 refuted cumulative shrinkage by counting two
+regrowths; this extends that across a whole trajectory.
+
+But the births column says the standing population was never the whole cost.
+**A consolidating arm buys 2.25× the topology `none` does** — 1903 births
+against 844 — to end 12% smaller. Every sleep discards kernels that the birth
+rule then re-purchases. So the trade is not "12% fewer kernels for worse
+error"; it is *12% fewer kernels at the end, for more than twice the
+acquisition, and worse error.*
+
+That column read 292 in this gate's first run, which inverted the story
+completely: a sleep replaces the model and the child's birth counter starts
+at zero, so a single read at the end measures only the last segment. What
+exposed it is an invariant nobody had registered — **nothing dies except at a
+consolidation**, so an arm that never consolidates ends with exactly as many
+kernels as it ever birthed. `none` read 844 births against 844 kernels. It is
+asserted now, and the trajectory total is banked at every replacement.
+
+The trade remains **unpriced**: nothing here says what 12% of standing
+kernels is worth against 2.25× the births and the error it costs. The bound
+is left standing in `thresholds.zig` to be struck rather than tuned to fit,
+and the gate reports Q4 without asserting it.
+
+### What zero guard rejections establishes, and what it does not
+
+Q5 held exactly: **zero rejections**, and `both` equals `unguarded` on every
+f64 output rather than to printed precision. At these placements the
+acceptance rule is inert.
+
+`sleep@t+r` on trajectory 5678 nonetheless reached **0.14489 / 0.22312**,
+with a 0.93 excursion after its third consolidation.
+That establishes that **acceptance did not ensure a beneficial trajectory
+policy**. It does *not* establish a locally harmful descending refinement:
+that claim needs same-world measurements immediately before and after the
+operation, and this gate takes none. OBS-22's caveat — *recovery establishes
+that this rule prevents this failure, not that a descent which does descend
+on replay improves the current world* — is untouched either way.
+
+### C6, and what it is actually comparing
+
+C6 is **sleep at `t` against sleep at `t + 4096`**, and it shifts all three
+placements at once:
+
+| pair | what the earlier window is |
+|---|---|
+| 30 000 → 34 096 | the abrupt change; the later window holds 25% post-change observations |
+| 60 000 → 64 096 | drift onset; the earlier window describes the world *at* onset |
+| 90 000 → 94 096 | drift completion; the earlier window holds observations from throughout the drift |
+
+Only the first pair is even about stale-versus-fresh labels, and **historical
+labels are not necessarily wrong** — the worlds agree outside the contested
+region.
+
+More decisively, C6 contrasts **two complete sleep schedules**. After the
+first sleep that differs, the models differ; later windows carry different
+surprise weights, the selected buffers can differ, and every subsequent
+consolidation starts from a different state. A larger fresh fraction
+therefore guarantees nothing about a whole-trajectory score.
+
+C6 is +0.00126 on 1234 and +0.10970 on 5678 in drift-and-tail — the large
+difference arriving after earlier interventions have already changed the
+models. **That is an inability to attribute, never an exoneration.** An early
+intervention can have delayed consequences, so the aggregate does not clear
+the first sleep of causing the gap; it only means the aggregate cannot say.
+
+### The feedback channel, measured rather than conceded
+
+The first intervention's targets are a **contract** — nothing has
+consolidated when they are chosen at t = 30 000 — and all three revisiting
+arms pick the same 4096 locations, asserted. The second and third **differ**
+on both trajectories, while `both` and `unguarded` stay identical throughout.
+
+So the channel is real and opens exactly where it must. This says *whether*
+the targeting diverged and *from when*; a hash is identical or it is not, and
+the magnitude is an instrument nobody has built. **C5 therefore may not be
+narrated as "sleep uses repaired evidence better"** — "sleep changes what
+gets revisited next" is equally consistent with it, and nothing here
+separates them.
+
+### The record the next phase needs
+
+`Tally` carries the error at all 52 checkpoints, at fixed global indices
+identical across arms, with the two seeds kept apart. Its own contract is
+asserted: the k-th checkpoint sits at exactly `(k+1)·2000`, there are exactly
+as many as the objective counted, the trace sums to `err_sum` bit for bit,
+and the phase segmentation partitions the same checkpoints. Without that, a
+follow-up would read a different quantity from the one this phase concluded
+from.
+
+**The first visible separation says where to investigate, not where the
+causal difference originated.**
+
+### Where the arms separate
+
+The phase means, averaged over both trajectories:
+
+| arm | cold | stat A | step | stat B | drift | tail |
+|---|---|---|---|---|---|---|
+| none | 0.08953 | 0.07839 | 0.09024 | 0.06976 | 0.09152 | 0.08136 |
+| revisit | 0.08953 | 0.07839 | 0.07673 | 0.06335 | 0.09248 | **0.07234** |
+| sleep@t | 0.08953 | 0.07957 | 0.09141 | 0.06237 | 0.10574 | 0.11303 |
+| sleep@t+r | 0.08953 | 0.07839 | 0.10403 | 0.08378 | 0.12112 | **0.25443** |
+| both | 0.08953 | 0.07839 | **0.07181** | **0.05788** | 0.10920 | 0.12096 |
+
+**The aggregate hid a sign change.** `both` is the *best* arm through the
+abrupt step and the stationary stretch after it — 0.07181 and 0.05788,
+beating `revisit` and well beating `none` — and the whole of its deficit
+arrives in the drift and the tail. Consolidation is not uniformly a cost on
+this trajectory; where it costs is after a *gradual* change.
+
+(`sleep@t`'s stat A differs from the others at 0.07957 because it
+consolidates at exactly 30 000, a phase boundary and a checkpoint, so that
+score is taken after its sleep. The ordering rule, visible in the data.)
+
+The per-checkpoint traces localise it further. On 5678, `none`, `sleep@t` and
+`sleep@t+r` are **identical to the digit through t = 28 000**; `sleep@t`
+separates at t = 30 000 and `sleep@t+r` at t = 36 000 — the first checkpoint
+after each one's first consolidation, exactly where the ordering rule puts
+them. And C6's magnitude on that trajectory is dominated by a late excursion:
+
+| t | 86 000 | 94 000 | 96 000 | 98 000 | 100 000 |
+|---|---|---|---|---|---|
+| none | 0.09101 | 0.08482 | 0.08599 | 0.08366 | 0.08484 |
+| sleep@t | 0.18287 | 0.12258 | 0.12664 | 0.12183 | 0.11638 |
+| sleep@t+r | 0.35224 | 0.16067 | **0.92824** | **0.90681** | 0.21799 |
+
+That excursion lands immediately after `sleep@t+r`'s third consolidation at
+94 096, and **the guard did not reject it** — the refinement descended on
+replay while the current world went to 0.93.
+
+**So the drift-and-tail gap is not about the first window after the step.**
+It is where a late consolidation went wrong. But *appears after* is not
+*caused by*: the model feeding that sleep was shaped by the two before it,
+and the trace says where to investigate rather than where the difference
+originated.
+
+### Scope
+
+One fixture, one placement set, one `r`, one budget, one compression ratio —
+the 2×2 sits at a single point of each. It estimates a **repeated policy**:
+three interventions interacting through the model, with no contrast
+separating the first from the third.
+
+### Still owed
+
+- **OBS-24, specified.** The retained traces put the separation that matters
+  at `sleep@t+r`/5678's third consolidation (t = 94 096, error 0.16067 →
+  0.92824 at the next checkpoint). Fork from a common parent before that
+  sleep — sleep now, sleep after 4096 ordinary observations, or skip
+  — with identical fresh queries, compared at common paid times, recording
+  immediate pre- and post-sleep replay *and* current-world error. That
+  isolates a local timing comparison before asking whether label freshness
+  explains anything. Astra's design.
+- **The magnitude of the targeting divergence**, which needs the selected
+  location sets compared rather than hashed.
+- **Pricing the capacity saving.** 12% of the kernels against the error it
+  costs is a trade nobody has valued.
+- **`revisit` at other budgets.** It is the best policy here at `r` = 4096
+  and three interventions; nothing says the gain survives either dial.
+- Everything OBS-22 left open, unchanged: `relabel + norefine`, a
+  reduced-rate fork, and Q4's per-trajectory spread.
+
+Cost: G70 is ~16 min, the largest gate in the campaign; G70 (a) is seconds
+and sleeps not at all. `docs/data/obs23/` holds the runs.
+
+*The clock bug in the immediate-sleep path, the six-arm lattice's matched
+cells, the paired-contrast summaries, the repeated-policy framing, the
+feedback-channel caveat, the guard's honest description, the resource
+account, the C6 correction, the attribute-is-not-exonerate distinction, the
+checkpoint trace and its contract, and the phase's own closing statement are
+all Astra's.*

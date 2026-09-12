@@ -82,7 +82,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
-| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..22; src/consolidate.zig, G58-G69; docs/data/obs22 |
+| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..23; src/consolidate.zig, G58-G70; docs/data/obs22, docs/data/obs23 |
 | Complexity and fresh windows | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-4; src/observational_windows.zig, G51; docs/data/obs4 |
 | Adaptive inverse births | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-3; src/adaptive_inferred.zig, G50; docs/data/obs3 |
 | Hidden potential inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-2; src/inferred.zig, G49 |
@@ -163,7 +163,7 @@ Records in docs/data/obs4 include sensors, window-pre-update scores,
 evaluation history, coverage, requests and diagnostic. G51(a/b/c) passed
 separately; use smoke at commit, not the full suite.
 
-Latest: OBS-22 / G69, WHEN IS INTERVENTION WORTH ITS COST? (2026-09-12).
+Previously: OBS-22 / G69, WHEN IS INTERVENTION WORTH ITS COST? (2026-09-12).
 Astra's framing, replacing "detect the change": surprise also rises because a
 model is undertrained, and detection is ILL-POSED here by construction — the
 trajectory holds a 30,000-observation gradual drift with no instant to name.
@@ -226,3 +226,120 @@ G66 is the campaign's largest gate — twenty-two sleeps; G67 is ~8:45 with thir
 ~30 s and almost entirely the 400-step descent over 8192 replay points; all
 nine adaptation runs together are ~14 s. Use smoke plus the affected gate at
 commit, not the full suite.
+
+Latest: OBS-23 / G70, WHAT DOES AN INTERVENTION ACTUALLY COST? (2026-09-12).
+OBS-22's Q6 refutation was UNATTRIBUTED: "an intervention" is two mechanisms
+— 4,096 targeted revisits paid out of the same horizon, and a consolidation —
+and it measured their sum against zero. This is the 2x2, at OBS-22's
+privileged `informed` placement so the trigger is not a third factor.
+
+SIX ARMS, NOT FOUR, AND THE CLOCK IS WHY. An arm spending r on revisits
+cannot also consolidate at the fire instant, so `both` sleeps at t+r; its
+matched no-revisit cell is PLACED at t+r and sleeps immediately. `sleep@t`
+isolates that offset; `unguarded` prices the guard decision.
+
+A CLOCK BUG WAS CAUGHT IN REVIEW BEFORE THE SLEEPS WERE PAID FOR. The
+immediate-sleep path did not exist when OBS-22 was written, and adding it
+REINTRODUCED OBS-22's score-ordering bug on the new branch — it scored
+30,000/60,000/90,000 and only then consolidated. The rule applies to each
+half separately: an arm spending r completes r LATER than it starts, so a
+checkpoint at its start instant belongs BEFORE it; one spending none
+completes where it starts, so that checkpoint must WAIT. G70 (a) picks toy
+timings where EVERY sleep lands on a checkpoint and asserts both paths, with
+exactly one score per checkpoint. Mutation: restoring the old behaviour
+drives check-before-sleep 0 -> 3 on exactly the immediate arms. G69 was
+RE-RUN rather than argued — all 29 distinct numbers reproduce.
+
+THE CONTRACT THAT MAKES ATTRIBUTION POSSIBLE. The fresh-draw RNG advances
+once per fresh observation and never for a revisit, so `none`, `sleep@t` and
+`sleep@t+r` draw IDENTICAL locations and the revisiting arms a PREFIX —
+asserted by hash. Hashes alone are not enough, because a controller side
+effect moves no query: G70 (a) also asserts that with the sleep stubbed the
+six arms collapse to exactly TWO trajectories, matched on error by phase,
+population, peak and births.
+
+RESULTS. revisit .08090/.08607, none .08492/.08828, both = unguarded
+.09079/.11294 (OBS-22's informed arm, to every digit — that validates THAT
+ARM's numerical continuity, not the lattice), sleep@t .09284/.10806,
+sleep@t+r .12076/.16354. Paired contrasts, formed WITHIN a trajectory:
+C1 -.00401, C2 +.03584, C3 +.00989, C4 -.02997, C5 (interaction) -.02596,
+C6 +.02792. Every sign replicates on both trajectories; C2, C5 and C6 have
+between-trajectory differences LARGER than their means.
+
+THE STATEMENT (Astra's): at the tested timings, targeted revisiting improved
+trajectory error on both seeds. Adding consolidation worsened it, although
+revisiting reduced the penalty relative to consolidation alone. Delaying all
+three consolidations by 4,096 observations increased error on both seeds,
+with strongly seed-dependent magnitude; the responsible intervention and
+mechanism remain unlocalised.
+
+Q1, Q2, Q2', Q3, Q5 HELD. Q4 REGISTERED AND REFUTED at .87983 against
+[.40, .80], REPORTED and not asserted, the bound left standing to be struck.
+THE SAVING MISSED THE PREDICTION; IT DID NOT DISAPPEAR — ~12% fewer final
+kernels, 7% lower checkpoint-mean, while error is worse and PEAK is 1.067,
+above one. There IS a trade; it is smaller than registered and UNPRICED.
+
+AND THE RESOURCE ACCOUNT INVERTS ONCE BIRTHS ARE COUNTED PROPERLY. A
+consolidating arm buys 2.25x the topology `none` does — 1903 births against
+844 — to end 12% smaller, because every sleep discards kernels the birth rule
+re-purchases. The first run printed 292 and read as the opposite: A SLEEP
+REPLACES THE MODEL AND THE CHILD'S BIRTH COUNTER STARTS AT ZERO, so one read
+at the end measures only the last segment. What exposed it is an invariant
+nobody had registered — NOTHING DIES EXCEPT AT A CONSOLIDATION, so `none`
+read births EXACTLY equal to its final population. Now asserted, and the
+total banked at every replacement.
+
+THE AGGREGATE HID A SIGN CHANGE. Per-phase: `both` is the BEST arm through
+the abrupt step (.07181) and the stationary stretch after it (.05788), and
+its whole deficit arrives in the DRIFT and TAIL. Consolidation is not
+uniformly a cost here; where it costs is after a GRADUAL change.
+
+AND THE 5678 TAIL GAP IS A LATE EXCURSION. The arms are identical to the
+digit through t = 28,000; sleep@t separates at 30,000 and sleep@t+r at
+36,000 — the first checkpoint after each one's first sleep, which is the
+ordering rule visible in the data. Then sleep@t+r runs .16067 -> .92824 ->
+.90681 across t = 94,000-98,000, immediately after its THIRD consolidation at
+94,096, with ZERO rejections. APPEARS AFTER IS NOT CAUSED BY: the model
+feeding that sleep was shaped by the two before it.
+
+C6 IS NOT A WINDOW COMPARISON. It shifts all three placements, and only the
+first pair is about stale-versus-fresh labels — historical labels are not
+necessarily wrong, since the worlds agree outside the contested region. It
+contrasts two complete SCHEDULES: after the first differing sleep the models
+differ, later windows carry different surprise weights, and every subsequent
+consolidation starts elsewhere. The tail gap arriving late is an inability to
+ATTRIBUTE, NEVER AN EXONERATION — an early intervention can act late.
+
+ZERO GUARD REJECTIONS, and sleep@t+r/5678 still reached .14489/.22312. That
+establishes acceptance did not ensure a beneficial trajectory POLICY. It does
+NOT establish a locally harmful descending refinement, which needs same-world
+measurements immediately before and after the operation.
+
+THE FEEDBACK CHANNEL, measured rather than conceded. A consolidation's effect
+INCLUDES what it does to later acquisition. The first intervention's targets
+are a CONTRACT (nothing has slept when they are chosen) and all three
+revisiting arms agree exactly; the second and third DIFFER on both
+trajectories. So C5 may NOT be narrated as "sleep uses repaired evidence
+better" — "sleep changes what gets revisited next" fits it equally.
+
+THE RECORD THE NEXT PHASE NEEDS. Tally carries the error at all 52
+checkpoints, seeds apart, with its own contract asserted: the k-th sits at
+exactly (k+1)*check, the count matches the objective, the trace sums to
+err_sum BIT FOR BIT, and the phase segmentation partitions the same
+checkpoints. The first visible separation says WHERE TO INVESTIGATE, not
+where the causal difference originated.
+
+Next (OBS-24, Astra's design): the traces put the separation that matters at
+sleep@t+r/5678's THIRD consolidation, t = 94,096. Fork from a COMMON PARENT
+before that sleep — sleep now, sleep
+after 4,096 ordinary observations, or skip — identical fresh queries, compared
+at common paid times, recording immediate pre/post-sleep replay AND
+current-world error. Also owed: the magnitude of the targeting divergence;
+pricing the 12% capacity saving; `revisit` at other budgets.
+
+PROCESS: `pkill -f` matched its own wrapper AGAIN and killed the cancelling
+command. The rule was already here and was not followed. Use the captured
+task handle.
+
+G70 is now the campaign's largest gate at ~16 min; G70 (a) is seconds and
+sleeps not at all.

@@ -1002,8 +1002,8 @@ test "G60 wake: was the discarded freedom useful plasticity, or clutter?" {
         // worse than capacity you do not have, so if the child ends behind
         // while carrying MORE kernels, this is where it should show.
         std.debug.print("  {d:>9}  {d:>8} {d:>8} {d:>9.5} {d:>7.0}   {d:>8} {d:>8} {d:>9.5} {d:>7.0}\n", .{
-            mark, parent.kernels.items.len, parent.stats.births - pb0, p_rms[mi], parent.meanUpdates(),
-            child.kernels.items.len,        child.stats.births - cb0, c_rms[mi],  child.meanUpdates(),
+            mark,                    parent.kernels.items.len, parent.stats.births - pb0, p_rms[mi],           parent.meanUpdates(),
+            child.kernels.items.len, child.stats.births - cb0, c_rms[mi],                 child.meanUpdates(),
         });
     }
     const last = marks.len - 1;
@@ -1013,7 +1013,7 @@ test "G60 wake: was the discarded freedom useful plasticity, or clutter?" {
     });
     std.debug.print("  Christian: redundancy is SCAFFOLDING, parent adapts faster.  Agent: it is BAGGAGE, child keeps up.\n", .{});
     std.debug.print("  final held-out: parent {d:.5}, child {d:.5} — child/parent {d:.4}, {s} was right\n", .{
-        p_rms[last], c_rms[last], c_rms[last] / p_rms[last],
+        p_rms[last],                                                         c_rms[last], c_rms[last] / p_rms[last],
         if (c_rms[last] <= p_rms[last] * 1.05) "the AGENT" else "CHRISTIAN",
     });
 
@@ -1639,7 +1639,59 @@ pub const Tally = struct {
     budget_at_drift: usize = 0,
     drift_marked: bool = false,
     fired_at: [8]u64 = .{0} ** 8,
-    trace: [32]Event = undefined,
+    /// Consolidations whose refinement was REJECTED by the acceptance rule.
+    /// Zero unless `Recipe.guard` is on; reported either way, because "the
+    /// guard never fired" is a measurement and not an assumption.
+    rejections: usize = 0,
+    /// THE RESOURCE TRADE, which OBS-22 did not report at all. `none` never
+    /// prunes; a sleeping arm halves and regrows. A comparison that reports
+    /// error alone is the un-matched comparison OBS-20 was corrected for.
+    k_final: usize = 0,
+    k_peak: usize = 0,
+    k_sum: u64 = 0,
+    k_n: usize = 0,
+    /// Topology acquired over the whole trajectory, SUMMED ACROSS
+    /// consolidations — a sleep replaces the model and resets its counter,
+    /// so a single read at the end measures only the last segment. Kernels
+    /// a consolidation CARRIES OVER are not births, which is the right
+    /// semantics: this counts what the birth rule bought, not what the
+    /// model holds.
+    births_total: u64 = 0,
+    /// A running hash over the FRESH draws alone — never a revisit — and the
+    /// same hash snapshotted at `prefix_at` fresh draws.
+    ///
+    /// The fresh-draw stream advances once per fresh observation and never
+    /// for a revisit, so arms that do not revisit draw the IDENTICAL
+    /// locations in the identical order, and arms that do draw a PREFIX of
+    /// that same sequence. **That is a contract, not a summary**, and
+    /// OBS-21's ring is what a gate reporting it as counts costs.
+    stream_hash: u64 = 1469598103934665603,
+    stream_prefix: u64 = 0,
+    prefix_at: u64 = 0,
+    /// A signature of the `r` locations each intervention TARGETED, one per
+    /// intervention.
+    ///
+    /// Astra's caveat, made measurable: after a consolidation the model
+    /// differs, so admission surprises differ, so the window's ranking
+    /// differs — two arms sharing a fresh stream need not revisit the same
+    /// places at their second and third interventions. A consolidation's
+    /// effect therefore INCLUDES its feedback into later acquisition, and
+    /// without this the caveat would only be prose.
+    ///
+    /// It establishes WHETHER the targeting diverged and from which
+    /// intervention, not by how much: a hash is identical or it is not.
+    rev_hash: [8]u64 = .{0} ** 8,
+    /// The error at every checkpoint, in order. Checkpoints sit at fixed
+    /// GLOBAL indices identical across arms — `check_err[k]` is the score at
+    /// `(k + 1) * Traj.check` — so two arms' traces are directly comparable
+    /// row by row.
+    ///
+    /// Astra's, for the question OBS-23 raises and cannot answer: *when* do
+    /// two schedules' error trajectories separate? A phase mean cannot
+    /// localise that, and without the trace the answer costs another run of
+    /// the campaign's largest gate.
+    check_err: [64]f64 = .{0} ** 64,
+    trace: [64]Event = undefined,
     ntrace: usize = 0,
 
     pub fn mean(self: Tally) f64 {
@@ -1654,6 +1706,24 @@ pub const Tally = struct {
             n += self.checks_phase[k];
         }
         return e / @as(f64, @floatFromInt(@max(1, n)));
+    }
+    /// Mean population over checkpoints. The final one alone hides three
+    /// halvings and three regrowths.
+    pub fn meanK(self: Tally) f64 {
+        return @as(f64, @floatFromInt(self.k_sum)) / @as(f64, @floatFromInt(@max(1, self.k_n)));
+    }
+    /// FNV-1a over the fresh query's bits, in order. Order-sensitive by
+    /// construction, which is the whole point of it.
+    fn mix(self: *Tally, q: [3]f32) void {
+        for (q) |v| {
+            var b = @as(u32, @bitCast(v));
+            for (0..4) |_| {
+                self.stream_hash ^= b & 0xff;
+                self.stream_hash *%= 1099511628211;
+                b >>= 8;
+            }
+        }
+        if (self.prefix_at != 0 and self.monitored == self.prefix_at) self.stream_prefix = self.stream_hash;
     }
     fn note(self: *Tally, kind: @TypeOf(@as(Event, undefined).kind), at: u64) void {
         if (self.ntrace < self.trace.len) {
@@ -1693,6 +1763,41 @@ pub const Step = struct {
 pub const Diag = struct {
     steps: [8]Step = [_]Step{.{}} ** 8,
     n: usize = 0,
+};
+
+/// What an intervention actually DOES, as two separable mechanisms.
+///
+/// OBS-22 measured their sum against zero and refuted Q6 — no policy beat
+/// `none` — without being able to say which half failed to earn its cost.
+/// **The defaults are OBS-22's recipe exactly**, so every gate written
+/// before OBS-23 keeps its numbers by passing `.{}`.
+///
+/// The two are not symmetric in the clock, and that asymmetry is the reason
+/// OBS-23 needs six arms rather than four: an arm spending `r` observations
+/// on revisits **cannot also consolidate at the fire instant**, because the
+/// revisits advance the common clock. Its matched no-revisit cell is
+/// therefore PLACED AT `t + r` and consolidates immediately, having spent
+/// its `r` on ordinary fresh draws — it does not fire early. A cell list
+/// that ignores this measures WHEN the sleep happened as well as what
+/// preceded it.
+///
+/// **And what the pair estimates is a repeated POLICY.** After the first
+/// consolidation the model differs, so admission surprises differ, so the
+/// window's ranking differs — two arms sharing a fresh stream need not
+/// target the same locations at their second and third interventions. A
+/// consolidation's effect includes its feedback into later acquisition, and
+/// no contrast in this design separates the two.
+pub const Recipe = struct {
+    /// Spend `r` observations re-asking the window's highest-surprise
+    /// locations. False spends them on the ordinary fresh stream instead —
+    /// so the horizon is matched either way and only the SPEND differs.
+    revisit: bool = true,
+    /// Consolidate when the intervention completes.
+    consolidate: bool = true,
+    /// The replay-loss acceptance rule OBS-22 (b) established prevents a
+    /// diverging refinement. Off by default because `Options.guard` is, and
+    /// because OBS-22's registered recipe did not have it.
+    guard: bool = false,
 };
 
 /// Optional instrumentation and a fork, both off by default so that adding
@@ -1736,6 +1841,7 @@ pub fn runArm(
     st: *rng.Stream,
     out: *Tally,
     probe: Probe,
+    recipe: Recipe,
 ) !void {
     var m = try marl.Model.init(gpa, o);
     defer m.deinit();
@@ -1751,6 +1857,10 @@ pub fn runArm(
     var i: u64 = 0;
     var next_at: usize = 0;
     var births_mark: u64 = 0;
+    // A checkpoint reached by an ordinary observation is held until the
+    // TOP of the next iteration, so that an intervention completing at that
+    // same index is scored BEFORE it. See the ordering note below.
+    var pending = false;
     while (i < c.total) {
         // The drift snapshot, on the COMMON clock and BEFORE this index's
         // decision — so an intervention beginning exactly at onset is not
@@ -1781,6 +1891,30 @@ pub fn runArm(
             if (!ready) out.unready += 1;
             if (ready and !room) out.horizon_blocked += 1;
             if (ready and room and !(plan == .trigger and trig.spent())) {
+                // **The registered order is observation, then the COMPLETED
+                // intervention's sleep, then the score.** The two halves of
+                // OBS-23's lattice complete at different instants and the
+                // rule has to be applied to each:
+                //
+                //   * an intervention that spends `r` observations completes
+                //     `r` LATER than it starts, so a checkpoint at its start
+                //     instant belongs BEFORE it — scored here. A checkpoint
+                //     landing on its LAST query is the `due` deferral below.
+                //   * one that spends none completes at the instant it
+                //     starts, so that checkpoint must wait for the
+                //     consolidation — it stays pending and is scored at the
+                //     top of the next iteration, after this block's
+                //     `continue`.
+                //
+                // The immediate path did not exist when OBS-22 was written,
+                // and adding it reintroduced OBS-22's score-ordering bug on
+                // the new branch. Astra caught it by reading the loop again;
+                // G70 (a) asserts BOTH paths at timings where the sleep
+                // lands exactly on a checkpoint.
+                if (recipe.revisit and pending) {
+                    pending = false;
+                    try score(&m, c, i, worlds, probes, vals, out);
+                }
                 if (plan == .at) next_at += 1;
                 if (plan == .trigger) trig.charge();
                 if (out.started < out.fired_at.len) out.fired_at[out.started] = i;
@@ -1799,30 +1933,51 @@ pub fn runArm(
                     frozen = try adopt(gpa, o, m.kernels.items);
                 }
 
-                for (0..c.w) |k| pick[k] = k;
-                std.mem.sort(usize, pick, win.s, struct {
-                    fn lt(sv: []const f32, x: usize, y: usize) bool {
-                        return sv[x] > sv[y];
-                    }
-                }.lt);
-                for (pick[0..c.r], 0..) |k, j| pts[j] = win.x[k];
                 var due = false;
-                for (pts, 0..) |q, j| {
-                    const tp = worldAt(c, i, worlds[0], worlds[1], worlds[2]);
-                    const v: f64 = marl.truthOf(tp, q);
-                    const ev = try m.observe(q, .{@as(f32, @floatCast(v))});
-                    win.push(q, v, ev.surprise, ev.cover);
-                    out.paid += 1;
-                    out.revisits += 1;
-                    i += 1;
-                    // **The registered ordering: observation, then the
-                    // completed intervention's sleep, THEN the score.** A
-                    // checkpoint landing on the LAST query is deferred past
-                    // the consolidation, so it never reports a model that is
-                    // about to be replaced. An earlier draft scored it first
-                    // and Astra caught it by reading the loop.
-                    if (i % c.check == 0) {
-                        if (j + 1 == c.r) due = true else try score(&m, c, i, worlds, probes, vals, out);
+                // **The aiming half.** Without it the same `r` observations
+                // are spent on the ordinary fresh stream instead, so the
+                // horizon is matched and only the SPEND differs — which is
+                // OBS-23's first factor. An arm with `revisit = false`
+                // consumes no observations here at all, and its
+                // consolidation therefore lands at the fire instant; the
+                // clock-matched cell is the one placed `r` later.
+                if (recipe.revisit) {
+                    for (0..c.w) |k| pick[k] = k;
+                    std.mem.sort(usize, pick, win.s, struct {
+                        fn lt(sv: []const f32, x: usize, y: usize) bool {
+                            return sv[x] > sv[y];
+                        }
+                    }.lt);
+                    for (pick[0..c.r], 0..) |k, j| pts[j] = win.x[k];
+                    if (out.started - 1 < out.rev_hash.len) {
+                        var h: u64 = 1469598103934665603;
+                        for (pts) |qp| for (qp) |vv| {
+                            var bb = @as(u32, @bitCast(vv));
+                            for (0..4) |_| {
+                                h ^= bb & 0xff;
+                                h *%= 1099511628211;
+                                bb >>= 8;
+                            }
+                        };
+                        out.rev_hash[out.started - 1] = h;
+                    }
+                    for (pts, 0..) |q, j| {
+                        const tp = worldAt(c, i, worlds[0], worlds[1], worlds[2]);
+                        const v: f64 = marl.truthOf(tp, q);
+                        const ev = try m.observe(q, .{@as(f32, @floatCast(v))});
+                        win.push(q, v, ev.surprise, ev.cover);
+                        out.paid += 1;
+                        out.revisits += 1;
+                        i += 1;
+                        // **The registered ordering: observation, then the
+                        // completed intervention's sleep, THEN the score.** A
+                        // checkpoint landing on the LAST query is deferred past
+                        // the consolidation, so it never reports a model that is
+                        // about to be replaced. An earlier draft scored it first
+                        // and Astra caught it by reading the loop.
+                        if (i % c.check == 0) {
+                            if (j + 1 == c.r) due = true else try score(&m, c, i, worlds, probes, vals, out);
+                        }
                     }
                 }
                 var step = Step{ .at = i, .k_before = m.kernels.items.len };
@@ -1836,7 +1991,7 @@ pub fn runArm(
                 }
                 const forked = probe.fork_at != null and probe.fork_at.? == out.started - 1;
                 const mode = if (forked) probe.fork_mode else .half;
-                if (do_sleep and mode != .skip) {
+                if (do_sleep and recipe.consolidate and mode != .skip) {
                     var buf = try Replay.initWith(gpa, c.n, .err, 0x33);
                     defer buf.deinit(gpa);
                     win.selectInto(&buf);
@@ -1847,15 +2002,26 @@ pub fn runArm(
                     }
                     var so = Options{ .exact = true };
                     if (mode == .norefine) so.steps = 0;
-                    if (mode == .guarded) so.guard = true;
+                    if (mode == .guarded or recipe.guard) so.guard = true;
                     var rep: Report = undefined;
                     var child = try sleepOnReporting(gpa, &m, buf.x[0..c.n], buf.y[0..c.n], keep, so, &rep);
                     errdefer child.deinit();
+                    // **A consolidation REPLACES the model, and the child's
+                    // birth counter starts at zero**, so the segment's
+                    // births have to be banked here or the trajectory total
+                    // silently becomes "births since the last sleep". The
+                    // first run of G70 printed exactly that and it read as a
+                    // finding — the sleeping arms looked as though they had
+                    // bought a third of the topology. `none` and `revisit`
+                    // reading births EXACTLY equal to their final population
+                    // is what gave it away.
+                    out.births_total += m.stats.births;
                     m.deinit();
                     m = child;
                     step.fit_first = rep.first;
                     step.fit_last = rep.last;
                     step.rejected = rep.rejected;
+                    if (rep.rejected) out.rejections += 1;
                 }
                 if (probe.diag) |d| {
                     step.k_after = m.kernels.items.len;
@@ -1867,8 +2033,14 @@ pub fn runArm(
                     }
                 }
                 births_mark = m.stats.births;
-                out.sleeps += 1;
-                out.note(.sleep, i);
+                // Counted for an arm that CONSOLIDATES, whether or not the
+                // expensive call ran — `do_sleep = false` is the stub, and
+                // G69 (a) asserts ordering through the event it still emits.
+                // An arm with `consolidate = false` has no sleep to order.
+                if (recipe.consolidate) {
+                    out.sleeps += 1;
+                    out.note(.sleep, i);
+                }
                 out.watch_until = i + 2 * c.check;
                 out.watch_idx = out.started - 1;
                 out.watching = true;
@@ -1880,6 +2052,11 @@ pub fn runArm(
             if (plan == .at and !room) next_at += 1;
         }
 
+        if (pending) {
+            pending = false;
+            try score(&m, c, i, worlds, probes, vals, out);
+        }
+
         const tp = worldAt(c, i, worlds[0], worlds[1], worlds[2]);
         const q = [3]f32{ st.unit(), st.unit(), st.unit() };
         const v: f64 = marl.truthOf(tp, q);
@@ -1888,9 +2065,15 @@ pub fn runArm(
         _ = trig.monitor(ev.surprise);
         out.paid += 1;
         out.monitored += 1;
+        out.mix(q);
         i += 1;
-        if (i % c.check == 0) try score(&m, c, i, worlds, probes, vals, out);
+        if (i % c.check == 0) pending = true;
     }
+    // The horizon's own checkpoint. It can never be followed by an
+    // intervention, so it is scored here rather than lost with the loop.
+    if (pending) try score(&m, c, i, worlds, probes, vals, out);
+    out.k_final = m.kernels.items.len;
+    out.births_total += m.stats.births;
 }
 
 fn score(
@@ -1907,6 +2090,10 @@ fn score(
     const e = try m.rms(probes, vals, null);
     out.err_sum += e;
     out.checks += 1;
+    out.k_sum += m.kernels.items.len;
+    out.k_n += 1;
+    if (out.checks - 1 < out.check_err.len) out.check_err[out.checks - 1] = e;
+    out.k_peak = @max(out.k_peak, m.kernels.items.len);
     const ph = c.phaseOf(i);
     out.err_phase[ph] += e;
     out.checks_phase[ph] += 1;
@@ -2198,12 +2385,12 @@ test "G61 the lineage: is the wake/sleep cycle a ratchet, or damage accumulating
         const cr = try child.rms(ho.p, ho.y, null);
         gap[gi] = cr / pr;
         std.debug.print("  {s:<19} {d:>7} {d:>9.5} {d:>7.0}   {d:>7} {d:>9.5} {d:>7.0}   {d:>7.4}\n", .{
-            label, parent.kernels.items.len, pr, parent.meanUpdates(),
-            child.kernels.items.len, cr, child.meanUpdates(), gap[gi],
+            label,                   parent.kernels.items.len, pr,                  parent.meanUpdates(),
+            child.kernels.items.len, cr,                       child.meanUpdates(), gap[gi],
         });
     }
     std.debug.print("  the gap trajectory: {d:.4} -> {d:.4} -> {d:.4} — {s}\n", .{
-        gap[0], gap[1], gap[2],
+        gap[0],                                                                                                     gap[1], gap[2],
         if (gap[2] < gap[1]) "RATCHET: the second sleep narrowed it" else "DAMAGE: the child lineage keeps paying",
     });
 
@@ -2380,8 +2567,8 @@ test "G62 (b) when is a population ready to be rewritten?" {
         const after = try fork.rms(ho.p, ho.y, null);
         gains[mi] = 1 - @as(f64, after) / @as(f64, before);
         std.debug.print("  {d:>7} {d:>7} {d:>6.3} {d:>6.3} {d:>6.3} {d:>6.2} {d:>9.5} {d:>9.5} {d:>8.4}\n", .{
-            mark, p0.kernels.items.len, readiness(&p0, 16), reads[mi], readiness(&p0, 256),
-            updateSpread(&p0), before, after, gains[mi],
+            mark,              p0.kernels.items.len, readiness(&p0, 16), reads[mi], readiness(&p0, 256),
+            updateSpread(&p0), before,               after,              gains[mi],
         });
     }
 
@@ -2437,7 +2624,7 @@ test "G62 (b) when is a population ready to be rewritten?" {
         const g = 1 - @as(f64, after) / @as(f64, before_last);
         if (n == 32768 and g > gains[marks.len - 1]) lifted = true;
         std.debug.print("  {d:>8} {d:>9} {d:>9.5} {d:>8.4} {d:>10.2}\n", .{
-            n, keep * marl.PARAMS, after, g,
+            n,                                                                        keep * marl.PARAMS, after, g,
             @as(f64, @floatFromInt(n)) / @as(f64, @floatFromInt(keep * marl.PARAMS)),
         });
     }
@@ -2568,7 +2755,7 @@ test "G63 does maturity matter once the evidence is adequate?" {
         spread[ri] = hi - lo;
     }
     std.debug.print("  maturity spread of the gain, by rho: {d:.4} {d:.4} {d:.4} — {s}\n", .{
-        spread[0], spread[1], spread[2],
+        spread[0],                                                                                                               spread[1], spread[2],
         if (spread[2] < spread[0]) "the AGENT: evidence absorbs maturity" else "CHRISTIAN: maturity survives adequate evidence",
     });
     std.debug.print("  the rule: at rho_min = 2, {d} points permit {d} kernels; this grid kept {d}\n", .{
@@ -2943,9 +3130,9 @@ test "G65 replay composition: what does a replay policy actually choose?" {
             .plast_births = plast.births,
         };
         std.debug.print("  {s:<10} {d:>9.4} {d:>6.3} {d:>6.3} {d:>7.3} | {d:>4} {d:>8.5} {d:>8.4} | {d:>8.5} {d:>8.5} {d:>7} | {d:>8.5} {d:>7}\n", .{
-            arm.name, comp.contested, comp.stale, comp.dead, comp.reached,
-            row[ai].k, row[ai].after, row[ai].gain,
-            row[ai].held, row[ai].ret, row[ai].ret_births, row[ai].plast, row[ai].plast_births,
+            arm.name,           comp.contested, comp.stale,           comp.dead,    comp.reached,
+            row[ai].k,          row[ai].after,  row[ai].gain,         row[ai].held, row[ai].ret,
+            row[ai].ret_births, row[ai].plast,  row[ai].plast_births,
         });
     }
 
@@ -3053,8 +3240,9 @@ test "G65 replay composition: what does a replay policy actually choose?" {
             .plast_births = fpla.births,
         };
         std.debug.print("  {s:<10} {d:>10.4} {d:>9.4} {d:>9.4} | {d:>8.5} {d:>8.5} {d:>7} | {d:>8.5} {d:>7}\n", .{
-            arms[ai].name, row[ai].gain, fr[ai].gain, fr[ai].gain - row[ai].gain,
-            fr[ai].held, fr[ai].ret, fr[ai].ret_births, fr[ai].plast, fr[ai].plast_births,
+            arms[ai].name,       row[ai].gain, fr[ai].gain,       fr[ai].gain - row[ai].gain,
+            fr[ai].held,         fr[ai].ret,   fr[ai].ret_births, fr[ai].plast,
+            fr[ai].plast_births,
         });
         try testing.expectEqual(keep, fr[ai].k);
     }
@@ -3124,8 +3312,12 @@ test "G65 replay composition: what does a replay policy actually choose?" {
         loc[ax] = judge(&fr, &rules, &fnoise, ax);
         std.debug.print("  {s:<16} {s:>10} by {d:>5.2}x {s:>7}   {s:>10} by {d:>5.2}x {s:>7}\n", .{
             axis,
-            arms[pol[ax].winner].name, pol[ax].margin / @max(1e-9, noise[ax]), if (pol[ax].clears) "clears" else "(inside)",
-            arms[loc[ax].winner].name, loc[ax].margin / @max(1e-9, fnoise[ax]), if (loc[ax].clears) "clears" else "(inside)",
+            arms[pol[ax].winner].name,
+            pol[ax].margin / @max(1e-9, noise[ax]),
+            if (pol[ax].clears) "clears" else "(inside)",
+            arms[loc[ax].winner].name,
+            loc[ax].margin / @max(1e-9, fnoise[ax]),
+            if (loc[ax].clears) "clears" else "(inside)",
         });
     }
 
@@ -3145,12 +3337,18 @@ test "G65 replay composition: what does a replay policy actually choose?" {
         const lp = pairsOf(&fr, &rules, fnoise[ax], ax);
         std.debug.print("    {s: <15} policy {d}/6 (widest {s}/{s} {d:.5})   location {d}/6 (widest {s}/{s} {d:.5})\n", .{
             axis,
-            pp.n, arms[pp.lo].name, arms[pp.hi].name, pp.widest,
-            lp.n, arms[lp.lo].name, arms[lp.hi].name, lp.widest,
+            pp.n,
+            arms[pp.lo].name,
+            arms[pp.hi].name,
+            pp.widest,
+            lp.n,
+            arms[lp.lo].name,
+            arms[lp.hi].name,
+            lp.widest,
         });
     }
     std.debug.print("  AS A POLICY: {s} wins the current world, {s} preserves the old one — {s}\n", .{
-        arms[pol[0].winner].name, arms[pol[1].winner].name,
+        arms[pol[0].winner].name,                                                                arms[pol[1].winner].name,
         if (pol_trade) "the policy table trades ON ITS OWN" else "no trade in the policy table",
     });
     std.debug.print("  AS A LOCATION: {s} wins the current world by {d:.2}x — the ONLY axis with a uniquely separated leader (which is not the same as no differences)\n", .{
@@ -3287,7 +3485,7 @@ test "G66 (a) a recency window must not invert when its decay underflows" {
     var oldest: u64 = std.math.maxInt(u64);
     for (b.t[0..b.filled()]) |t| oldest = @min(oldest, t);
     std.debug.print("\n  G66 (a) [{s}] tau = {d} over {d} offers reaches t/tau = {d} (inverts past {d}); oldest survivor {d}\n", .{
-        @tagName(builtin.mode), TINY, OFFERS, @as(u64, @intFromFloat(@as(f64, @floatFromInt(OFFERS)) / TINY)),
+        @tagName(builtin.mode),                                TINY,   OFFERS, @as(u64, @intFromFloat(@as(f64, @floatFromInt(OFFERS)) / TINY)),
         @as(u64, @intFromFloat(thresholds.OBS19_UNDERFLOW_T)), oldest,
     });
     // 4*tau = 16 is the soft edge and the buffer is 64 slots, so 256 is
@@ -3443,9 +3641,9 @@ test "G66 windowed error replay: can a window price staleness?" {
         const before = try m.rms(hb.p, hb.y, null);
         const ctl_held = try m.rms(ha.p, ha.y, null);
         std.debug.print("\n  ── {s}: {d} observations since the move, M/N = {d:.2}; {d} kernels, k = {d}, before {d:.5}\n", .{
-            if (late) "LATE " else "EARLY", M,
-            @as(f64, @floatFromInt(M)) / @as(f64, @floatFromInt(N)),
-            m.kernels.items.len, keep, before,
+            if (late) "LATE " else "EARLY",                          M,
+            @as(f64, @floatFromInt(M)) / @as(f64, @floatFromInt(N)), m.kernels.items.len,
+            keep,                                                    before,
         });
         std.debug.print("     the staleness FLOOR is arithmetic: (N-M)/N = {d:.3} — with {d} fresh observations for {d} slots, no rule can beat it\n", .{
             floor, M, N,
@@ -3479,7 +3677,7 @@ test "G66 windowed error replay: can a window price staleness?" {
                 row[ai].ret_births = ret.births;
             }
             std.debug.print("     {s:<9} {d:>6.3} {d:>9.4} {d:>6.3} {d:>6.3} | {d:>8.5} {d:>8.4} | {d:>8.5}", .{
-                arm.name, row[ai].old, comp.contested, comp.stale, comp.dead,
+                arm.name,      row[ai].old,  comp.contested, comp.stale, comp.dead,
                 row[ai].after, row[ai].gain, row[ai].held,
             });
             if (late) std.debug.print(" | {d:>8.5} {d:>7}", .{ row[ai].ret, row[ai].ret_births });
@@ -3494,8 +3692,10 @@ test "G66 windowed error replay: can a window price staleness?" {
         for (0..nax) |ax| {
             std.debug.print("  {s} u{d:.4}/e{d:.4}/uw{d:.4}/ew{d:.4}", .{
                 axes[ax],
-                spanOf(row, groups[1], ax), spanOf(row, groups[2], ax),
-                spanOf(row, groups[3], ax), spanOf(row, groups[4], ax),
+                spanOf(row, groups[1], ax),
+                spanOf(row, groups[2], ax),
+                spanOf(row, groups[3], ax),
+                spanOf(row, groups[4], ax),
             });
         }
         std.debug.print("\n", .{});
@@ -3593,15 +3793,13 @@ test "G66 windowed error replay: can a window price staleness?" {
         try testing.expectEqual(keep_late, fc.kernels.items.len);
         const gap = rows[1][ai].after - rows[1][REC].after;
         std.debug.print("     {s:<9} {d:>9.5} {d:>10.5} {d:>8.0}% | {d:>9.5} {d:>10.5}\n", .{
-            arms[ai].name, rows[1][ai].after, refr[ai],
-            100 * (rows[1][ai].after - refr[ai]) / @max(1e-9, gap),
-            rows[1][ai].held, refr_held[ai],
+            arms[ai].name,                                          rows[1][ai].after, refr[ai],
+            100 * (rows[1][ai].after - refr[ai]) / @max(1e-9, gap), rows[1][ai].held,  refr_held[ai],
         });
     }
     std.debug.print("     CHANGING LABELS ALONE REVERSES THE RANKING, in both tested draws: {d:.5} and {d:.5} against the ring's {d:.5} — {d:.0}% and {d:.0}% lower error on the current world\n", .{
-        refr[ERRW], refr[8], rows[1][REC].after,
-        100 * (rows[1][REC].after - refr[ERRW]) / rows[1][REC].after,
-        100 * (rows[1][REC].after - refr[8]) / rows[1][REC].after,
+        refr[ERRW],                                                   refr[8],                                                   rows[1][REC].after,
+        100 * (rows[1][REC].after - refr[ERRW]) / rows[1][REC].after, 100 * (rows[1][REC].after - refr[8]) / rows[1][REC].after,
     });
     std.debug.print("     the uniform draws close most of their gap and do NOT reach the ring, so their residual deficit is not labels alone. The gap-closed column is correct but depends on each arm's ORIGINAL deficit; the absolute RMS above is the interpretable number (Astra)\n", .{});
     std.debug.print("     this bounds the claim to the INTERVENTION — it does not show locations and labels act independently through selection, refit and refinement\n", .{});
@@ -3956,7 +4154,7 @@ test "G67 a hard cutoff: does error selection pay when the pool is shared?" {
             .held = try child.rms(ha.p, ha.y, null),
         };
         std.debug.print("     {s:<11} {d:>6.3} {d:>9.4} {d:>6.3} {d:>7.0} {d:>6.3} | {d:>8.5} {d:>8.4} | {d:>8.5}\n", .{
-            arm.name, row[ai].old, comp.contested, comp.stale, row[ai].wrong, comp.dead,
+            arm.name,      row[ai].old,  comp.contested, comp.stale, row[ai].wrong, comp.dead,
             row[ai].after, row[ai].gain, row[ai].held,
         });
         try testing.expectEqual(keep, row[ai].k);
@@ -4110,18 +4308,16 @@ test "G67 a hard cutoff: does error selection pay when the pool is shared?" {
     // Astra's OBS-19 catch was exactly this conflation, so the honest claim
     // is "not materially worse" and the gate makes no separation claim.
     std.debug.print("     retention, ring {d:.5} against h-err@2N {d:.5}/{d:.5} (spread {d:.4}): {d:.2}x on the leader, {d:.2}x on the mean — reported, NOT claimed\n", .{
-        row[REC].held, row[E2].held, row[6].held, spanOf(&row, groups[3], 1),
-        (row[E2].held - row[REC].held) / @max(1e-12, spanOf(&row, groups[3], 1)),
-        ((row[E2].held + row[6].held) / 2 - row[REC].held) / @max(1e-12, spanOf(&row, groups[3], 1)),
+        row[REC].held,                                                            row[E2].held,                                                                                 row[6].held, spanOf(&row, groups[3], 1),
+        (row[E2].held - row[REC].held) / @max(1e-12, spanOf(&row, groups[3], 1)), ((row[E2].held + row[6].held) / 2 - row[REC].held) / @max(1e-12, spanOf(&row, groups[3], 1)),
     });
     std.debug.print("     error-selected locations, zero wrong labels, no oracle: {d:.5}/{d:.5} against the ring's {d:.5} — {d:.0}% lower error, ON THIS FIXTURE AND AT THIS TIMING\n", .{
-        row[E2].after, row[6].after, row[REC].after,
+        row[E2].after,                                                                row[6].after, row[REC].after,
         100 * (row[REC].after - (row[E2].after + row[6].after) / 2) / row[REC].after,
     });
     std.debug.print("     and the gain DECOMPOSES: the wider eligible pool alone takes the ring's {d:.5} to {d:.5}/{d:.5} ({d:.0}%), and error weighting adds the rest ({d:.0}% of what is left)\n", .{
-        row[REC].after, row[U2].after, row[4].after,
-        100 * (row[REC].after - (row[U2].after + row[4].after) / 2) / row[REC].after,
-        100 * ((row[U2].after + row[4].after) / 2 - (row[E2].after + row[6].after) / 2) / ((row[U2].after + row[4].after) / 2),
+        row[REC].after,                                                               row[U2].after,                                                                                                          row[4].after,
+        100 * (row[REC].after - (row[U2].after + row[4].after) / 2) / row[REC].after, 100 * ((row[U2].after + row[4].after) / 2 - (row[E2].after + row[6].after) / 2) / ((row[U2].after + row[4].after) / 2),
     });
     std.debug.print("     NOT resource-matched against the ring: both hard arms retain W = {d} observations plus the selected {d}-slot buffer, and scan the pool at selection time. Against EACH OTHER they are matched exactly\n", .{ CLEAN, N });
 }
@@ -4316,10 +4512,8 @@ test "G68 targeted re-observation: can you pay to consolidate early?" {
                 try testing.expectEqual(keep_of[ai], child.kernels.items.len);
             }
             std.debug.print("       {s:<8} acq {d}  parent {d}k  hits {d:>5}/{d}  budget alone {d:.5}  after {d:.5}/{d:.5}  LIFT {d:.4}/{d:.4}  buffer-old {d:.3}\n", .{
-                names[mi], aseed, parentk[mi][ai], nh, BUDGET, post[mi][ai],
-                cell[mi][ai][0].after, cell[mi][ai][1].after,
-                cell[mi][ai][0].lift, cell[mi][ai][1].lift,
-                cell[mi][ai][0].old,
+                names[mi],             aseed,                 parentk[mi][ai],      nh,                   BUDGET,              post[mi][ai],
+                cell[mi][ai][0].after, cell[mi][ai][1].after, cell[mi][ai][0].lift, cell[mi][ai][1].lift, cell[mi][ai][0].old,
             });
         }
     }
@@ -4346,8 +4540,8 @@ test "G68 targeted re-observation: can you pay to consolidate early?" {
     std.debug.print("     mean after / ACQUISITION spread / SELECTION spread (DESCRIPTIVE, two draws each — not confidence bounds):\n", .{});
     for (modes, 0..) |_, mi| {
         std.debug.print("       {s:<8} {d:.5}   acq {d:.5}   sel {d:.5}   hits {d}/{d}   parent kernels {d}/{d}\n", .{
-            names[mi], meanOf(cell[mi]), acqSpread(cell[mi]), selSpread(cell[mi]),
-            hits[mi][0], hits[mi][1], parentk[mi][0], parentk[mi][1],
+            names[mi],   meanOf(cell[mi]), acqSpread(cell[mi]), selSpread(cell[mi]),
+            hits[mi][0], hits[mi][1],      parentk[mi][0],      parentk[mi][1],
         });
     }
 
@@ -4494,7 +4688,7 @@ test "G69 (a) the trajectory controller's contracts, driven with a sleep stub" {
             trig.thresh = thresh;
             var out = Tally{};
             var st = rng.Stream.region(4242, 0x4f32_3254, 0); // "O22T"
-            try runArm(g, oo, cc, plan, &trig, ws, pp, false, &st, &out, .{});
+            try runArm(g, oo, cc, plan, &trig, ws, pp, false, &st, &out, .{}, .{});
             return .{ .t = out, .tr = trig };
         }
     }.go;
@@ -4810,7 +5004,7 @@ test "G69 when is intervention worth its cost?" {
             trig.thresh = cal.thresh;
             var out = Tally{};
             var st = rng.Stream.region(aseed, 0x4f32_3254, 0); // "O22T"
-            try runArm(gpa, o, c, plan, &trig, worlds, pr.p, true, &st, &out, .{});
+            try runArm(gpa, o, c, plan, &trig, worlds, pr.p, true, &st, &out, .{}, .{});
             tal[mi][ai] = out;
             // The contracts G69 (a) proves cheaply, re-asserted on the real
             // configuration — they are premises, not conveniences.
@@ -4819,10 +5013,9 @@ test "G69 when is intervention worth its cost?" {
             try testing.expect(out.started <= c.budget);
             try testing.expectEqual(@as(u64, out.started) * @as(u64, c.r), out.revisits);
             std.debug.print("     {s:<9} acq {d}  started {d} (of at most {d})  sleeps {d}  above-threshold ticks {d} (cold {d}, settled {d})  first {d}  unready {d}  blocked {d}  budget@drift {d}  fired {any}\n", .{
-                names[mi], aseed, out.started, c.budget, out.sleeps,
-                out.crossings, out.crossings_cold, out.crossings_settled, out.first_cross,
-                out.unready, out.horizon_blocked, out.budget_at_drift,
-                out.fired_at[0..out.started],
+                names[mi],           aseed,               out.started,                  c.budget,        out.sleeps,
+                out.crossings,       out.crossings_cold,  out.crossings_settled,        out.first_cross, out.unready,
+                out.horizon_blocked, out.budget_at_drift, out.fired_at[0..out.started],
             });
         }
     }
@@ -4848,9 +5041,8 @@ test "G69 when is intervention worth its cost?" {
     std.debug.print("     TIME-AVERAGED ERROR (mean RMS over checkpoints, not pooled MSE):\n", .{});
     for (names, 0..) |nm, mi| {
         std.debug.print("       {s:<9} whole {d:.5} ({d:.5} / {d:.5}, spread {d:.5})   drift+tail {d:.5} ({d:.5} / {d:.5}, spread {d:.5})\n", .{
-            nm, avg.whole(tal[mi]), tal[mi][0].mean(), tal[mi][1].mean(), avg.spread(tal[mi]),
-            avg.tail(tal[mi], bounds.len), tal[mi][0].meanTail(bounds.len), tal[mi][1].meanTail(bounds.len),
-            avg.tailSpread(tal[mi], bounds.len),
+            nm,                            avg.whole(tal[mi]),              tal[mi][0].mean(),               tal[mi][1].mean(),                   avg.spread(tal[mi]),
+            avg.tail(tal[mi], bounds.len), tal[mi][0].meanTail(bounds.len), tal[mi][1].meanTail(bounds.len), avg.tailSpread(tal[mi], bounds.len),
         });
     }
     // **Both trajectories.** An earlier draft printed only `tal[mi][0]`, so
@@ -4908,7 +5100,7 @@ test "G69 when is intervention worth its cost?" {
     // consequence of earlier decisions.
     const worst = @max(avg.tailSpread(tal[0], bounds.len), avg.tailSpread(tal[1], bounds.len));
     std.debug.print("     Q4 drift+tail: trigger {d:.5} against schedule {d:.5}, margin {d:.5} against the worse DRIFT+TAIL acquisition spread {d:.5} (not the whole-trajectory spread, which judges a different quantity)\n", .{
-        avg.tail(tal[0], bounds.len), avg.tail(tal[1], bounds.len),
+        avg.tail(tal[0], bounds.len),                                avg.tail(tal[1], bounds.len),
         avg.tail(tal[1], bounds.len) - avg.tail(tal[0], bounds.len), worst,
     });
 }
@@ -4966,7 +5158,7 @@ test "G69 (b) localising the schedule/5678 failure" {
     {
         var trig = Trigger.init(2048, 16384, c.budget);
         var st = rng.Stream.region(SEED, 0x4f32_3254, 0); // "O22T"
-        try runArm(gpa, o, c, .{ .at = &sched }, &trig, worlds, pr.p, true, &st, &tal, .{ .diag = &diag });
+        try runArm(gpa, o, c, .{ .at = &sched }, &trig, worlds, pr.p, true, &st, &tal, .{ .diag = &diag }, .{});
     }
     try testing.expectEqual(@as(usize, 3), diag.n);
     std.debug.print("     {s:>6} {s:>10} {s:>10} {s:>10} {s:>11} | {s:>7} {s:>7} {s:>7} | {s:>9} {s:>9}\n", .{
@@ -4981,12 +5173,12 @@ test "G69 (b) localising the schedule/5678 failure" {
             worst = k;
         }
         std.debug.print("     {d:>6} {d:>10.5} {d:>10.5} {d:>10.5} {d:>11.5} | {d:>7} {d:>7} {d:>7} | {d:>9.5} {d:>9.5}\n", .{
-            sx.at, sx.rms_before, sx.rms_frozen_end, sx.rms_after_acq, sx.rms_after_sleep,
-            sx.k_before, sx.k_after, sx.births_since, sx.fit_first, sx.fit_last,
+            sx.at,       sx.rms_before, sx.rms_frozen_end, sx.rms_after_acq, sx.rms_after_sleep,
+            sx.k_before, sx.k_after,    sx.births_since,   sx.fit_first,     sx.fit_last,
         });
     }
     std.debug.print("     whole {d:.5}, drift+tail {d:.5}; the sleep that costs most is #{d} at t = {d}, which moves the world RMS {d:.5} -> {d:.5}\n", .{
-        tal.mean(), tal.meanTail(bounds.len), worst, diag.steps[worst].at,
+        tal.mean(),                      tal.meanTail(bounds.len),          worst, diag.steps[worst].at,
         diag.steps[worst].rms_after_acq, diag.steps[worst].rms_after_sleep,
     });
     std.debug.print("     POPULATIONS, counted rather than assumed: ", .{});
@@ -4999,7 +5191,7 @@ test "G69 (b) localising the schedule/5678 failure" {
     std.debug.print("     ACQUISITION, judged against the SAME world: the frozen pre-acquisition model at completion time, beside the acquired one.\n", .{});
     for (diag.steps[0..diag.n]) |sx| {
         std.debug.print("       t = {d:>6}  frozen {d:.5} -> acquired {d:.5}  ({s})\n", .{
-            sx.at, sx.rms_frozen_end, sx.rms_after_acq,
+            sx.at,                                                                                  sx.rms_frozen_end, sx.rms_after_acq,
             if (sx.rms_after_acq < sx.rms_frozen_end) "acquisition HELPED" else "acquisition hurt",
         });
     }
@@ -5016,11 +5208,11 @@ test "G69 (b) localising the schedule/5678 failure" {
         var st = rng.Stream.region(SEED, 0x4f32_3254, 0);
         res[k] = Tally{};
         fdiag[k] = Diag{};
-        try runArm(gpa, o, c, .{ .at = &sched }, &trig, worlds, pr.p, true, &st, &res[k], .{ .fork_at = worst, .fork_mode = md, .diag = &fdiag[k] });
+        try runArm(gpa, o, c, .{ .at = &sched }, &trig, worlds, pr.p, true, &st, &res[k], .{ .fork_at = worst, .fork_mode = md, .diag = &fdiag[k] }, .{});
         const fs = fdiag[k].steps[worst];
         std.debug.print("     {s:<26} {d:>9.5} {d:>11.5} |{d:>12.5} {d:>12.5} {d:>12.5}{s}\n", .{
-            mnames[k], res[k].mean(), res[k].meanTail(bounds.len),
-            fs.fit_first, fs.fit_last, fs.rms_after_sleep,
+            mnames[k],                               res[k].mean(), res[k].meanTail(bounds.len),
+            fs.fit_first,                            fs.fit_last,   fs.rms_after_sleep,
             if (fs.rejected) "  [REJECTED]" else "",
         });
     }
@@ -5416,4 +5608,748 @@ test "G69 (e) the no-move counterfactual: is there a response to the change at a
     std.debug.print("     baseline' is incomplete. Threshold crossings are sensitive to initialisation HISTORY. A fact about this scheme, not a\n", .{});
     std.debug.print("     proposal for another. And the gap's decay over the traced window is MEASURED, not attributed: separating the learner's\n", .{});
     std.debug.print("     adaptation from the EWMAs' own adjustment would need its own control.\n", .{});
+}
+
+/// One arm's trace, read back as the contracts OBS-23 depends on.
+///
+/// A count is not an order. OBS-21 matched a share while the ring underneath
+/// it held 2709 expired entries, and the gate that reported the share never
+/// asserted the ring — so these are read off the event sequence itself.
+const Order = struct {
+    checks: usize = 0,
+    duplicate_checks: usize = 0,
+    /// Sleeps landing exactly on a checkpoint index, and how many of those
+    /// are followed immediately by that index's score.
+    sleeps_on_check: usize = 0,
+    sleep_then_check: usize = 0,
+    /// Checks preceding a sleep at the SAME index — the bug, counted.
+    check_before_sleep: usize = 0,
+    /// Starts landing on a checkpoint, and how many have that index's score
+    /// already behind them (correct when the intervention completes later).
+    starts_on_check: usize = 0,
+    check_before_start: usize = 0,
+
+    fn of(t: Tally, check: u64) Order {
+        var r = Order{};
+        for (t.trace[0..t.ntrace], 0..) |e, k| {
+            switch (e.kind) {
+                .check => {
+                    r.checks += 1;
+                    for (t.trace[0..k]) |q| {
+                        if (q.kind == .check and q.at == e.at) r.duplicate_checks += 1;
+                    }
+                },
+                .sleep => {
+                    if (e.at % check != 0) continue;
+                    r.sleeps_on_check += 1;
+                    if (k + 1 < t.ntrace and t.trace[k + 1].kind == .check and t.trace[k + 1].at == e.at) r.sleep_then_check += 1;
+                    for (t.trace[0..k]) |q| {
+                        if (q.kind == .check and q.at == e.at) r.check_before_sleep += 1;
+                    }
+                },
+                .start => {
+                    if (e.at % check != 0) continue;
+                    r.starts_on_check += 1;
+                    for (t.trace[0..k]) |q| {
+                        if (q.kind == .check and q.at == e.at) r.check_before_start += 1;
+                    }
+                },
+            }
+        }
+        return r;
+    }
+};
+
+test "G70 (a) the OBS-23 lattice's contracts, driven with a sleep stub" {
+    // OBS-22 refuted Q6 — no intervention policy beat `none` — and could not
+    // say which half of "an intervention" failed to earn its cost, because
+    // an intervention is TWO mechanisms: `r` targeted revisits paid out of
+    // the same horizon, and a consolidation. OBS-23 is the 2x2.
+    //
+    // `tools/obs23_predict.py` holds the registration. This gate holds the
+    // contracts the factorial depends on, with the expensive call stubbed —
+    // Astra's build order, which found three bugs in OBS-22 seconds into a
+    // run instead of nine minutes, and found a fourth in THIS phase before
+    // any sleep was paid for.
+    //
+    // **The headline contract is the collapse scenario**, and it is the
+    // reason the phase can attribute anything: with the sleep stubbed the
+    // six arms must reduce to exactly TWO trajectories, bit for bit. If they
+    // do, every difference the expensive gate reports is the consolidation
+    // or the spend. If they do not, the runner is a third factor nobody
+    // registered — and identical query hashes would not reveal it, because a
+    // controller side effect need not move a single drawn location.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 2;
+    o.responsibility = 3;
+    // The cheap constants, in G69 (a)'s proportions, and the placements are
+    // chosen so that EVERY sleep in the lattice lands exactly on a
+    // checkpoint — the immediate path at t, the deferred path at t + r.
+    // Astra's requirement, because the two paths reach a coincident
+    // checkpoint by different code and only a timing that hits both can
+    // assert the registered order on both.
+    const bounds = [_]u64{ 2_000, 5_000, 6_500, 7_000, 10_000, 12_000 };
+    const c = Traj{
+        .total = 12_000,
+        .r = 1_000,
+        .w = 2_000,
+        .n = 1_000,
+        .check = 500,
+        .cold_end = 2_000,
+        .change_at = 5_000,
+        .drift_lo = 7_000,
+        .drift_hi = 10_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const AT_T = [_]u64{ 5_000, 7_000, 10_000 }; // fire instants, all checkpoints
+    const AT_TR = [_]u64{ 6_000, 8_000, 11_000 }; // each + r, all checkpoints
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+    const pr = try marl.probesOf(gpa, wb, 31337, 512);
+    defer {
+        gpa.free(pr.p);
+        gpa.free(pr.y);
+    }
+
+    const REVISITS: u64 = @as(u64, c.budget) * @as(u64, c.r);
+    const FRESH_AFTER: u64 = c.total - REVISITS;
+    const CHECKS: usize = @intCast(c.total / c.check);
+
+    std.debug.print("\n  G70 (a) [{s}] the OBS-23 lattice on the REAL controller, sleep stubbed; {d} observations, r = {d}, budget {d}, check {d}\n", .{
+        @tagName(builtin.mode), c.total, c.r, c.budget, c.check,
+    });
+
+    const run = struct {
+        fn go(
+            g: std.mem.Allocator,
+            oo: marl.Options,
+            cc: Traj,
+            at: []const u64,
+            rec: Recipe,
+            ws: [3]marl.TruthParams,
+            pp: [][3]f32,
+            prefix: u64,
+        ) !Tally {
+            var trig = Trigger.init(256, 2048, cc.budget);
+            var out = Tally{ .prefix_at = prefix };
+            var st = rng.Stream.region(4242, 0x4f32_3254, 0);
+            const plan: Plan = if (at.len == 0) .never else .{ .at = at };
+            try runArm(g, oo, cc, plan, &trig, ws, pp, false, &st, &out, .{}, rec);
+            return out;
+        }
+    }.go;
+
+    // The six arms of the registered lattice, in the pre-registration's
+    // order. `none` is `.never` and the rest are `.at` — no arm here
+    // consults the detector, so every crossing count must be zero.
+    //
+    // The clock is what makes it six and not four: an arm spending `r` on
+    // revisits completes its intervention `r` after it starts, so `both`
+    // consolidates at t + r. Its matched no-revisit cell is therefore PLACED
+    // at t + r and consolidates immediately — it does not fire early.
+    // `sleep@t` is the fifth arm and isolates that offset alone.
+    const names = [_][]const u8{ "none", "revisit", "sleep@t", "sleep@t+r", "both", "unguarded" };
+    const plans = [_][]const u64{ &.{}, &AT_T, &AT_T, &AT_TR, &AT_T, &AT_T };
+    const recipes = [_]Recipe{
+        .{ .revisit = false, .consolidate = false },
+        .{ .revisit = true, .consolidate = false },
+        .{ .revisit = false, .consolidate = true, .guard = true },
+        .{ .revisit = false, .consolidate = true, .guard = true },
+        .{ .revisit = true, .consolidate = true, .guard = true },
+        .{ .revisit = true, .consolidate = true, .guard = false },
+    };
+
+    var t: [6]Tally = undefined;
+    for (0..6) |k| t[k] = try run(gpa, o, c, plans[k], recipes[k], worlds, pr.p, FRESH_AFTER);
+
+    // ── SCENARIO 1: THE ACCOUNTING, which is arithmetic and is therefore
+    // asserted exactly rather than announced. `paid` must equal the horizon
+    // for every arm however its budget was spent — that is what makes the
+    // arms comparable at all.
+    std.debug.print("     {s:<11} {s:>7} {s:>10} {s:>9} {s:>8} {s:>7} {s:>17} {s:>17}\n", .{
+        "arm", "paid", "monitored", "revisits", "started", "sleeps", "stream hash", "prefix",
+    });
+    for (0..6) |k| {
+        std.debug.print("     {s:<11} {d:>7} {d:>10} {d:>9} {d:>8} {d:>7} {x:>17} {x:>17}\n", .{
+            names[k],    t[k].paid,        t[k].monitored,     t[k].revisits, t[k].started,
+            t[k].sleeps, t[k].stream_hash, t[k].stream_prefix,
+        });
+    }
+    for (0..6) |k| {
+        try testing.expectEqual(c.total, t[k].paid);
+        try testing.expectEqual(t[k].paid, t[k].monitored + t[k].revisits);
+        try testing.expectEqual(if (recipes[k].revisit) REVISITS else @as(u64, 0), t[k].revisits);
+        try testing.expectEqual(@as(usize, if (plans[k].len == 0) 0 else c.budget), t[k].started);
+        try testing.expectEqual(@as(usize, if (recipes[k].consolidate and plans[k].len != 0) c.budget else 0), t[k].sleeps);
+        // Every arm is `.at` or `.never`, so nothing may reach the detector,
+        // and nothing may be refused for readiness or the horizon. A
+        // placement that did either would silently change the budget an arm
+        // actually spent, and the cells would stop being matched.
+        try testing.expectEqual(@as(usize, 0), t[k].crossings);
+        try testing.expectEqual(@as(usize, 0), t[k].unready);
+        try testing.expectEqual(@as(usize, 0), t[k].horizon_blocked);
+        try testing.expectEqual(@as(usize, 0), t[k].rejections);
+    }
+
+    // ── SCENARIO 2: THE STREAM CONTRACT. The fresh-draw RNG advances once
+    // per fresh observation and NEVER for a revisit, so arms that do not
+    // revisit draw the identical locations in the identical order, and arms
+    // that do draw a PREFIX of that same sequence.
+    //
+    // **What the shared prefix is NOT is shared evidence.** Those locations
+    // arrive at different PAID TIMES in a revisiting arm, so in the drift
+    // they can carry different labels, and they are learned from by a model
+    // with a different history. The common clock makes that part of the
+    // policy effect rather than an artefact — but it is a difference the
+    // hash equality must not be read as denying.
+    try testing.expect(t[0].stream_prefix != 0);
+    for ([_]usize{ 2, 3 }) |k| {
+        try testing.expectEqual(t[0].stream_hash, t[k].stream_hash);
+        try testing.expectEqual(t[0].monitored, t[k].monitored);
+    }
+    for ([_]usize{ 1, 4, 5 }) |k| {
+        try testing.expectEqual(t[0].stream_prefix, t[k].stream_hash);
+        try testing.expectEqual(FRESH_AFTER, t[k].monitored);
+    }
+    std.debug.print("     stream: none == sleep@t == sleep@t+r over {d} fresh draws; revisit == both == unguarded == none's first {d}. The LOCATIONS match; the paid times, labels and learner histories need not\n", .{
+        t[0].monitored, FRESH_AFTER,
+    });
+
+    // ── SCENARIO 3: THE REGISTERED EVENT ORDER, ON BOTH PATHS. Observation,
+    // then the COMPLETED intervention's sleep, then the score.
+    //
+    // The two halves complete at different instants and reach a coincident
+    // checkpoint by different code: a revisiting arm defers the score of a
+    // checkpoint landing on its LAST QUERY, while a non-revisiting arm
+    // completes at the instant it started and must defer the checkpoint
+    // already reached there. **The immediate path reintroduced OBS-22's
+    // score-ordering bug when it was added** — it scored at 5000, 7000 and
+    // 10 000 and only then consolidated — and every placement here lands on
+    // a checkpoint so that both paths are pinned.
+    std.debug.print("     {s:<11} {s:>7} {s:>6} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{
+        "arm", "checks", "dupes", "sleep@check", "sleep->check", "check<sleep", "start@check", "check<start",
+    });
+    for (0..6) |k| {
+        const ord = Order.of(t[k], c.check);
+        std.debug.print("     {s:<11} {d:>7} {d:>6} {d:>12} {d:>12} {d:>12} {d:>12} {d:>12}\n", .{
+            names[k],             ord.checks,             ord.duplicate_checks, ord.sleeps_on_check,
+            ord.sleep_then_check, ord.check_before_sleep, ord.starts_on_check,  ord.check_before_start,
+        });
+    }
+    for (0..6) |k| {
+        const ord = Order.of(t[k], c.check);
+        // Exactly one score per checkpoint, for every arm. A deferral that
+        // dropped a score, or one that scored an index twice, would move the
+        // objective without moving anything the design is about.
+        try testing.expectEqual(CHECKS, ord.checks);
+        try testing.expectEqual(CHECKS, t[k].checks);
+        try testing.expectEqual(@as(usize, 0), ord.duplicate_checks);
+        // Every sleep in this lattice lands on a checkpoint by construction.
+        try testing.expectEqual(@as(usize, if (recipes[k].consolidate and plans[k].len != 0) c.budget else 0), ord.sleeps_on_check);
+        // And at each, the sleep precedes that index's score.
+        try testing.expectEqual(ord.sleeps_on_check, ord.sleep_then_check);
+        try testing.expectEqual(@as(usize, 0), ord.check_before_sleep);
+        // The mirror image for a revisiting arm: its intervention completes
+        // LATER than it starts, so a checkpoint at the START instant belongs
+        // BEFORE it and must already be behind.
+        if (recipes[k].revisit) {
+            try testing.expectEqual(@as(usize, c.budget), ord.starts_on_check);
+            try testing.expectEqual(ord.starts_on_check, ord.check_before_start);
+        }
+    }
+    std.debug.print("     ordering: every sleep lands ON a checkpoint and precedes its score, on the immediate path AND the deferred one; every revisiting start has its own checkpoint already behind it\n", .{});
+
+    // ── SCENARIO 4: A NON-CONSOLIDATING ARM STARTS AND DOES NOT SLEEP.
+    // `revisit` must perform the aiming half in full — the starts, the
+    // revisits, the post-intervention watch — and emit no sleep event, so
+    // that the row of the 2x2 it occupies really is "no consolidation"
+    // rather than "a consolidation that happened to be cheap".
+    {
+        var starts: usize = 0;
+        var sleeps: usize = 0;
+        for (t[1].trace[0..t[1].ntrace]) |e| switch (e.kind) {
+            .start => starts += 1,
+            .sleep => sleeps += 1,
+            .check => {},
+        };
+        try testing.expectEqual(@as(usize, c.budget), starts);
+        try testing.expectEqual(@as(usize, 0), sleeps);
+        std.debug.print("     revisit: {d} starts, {d} sleep events, {d} revisits — the aiming half in full and nothing else\n", .{
+            starts, sleeps, t[1].revisits,
+        });
+    }
+
+    // ── SCENARIO 5: THE CLOCK. `both` and `sleep@t+r` must consolidate at
+    // the SAME indices, or the 2x2's sleeping row differs in WHEN as well as
+    // in what preceded it and the interaction term measures both.
+    {
+        var a: [8]u64 = .{0} ** 8;
+        var b: [8]u64 = .{0} ** 8;
+        var e0: [8]u64 = .{0} ** 8;
+        var na: usize = 0;
+        var nb: usize = 0;
+        var ne: usize = 0;
+        for (t[3].trace[0..t[3].ntrace]) |e| if (e.kind == .sleep) {
+            a[na] = e.at;
+            na += 1;
+        };
+        for (t[4].trace[0..t[4].ntrace]) |e| if (e.kind == .sleep) {
+            b[nb] = e.at;
+            nb += 1;
+        };
+        for (t[2].trace[0..t[2].ntrace]) |e| if (e.kind == .sleep) {
+            e0[ne] = e.at;
+            ne += 1;
+        };
+        std.debug.print("     clock:  sleep@t+r at {any}, both at {any}, sleep@t at {any}\n", .{ a[0..na], b[0..nb], e0[0..ne] });
+        try testing.expectEqual(@as(usize, c.budget), na);
+        try testing.expectEqual(na, nb);
+        try testing.expectEqual(na, ne);
+        for (0..na) |k| try testing.expectEqual(a[k], b[k]);
+        for (0..ne) |k| try testing.expectEqual(a[k] - @as(u64, c.r), e0[k]);
+    }
+
+    // ── SCENARIO 6: THE COLLAPSE, and the contract the whole phase rests
+    // on. With the consolidation stubbed there is nothing left to tell a
+    // sleeping arm from its non-sleeping partner, so the six must reduce to
+    // exactly TWO trajectories — bit for bit, on the OUTPUTS and not only on
+    // the drawn locations. A controller side effect need not move a single
+    // query to move the objective.
+    std.debug.print("     {s:<11} {s:>12} {s:>8} {s:>8} {s:>8} {s:>9} {s:>8}\n", .{ "arm", "err_sum", "checks", "k_final", "k_peak", "mean k", "births" });
+    for (0..6) |k| std.debug.print("     {s:<11} {d:>12.6} {d:>8} {d:>8} {d:>8} {d:>9.1} {d:>8}\n", .{
+        names[k], t[k].err_sum, t[k].checks, t[k].k_final, t[k].k_peak, t[k].meanK(), t[k].births_total,
+    });
+    for ([_]usize{ 2, 3 }) |k| {
+        try testing.expectEqual(t[0].err_sum, t[k].err_sum);
+        try testing.expectEqual(t[0].err_phase, t[k].err_phase);
+        try testing.expectEqual(t[0].k_final, t[k].k_final);
+        try testing.expectEqual(t[0].k_peak, t[k].k_peak);
+        try testing.expectEqual(t[0].k_sum, t[k].k_sum);
+        try testing.expectEqual(t[0].births_total, t[k].births_total);
+    }
+    for ([_]usize{ 4, 5 }) |k| {
+        try testing.expectEqual(t[1].err_sum, t[k].err_sum);
+        try testing.expectEqual(t[1].err_phase, t[k].err_phase);
+        try testing.expectEqual(t[1].k_final, t[k].k_final);
+        try testing.expectEqual(t[1].k_peak, t[k].k_peak);
+        try testing.expectEqual(t[1].k_sum, t[k].k_sum);
+        try testing.expectEqual(t[1].births_total, t[k].births_total);
+    }
+    // The two surviving trajectories must actually DIFFER, or the collapse
+    // is vacuous and the revisit factor is doing nothing at all.
+    try testing.expect(t[0].err_sum != t[1].err_sum);
+    std.debug.print("     collapse: six arms -> TWO trajectories with the sleep stubbed, matched on outputs and not merely on drawn locations. Every G70 difference is therefore the consolidation or the spend, never the runner.\n", .{});
+
+    // ── SCENARIO 7: THE RESOURCE COLUMNS EXIST AND ARE POPULATED at every
+    // checkpoint, not only at the end. OBS-22 reported error alone — which
+    // was valid for its stated objective and incomplete as a resource
+    // account. Final population can miss most of a trajectory's history, so
+    // the mean over checkpoints and the peak are carried beside it, and
+    // births are kept apart from sleeps because they are different costs.
+    for (0..6) |k| {
+        try testing.expectEqual(t[k].checks, t[k].k_n);
+        try testing.expect(t[k].meanK() > 0);
+        try testing.expect(t[k].k_peak >= t[k].k_final);
+    }
+    std.debug.print("     capacity: mean population over checkpoints {d:.1} (fresh stream) and {d:.1} (revisiting), peaks {d} and {d} — reported alongside error, never instead of it\n", .{
+        t[0].meanK(), t[1].meanK(), t[0].k_peak, t[1].k_peak,
+    });
+}
+
+test "G70 what does an intervention actually cost?" {
+    // OBS-22 refuted Q6 — no intervention policy beat `none` — and could not
+    // say which half failed to earn its cost, because an intervention is two
+    // mechanisms: `r` targeted revisits paid out of the same horizon, and a
+    // consolidation. This is the 2x2, at OBS-22's privileged `informed`
+    // placement so that the trigger is not a third factor.
+    //
+    // `tools/obs23_predict.py` holds the registration; G70 (a) holds the
+    // contracts and runs in seconds; this is the expensive comparison, and
+    // it runs once.
+    //
+    // **No arm consults the detector**, so nothing here is calibrated and
+    // nothing here tests OBS-22's trigger. That is deliberate: OBS-22
+    // established the trigger is its own problem.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const H_FAST: f64 = 2048;
+    const H_SLOW: f64 = 16384;
+    const bounds = [_]u64{ 12_000, 30_000, 48_000, 60_000, 90_000, 104_000 };
+    const c = Traj{
+        .total = 104_000,
+        .r = 4_096,
+        .w = 16_384,
+        .n = 8_192,
+        .check = 2_000,
+        .cold_end = 12_000,
+        .change_at = 30_000,
+        .drift_lo = 60_000,
+        .drift_hi = 90_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+    const pr = try marl.probesOf(gpa, wb, 31337, 2048);
+    defer {
+        gpa.free(pr.p);
+        gpa.free(pr.y);
+    }
+
+    const informed = [_]u64{ 30_000, 60_000, 90_000 };
+    const deferred = [_]u64{ 34_096, 64_096, 94_096 }; // each + r
+    const acq = [_]u64{ 1234, 5678 };
+    const NPH = bounds.len;
+    const REVISITS: u64 = @as(u64, c.budget) * @as(u64, c.r);
+    const FRESH_AFTER: u64 = c.total - REVISITS;
+
+    const NONE = 0;
+    const REV = 1;
+    const SL_T = 2;
+    const SL_TR = 3;
+    const BOTH = 4;
+    const UNG = 5;
+    const names = [_][]const u8{ "none", "revisit", "sleep@t", "sleep@t+r", "both", "unguarded" };
+    const plans = [_][]const u64{ &.{}, &informed, &informed, &deferred, &informed, &informed };
+    const recipes = [_]Recipe{
+        .{ .revisit = false, .consolidate = false },
+        .{ .revisit = true, .consolidate = false },
+        .{ .revisit = false, .consolidate = true, .guard = true },
+        .{ .revisit = false, .consolidate = true, .guard = true },
+        .{ .revisit = true, .consolidate = true, .guard = true },
+        .{ .revisit = true, .consolidate = true, .guard = false },
+    };
+
+    std.debug.print("\n  G70 [{s}] OBS-23: what does an intervention cost? {d} arms x {d} acquisition trajectories, {d} observations each\n", .{
+        @tagName(builtin.mode), names.len, acq.len, c.total,
+    });
+
+    var tal: [6][acq.len]Tally = undefined;
+    for (0..names.len) |a| {
+        for (acq, 0..) |seed, j| {
+            var trig = Trigger.init(H_FAST, H_SLOW, c.budget);
+            var out = Tally{ .prefix_at = FRESH_AFTER };
+            var st = rng.Stream.region(seed, 0x4f32_3254, 0);
+            const plan: Plan = if (plans[a].len == 0) .never else .{ .at = plans[a] };
+            try runArm(gpa, o, c, plan, &trig, worlds, pr.p, true, &st, &out, .{}, recipes[a]);
+            tal[a][j] = out;
+        }
+    }
+
+    // ── THE ACCOUNTING, AND THE STREAM CONTRACT ──────────────────────────
+    std.debug.print("     ACCOUNTING and the stream contract — the locations match; the paid times, labels and learner histories need not\n", .{});
+    std.debug.print("     {s:<11} {s:>5} {s:>8} {s:>10} {s:>9} {s:>8} {s:>7} {s:>11} {s:>17}\n", .{
+        "arm", "acq", "paid", "monitored", "revisits", "started", "sleeps", "rejections", "stream hash",
+    });
+    for (0..names.len) |a| for (acq, 0..) |seed, j| std.debug.print("     {s:<11} {d:>5} {d:>8} {d:>10} {d:>9} {d:>8} {d:>7} {d:>11} {x:>17}\n", .{
+        names[a],          seed,             tal[a][j].paid,       tal[a][j].monitored,   tal[a][j].revisits,
+        tal[a][j].started, tal[a][j].sleeps, tal[a][j].rejections, tal[a][j].stream_hash,
+    });
+
+    // ── THE OBJECTIVES, OBS-22's UNCHANGED ───────────────────────────────
+    const obj = struct {
+        fn go(t: Tally, nph: usize, tail: bool) f64 {
+            return if (tail) t.meanTail(nph) else t.mean();
+        }
+    }.go;
+    std.debug.print("     TIME-AVERAGED ERROR (mean RMS over checkpoints, not pooled MSE)\n", .{});
+    std.debug.print("     {s:<11} {s:>10} {s:>10} {s:>10}   {s:>10} {s:>10} {s:>10}\n", .{
+        "arm", "whole 1234", "whole 5678", "mean", "tail 1234", "tail 5678", "mean",
+    });
+    for (0..names.len) |a| {
+        const w0 = obj(tal[a][0], NPH, false);
+        const w1 = obj(tal[a][1], NPH, false);
+        const t0 = obj(tal[a][0], NPH, true);
+        const t1 = obj(tal[a][1], NPH, true);
+        std.debug.print("     {s:<11} {d:>10.5} {d:>10.5} {d:>10.5}   {d:>10.5} {d:>10.5} {d:>10.5}\n", .{
+            names[a], w0, w1, 0.5 * (w0 + w1), t0, t1, 0.5 * (t0 + t1),
+        });
+    }
+
+    // ── THE PAIRED CONTRASTS. Astra's: a 2x2 read as four arm means loses
+    // the pairing that makes it a factorial. Each is formed WITHIN a
+    // trajectory and only then averaged.
+    //
+    // **Two trajectories are descriptive replication.** The between-
+    // trajectory difference is printed for each contrast SEPARATELY; an
+    // individual arm's own spread is not the uncertainty of a paired
+    // interaction and is never spent on one.
+    const cnames = [_][]const u8{
+        "C1  revisit - none",
+        "C2  sleep@t+r - none",
+        "C3  both - revisit",
+        "C4  both - sleep@t+r",
+        "C5  INTERACTION",
+        "C6  sleep@t+r - sleep@t",
+    };
+    const cnote = [_][]const u8{
+        "the aiming half, without a consolidation",
+        "the consolidation half, without revisiting",
+        "consolidation's effect WITH revisiting",
+        "revisiting's effect WITH consolidation",
+        "both - revisit - sleep@t+r + none",
+        "the r-observation offset, alone",
+    };
+    var cval: [2][6][acq.len]f64 = undefined; // [objective][contrast][seed]
+    for ([_]bool{ false, true }, 0..) |tail, oi| {
+        for (acq, 0..) |_, j| {
+            const n = obj(tal[NONE][j], NPH, tail);
+            const r = obj(tal[REV][j], NPH, tail);
+            const st = obj(tal[SL_T][j], NPH, tail);
+            const sr = obj(tal[SL_TR][j], NPH, tail);
+            const b = obj(tal[BOTH][j], NPH, tail);
+            cval[oi][0][j] = r - n;
+            cval[oi][1][j] = sr - n;
+            cval[oi][2][j] = b - r;
+            cval[oi][3][j] = b - sr;
+            cval[oi][4][j] = b - r - sr + n;
+            cval[oi][5][j] = sr - st;
+        }
+    }
+    for ([_]bool{ false, true }, 0..) |tail, oi| {
+        std.debug.print("     PAIRED CONTRASTS, formed within a trajectory — {s}. NEGATIVE means the first term has the LOWER error\n", .{if (tail) "DRIFT+TAIL" else "WHOLE"});
+        std.debug.print("     {s:<26} {s:>10} {s:>10} {s:>10} {s:>11}   {s}\n", .{ "contrast", "1234", "5678", "mean", "|between|", "what it is" });
+        for (0..cnames.len) |k| {
+            const v0 = cval[oi][k][0];
+            const v1 = cval[oi][k][1];
+            std.debug.print("     {s:<26} {d:>10.5} {d:>10.5} {d:>10.5} {d:>11.5}   {s}\n", .{
+                cnames[k], v0, v1, 0.5 * (v0 + v1), @abs(v0 - v1), cnote[k],
+            });
+        }
+    }
+
+    // ── THE RESOURCE ACCOUNT, which OBS-22 did not report at all. Final
+    // population can miss most of a trajectory's history, so the mean over
+    // checkpoints and the peak are carried beside it, and births are kept
+    // apart from sleeps because they are different costs.
+    std.debug.print("     CAPACITY — reported alongside error, never instead of it\n", .{});
+    std.debug.print("     {s:<11} {s:>10} {s:>10} {s:>10} {s:>10} {s:>10} {s:>10} {s:>8}\n", .{
+        "arm", "k_fin 1234", "k_fin 5678", "k_peak", "mean k", "births", "sleeps", "k/none",
+    });
+    for (0..names.len) |a| {
+        const kf = 0.5 * @as(f64, @floatFromInt(tal[a][0].k_final + tal[a][1].k_final));
+        const kn = 0.5 * @as(f64, @floatFromInt(tal[NONE][0].k_final + tal[NONE][1].k_final));
+        std.debug.print("     {s:<11} {d:>10} {d:>10} {d:>10.1} {d:>10.1} {d:>10.1} {d:>10} {d:>8.3}\n", .{
+            names[a],
+            tal[a][0].k_final,
+            tal[a][1].k_final,
+            0.5 * @as(f64, @floatFromInt(tal[a][0].k_peak + tal[a][1].k_peak)),
+            0.5 * (tal[a][0].meanK() + tal[a][1].meanK()),
+            0.5 * @as(f64, @floatFromInt(tal[a][0].births_total + tal[a][1].births_total)),
+            tal[a][0].sleeps + tal[a][1].sleeps,
+            kf / kn,
+        });
+    }
+
+    // ── WHERE THE ARMS SEPARATE. C6 compares two complete sleep
+    // SCHEDULES, not one window against another: after the first sleep that
+    // differs, the models differ, later windows carry different surprise
+    // weights, the selected buffers differ and every subsequent
+    // consolidation starts from a different state. So a contrast between
+    // schedules cannot be localised to any one intervention by its value
+    // alone.
+    //
+    // **And that is an inability to ATTRIBUTE, never an exoneration.** An
+    // early intervention can have delayed consequences, so a gap appearing
+    // in drift-and-tail does not clear the first sleep of causing it; it
+    // only means the aggregate cannot say. Astra's distinction.
+    //
+    // A phase mean cannot localise it either. The per-checkpoint trace can,
+    // and it costs nothing to carry — without it the first step of any
+    // follow-up is another sixteen minutes of this gate. What the first
+    // visible separation identifies is WHERE TO INVESTIGATE, not where the
+    // causal difference originated.
+    std.debug.print("     ERROR BY PHASE (mean RMS over that phase's checkpoints), averaged over the two acquisition trajectories\n", .{});
+    std.debug.print("     {s:<11} {s:>10} {s:>10} {s:>10} {s:>10} {s:>10} {s:>10}\n", .{
+        "arm", "cold", "stat A", "step", "stat B", "drift", "tail",
+    });
+    for (0..names.len) |a| {
+        var row: [6]f64 = .{0} ** 6;
+        for (0..NPH) |k| {
+            var acc: f64 = 0;
+            for (acq, 0..) |_, j| acc += tal[a][j].err_phase[k] / @as(f64, @floatFromInt(@max(1, tal[a][j].checks_phase[k])));
+            row[k] = acc / @as(f64, @floatFromInt(acq.len));
+        }
+        std.debug.print("     {s:<11} {d:>10.5} {d:>10.5} {d:>10.5} {d:>10.5} {d:>10.5} {d:>10.5}\n", .{
+            names[a], row[0], row[1], row[2], row[3], row[4], row[5],
+        });
+    }
+    std.debug.print("     PER-CHECKPOINT ERROR, one row per arm per trajectory, seeds kept APART; column k is the score at (k + 1) x {d}, identical instants across arms.\n", .{c.check});
+    std.debug.print("     The first visible separation says WHERE TO INVESTIGATE, not where the causal difference originated — an early intervention can act late.\n", .{});
+    for (0..names.len) |a| for (acq, 0..) |seed, j| {
+        std.debug.print("       {s:<11} {d:<5}", .{ names[a], seed });
+        for (tal[a][j].check_err[0..tal[a][j].checks]) |e| std.debug.print(" {d:.5}", .{e});
+        std.debug.print("\n", .{});
+    };
+
+    // ── THE FEEDBACK CHANNEL, measured rather than merely conceded.
+    //
+    // Astra: a consolidation's effect INCLUDES what it does to later
+    // acquisition. `revisit` and `both` share the fresh stream, but once
+    // `both` has consolidated its admission surprises differ, so the
+    // window's ranking differs, so its second and third interventions need
+    // not target the same locations.
+    //
+    // The first intervention is a CONTRACT, not a prediction: no arm has
+    // slept before selecting its targets at t = 30 000, so all three
+    // revisiting arms must agree exactly there. Divergence afterwards is
+    // the channel opening, and this says only WHETHER it opened and when —
+    // a hash is identical or it is not, and the magnitude of the
+    // divergence is a separate instrument nobody has built.
+    std.debug.print("     REVISIT TARGETING — do the revisiting arms aim at the same places once one of them has consolidated?\n", .{});
+    for (acq, 0..) |seed, j| {
+        for (0..c.budget) |k| {
+            const same_b = tal[REV][j].rev_hash[k] == tal[BOTH][j].rev_hash[k];
+            const same_u = tal[BOTH][j].rev_hash[k] == tal[UNG][j].rev_hash[k];
+            std.debug.print("       acq {d}  intervention {d}: revisit vs both {s:<9} both vs unguarded {s}\n", .{
+                seed, k, if (same_b) "IDENTICAL" else "differs", if (same_u) "IDENTICAL" else "differs",
+            });
+        }
+    }
+
+    // ── THE VERDICT TABLE, printed BEFORE anything is asserted, so that a
+    // refutation still leaves its evidence behind. OBS-19 lost a ten-minute
+    // run to an assertion inside the loop that produced its table.
+    const q1 = 0.5 * (cval[0][0][0] + cval[0][0][1]);
+    const q2 = 0.5 * (cval[0][1][0] + cval[0][1][1]);
+    const q3 = 0.5 * (cval[0][4][0] + cval[0][4][1]);
+    const q4 = 0.5 * (@as(f64, @floatFromInt(tal[BOTH][0].k_final)) / @as(f64, @floatFromInt(tal[NONE][0].k_final)) +
+        @as(f64, @floatFromInt(tal[BOTH][1].k_final)) / @as(f64, @floatFromInt(tal[NONE][1].k_final)));
+    const rej = tal[SL_T][0].rejections + tal[SL_T][1].rejections +
+        tal[SL_TR][0].rejections + tal[SL_TR][1].rejections +
+        tal[BOTH][0].rejections + tal[BOTH][1].rejections;
+    std.debug.print("     VERDICT\n", .{});
+    std.debug.print("       Q1  C1 = revisit - none            registered < 0            measured {d:.5}   {s}\n", .{ q1, if (q1 < 0) "HELD" else "REFUTED" });
+    std.debug.print("       Q2  C2 = sleep@t+r - none          registered > 0            measured {d:.5}   {s}\n", .{ q2, if (q2 > 0) "HELD" else "REFUTED" });
+    std.debug.print("       Q2' C2 exceeds OBS-22's deficit    registered > {d:.5}     measured {d:.5}   {s}\n", .{ thresholds.OBS23_DEFICIT_REF, q2, if (q2 > thresholds.OBS23_DEFICIT_REF) "HELD" else "REFUTED" });
+    std.debug.print("       Q3  C5 = the interaction           registered < 0            measured {d:.5}   {s}\n", .{ q3, if (q3 < 0) "HELD" else "REFUTED" });
+    std.debug.print("       Q4  k_final(both)/k_final(none)    registered [{d:.2}, {d:.2}]   measured {d:.5}    {s}\n", .{
+        thresholds.OBS23_CAPACITY_LO,                                                                         thresholds.OBS23_CAPACITY_HI, q4,
+        if (q4 >= thresholds.OBS23_CAPACITY_LO and q4 <= thresholds.OBS23_CAPACITY_HI) "HELD" else "REFUTED",
+    });
+    std.debug.print("       Q5  guard rejections               registered {d}              measured {d}          {s}\n", .{
+        thresholds.OBS23_GUARD_REJECTIONS, rej, if (rej == thresholds.OBS23_GUARD_REJECTIONS) "HELD" else "REFUTED",
+    });
+    std.debug.print("       Q4 stands REGISTERED AND REFUTED and is NOT asserted below. The bound is wrong rather than the code, and it is left\n", .{});
+    std.debug.print("       standing to be struck rather than tuned to fit. **The saving MISSED the prediction; it did not disappear** — final\n", .{});
+    std.debug.print("       population {d:.3} of `none`'s, checkpoint-mean {d:.3}, while PEAK is {d:.3}, above one. So there IS an accuracy-capacity\n", .{
+        q4,
+        0.5 * (tal[BOTH][0].meanK() + tal[BOTH][1].meanK()) / (0.5 * (tal[NONE][0].meanK() + tal[NONE][1].meanK())),
+        @as(f64, @floatFromInt(tal[BOTH][0].k_peak + tal[BOTH][1].k_peak)) / @as(f64, @floatFromInt(tal[NONE][0].k_peak + tal[NONE][1].k_peak)),
+    });
+    std.debug.print("       trade, smaller than registered and UNPRICED: nothing here says what ~12 per cent of the kernels is worth against the error.\n", .{});
+    std.debug.print("     SCOPE: one fixture, one placement set, one r, one budget, one compression ratio. This estimates a REPEATED POLICY —\n", .{});
+    std.debug.print("     three interventions interacting through the model — and a consolidation's effect INCLUDES its feedback into what later\n", .{});
+    std.debug.print("     revisits target, so no contrast here separates 'sleep uses repaired evidence better' from 'sleep changes what is revisited next'.\n", .{});
+
+    // ── ASSERTIONS, every one of them after every print ───────────────────
+    for (0..names.len) |a| for (acq, 0..) |_, j| {
+        const t = tal[a][j];
+        try testing.expectEqual(c.total, t.paid);
+        try testing.expectEqual(t.paid, t.monitored + t.revisits);
+        try testing.expectEqual(if (recipes[a].revisit) REVISITS else @as(u64, 0), t.revisits);
+        try testing.expectEqual(@as(usize, if (plans[a].len == 0) 0 else c.budget), t.started);
+        try testing.expectEqual(@as(usize, if (recipes[a].consolidate and plans[a].len != 0) c.budget else 0), t.sleeps);
+        try testing.expectEqual(@as(usize, 0), t.crossings);
+        try testing.expectEqual(@as(usize, 0), t.unready);
+        try testing.expectEqual(@as(usize, 0), t.horizon_blocked);
+        // One score per checkpoint, for every arm, on both sleep paths.
+        try testing.expectEqual(@as(usize, @intCast(c.total / c.check)), t.checks);
+        try testing.expectEqual(t.checks, t.k_n);
+    };
+    // The stream contract, per trajectory.
+    for (acq, 0..) |_, j| {
+        try testing.expect(tal[NONE][j].stream_prefix != 0);
+        for ([_]usize{ SL_T, SL_TR }) |a| try testing.expectEqual(tal[NONE][j].stream_hash, tal[a][j].stream_hash);
+        for ([_]usize{ REV, BOTH, UNG }) |a| try testing.expectEqual(tal[NONE][j].stream_prefix, tal[a][j].stream_hash);
+    }
+    // THE TRACE'S OWN CONTRACT. A per-checkpoint record is only usable for a
+    // later diagnosis if it is the SAME quantity the phase scored, taken at
+    // the instants it claims. Astra's: assert the indices, the count and the
+    // correspondence with the accumulated objective — otherwise OBS-24 reads
+    // a different number from the one OBS-23 concluded from.
+    for (0..names.len) |a| for (acq, 0..) |_, j| {
+        const t = tal[a][j];
+        try testing.expect(t.checks <= t.check_err.len);
+        // The k-th checkpoint sits at exactly (k + 1) x check, and there are
+        // exactly as many of them as the objective counted. A truncated
+        // event trace fails here rather than silently shortening the record.
+        var k: usize = 0;
+        for (t.trace[0..t.ntrace]) |e| {
+            if (e.kind != .check) continue;
+            try testing.expectEqual(@as(u64, @intCast(k + 1)) * c.check, e.at);
+            k += 1;
+        }
+        try testing.expectEqual(t.checks, k);
+        // The trace sums to the accumulated objective, in the same order and
+        // therefore bit for bit.
+        var acc: f64 = 0;
+        for (t.check_err[0..t.checks]) |e| acc += e;
+        try testing.expectEqual(t.err_sum, acc);
+        // And the phase segmentation partitions the same checkpoints — a
+        // different addition order, so a tolerance rather than equality.
+        var pn: usize = 0;
+        var pe: f64 = 0;
+        for (0..NPH) |ph| {
+            pn += t.checks_phase[ph];
+            pe += t.err_phase[ph];
+        }
+        try testing.expectEqual(t.checks, pn);
+        try testing.expect(@abs(pe - t.err_sum) < 1e-12);
+    };
+    // The first intervention's targets are a CONTRACT: nothing has
+    // consolidated when they are chosen, so every revisiting arm must pick
+    // the same r locations. If they do not, the arms were never matched.
+    for (acq, 0..) |_, j| {
+        try testing.expect(tal[REV][j].rev_hash[0] != 0);
+        try testing.expectEqual(tal[REV][j].rev_hash[0], tal[BOTH][j].rev_hash[0]);
+        try testing.expectEqual(tal[REV][j].rev_hash[0], tal[UNG][j].rev_hash[0]);
+    }
+    // The interaction is an identity on the other two contrasts; if it is
+    // not, the table is arithmetic rather than a factorial.
+    for ([_]usize{ 0, 1 }) |oi| for (acq, 0..) |_, j| {
+        try testing.expect(@abs(cval[oi][4][j] - (cval[oi][2][j] - cval[oi][1][j])) < 1e-12);
+        try testing.expect(@abs(cval[oi][4][j] - (cval[oi][3][j] - cval[oi][0][j])) < 1e-12);
+    };
+    // Q5: with no rejection the guard restores nothing, so the two arms must
+    // agree EXACTLY and not to printed precision.
+    if (rej == 0) {
+        for (acq, 0..) |_, j| {
+            try testing.expectEqual(tal[BOTH][j].err_sum, tal[UNG][j].err_sum);
+            try testing.expectEqual(tal[BOTH][j].err_phase, tal[UNG][j].err_phase);
+            try testing.expectEqual(tal[BOTH][j].k_final, tal[UNG][j].k_final);
+        }
+    }
+    try testing.expectEqual(thresholds.OBS23_GUARD_REJECTIONS, rej);
+    // The registered headline. Asserted, because a gate that cannot fail on
+    // its own headline is decoration.
+    try testing.expect(q1 < thresholds.OBS23_REVISIT_PAYS);
+    try testing.expect(q2 > thresholds.OBS23_SLEEP_COSTS);
+    try testing.expect(q2 > thresholds.OBS23_DEFICIT_REF);
+    try testing.expect(q3 < thresholds.OBS23_INTERACTION);
+    // Q4 is REGISTERED AND REFUTED and is deliberately NOT asserted. A
+    // threshold is not tuned to make a gate pass; the finding is recorded
+    // and the bound left standing in `thresholds.zig` for Christian.
+    //
+    // What IS asserted is a structural invariant the capacity column
+    // revealed and did not register: **nothing dies except at a
+    // consolidation**, so an arm that never consolidates ends with exactly
+    // as many kernels as it ever birthed. It is what exposed the births
+    // accounting bug, and it would catch a silent pruning path.
+    for (0..names.len) |a| {
+        if (recipes[a].consolidate and plans[a].len != 0) continue;
+        for (acq, 0..) |_, j| try testing.expectEqual(@as(u64, @intCast(tal[a][j].k_final)), tal[a][j].births_total);
+    }
 }

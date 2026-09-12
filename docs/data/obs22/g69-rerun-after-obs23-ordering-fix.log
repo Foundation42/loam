@@ -1,0 +1,32 @@
+test
++- run test stderr
+  G69 [ReleaseSafe] calibration on seed 0x0CA1, stationary 12000..30000: ratio mean 1.07993, population sd 0.07427 over 18000 samples -> THRESHOLD 1.30274
+     trigger   acq 1234  started 0 (of at most 3)  sleeps 0  above-threshold ticks 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 3  fired {  }
+     schedule  acq 1234  started 3 (of at most 3)  sleeps 3  above-threshold ticks 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 1  fired { 26000, 52000, 78000 }
+     informed  acq 1234  started 3 (of at most 3)  sleeps 3  above-threshold ticks 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 2  fired { 30000, 60000, 90000 }
+     none      acq 1234  started 0 (of at most 3)  sleeps 0  above-threshold ticks 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 3  fired {  }
+     trigger   acq 5678  started 3 (of at most 3)  sleeps 3  above-threshold ticks 30173 (cold 11917, settled 4385)  first 83  unready 16301  blocked 4095  budget@drift 1  fired { 16384, 36864, 69651 }
+     schedule  acq 5678  started 3 (of at most 3)  sleeps 3  above-threshold ticks 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 1  fired { 26000, 52000, 78000 }
+     informed  acq 5678  started 3 (of at most 3)  sleeps 3  above-threshold ticks 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 2  fired { 30000, 60000, 90000 }
+     none      acq 5678  started 0 (of at most 3)  sleeps 0  above-threshold ticks 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 3  fired {  }
+     TIME-AVERAGED ERROR (mean RMS over checkpoints, not pooled MSE):
+       trigger   whole 0.09387 (0.08542 / 0.10231, spread 0.01689)   drift+tail 0.11328 (0.08781 / 0.13875, spread 0.05094)
+       schedule  whole 0.22949 (0.08658 / 0.37240, spread 0.28581)   drift+tail 0.43382 (0.09671 / 0.77093, spread 0.67423)
+       informed  whole 0.09079 (0.08638 / 0.09520, spread 0.00883)   drift+tail 0.11294 (0.10186 / 0.12402, spread 0.02216)
+       none      whole 0.08492 (0.08542 / 0.08441, spread 0.00101)   drift+tail 0.08828 (0.08781 / 0.08876, spread 0.00095)
+     INTERVENTIONS BY PHASE, and the error over the two checkpoints after each — REPORTED, never scored as false alarms:
+       trigger   acq 1234 p0:0 p1:0 p2:0 p3:0 p4:0 p5:0   post-intervention RMS:
+       trigger   acq 5678 p0:0 p1:1 p2:1 p3:0 p4:1 p5:0   post-intervention RMS: 0.04098 0.07259 0.10500
+       schedule  acq 1234 p0:0 p1:1 p2:0 p3:1 p4:1 p5:0   post-intervention RMS: 0.11234 0.03368 0.10159
+       schedule  acq 5678 p0:0 p1:1 p2:0 p3:1 p4:1 p5:0   post-intervention RMS: 0.11097 0.04090 6.72441
+       informed  acq 1234 p0:0 p1:1 p2:0 p3:1 p4:1 p5:0   post-intervention RMS: 0.07540 0.11590 0.10582
+       informed  acq 5678 p0:0 p1:1 p2:0 p3:1 p4:1 p5:0   post-intervention RMS: 0.07750 0.09276 0.13101
+       none      acq 1234 p0:0 p1:0 p2:0 p3:0 p4:0 p5:0   post-intervention RMS:
+       none      acq 5678 p0:0 p1:0 p2:0 p3:0 p4:0 p5:0   post-intervention RMS:
+     Q2 AS REGISTERED: the detector never crosses during the cold start. REFUTED — 0 above-threshold ticks on one trajectory and 11917 on the other, so the restraint is a property of the DRAW and not of the statistic.
+     Nothing is asserted here about Q2. The regression check that these fixed trajectories still reproduce 0 against 11917 lives in G69 (c), which reaches the same cold-start numbers in seconds and without a single sleep — and passing it would not mean Q2 holds.
+     Q5 the reference gap, signed: trigger - informed = 0.00308 (negative means the online policy BEAT the privileged schedule, which refutes THAT schedule and not the value of timing information)
+     Q6 against no intervention at all: trigger 0.09387, schedule 0.22949, informed 0.09079, none 0.08492
+     Q4 drift+tail: trigger 0.11328 against schedule 0.43382, margin 0.32054 against the worse DRIFT+TAIL acquisition spread 0.67423 (not the whole-trajectory spread, which judges a different quantity)
+zig build test -Dtest-filter="G69 when"  600.58s user 1.09s system 102% cpu 9:49.66 total
+G69 EXIT=0

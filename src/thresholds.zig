@@ -3055,7 +3055,6 @@ pub const OBS5_DOUBLING_ADAM: f64 = 1.60;
 /// 4.380e-7, better by 360x and 1180x. Fixed-rate Adam was hovering, as
 /// G52 (a) measured directly, and the schedule lets it converge. G53
 /// asserts that cell as well, and it is the one that matters.
-
 /// G53: frozen-allocation train RMS under OBS-5's 1/t schedule, over the
 /// same at OBS-4's fixed rate, pooled over the factorial. PROPOSED as a
 /// CEILING at 1.10.
@@ -4117,5 +4116,108 @@ pub const OBS22_ACTING_PAYS: f64 = 0;
 /// this observed failure.** It does not establish that a descent which does
 /// descend on replay improves the current world.
 pub const OBS22_REFINE_GUARD: f64 = 0;
+
+/// OBS-23 / G70 — Q1: that the AIMING half pays on its own.
+/// `D_revisit = err(revisit) - err(none)`, PREDICTED NEGATIVE.
+///
+/// Registered before the run from OBS-21, which measured targeted revisiting
+/// beating fresh draws BEFORE any sleep — 0.0770 against 0.0849, a ratio of
+/// 0.907 at one well-placed intervention. **The magnitude is not derivable
+/// here** and no number is registered for it: two of these three placements
+/// sit in or at the end of a drift, where a location chosen by STORED
+/// surprise need no longer be where the model is wrong. Direction only.
+pub const OBS23_REVISIT_PAYS: f64 = 0;
+
+/// OBS-23 / G70 — Q2: that the CONSOLIDATION half is the cost.
+/// `D_sleep = err(sleep@t+r) - err(none)`, PREDICTED POSITIVE.
+pub const OBS23_SLEEP_COSTS: f64 = 0;
+
+/// OBS-23 / G70 — Q2's second and independently refutable half: that the
+/// consolidation carries MORE than the whole of OBS-22's deficit, the
+/// revisits repaying part of it.
+///
+/// 0.00587 is OBS-22's own `informed - none` on the whole objective
+/// (0.09079 - 0.08492). It is a REFERENCE from a different recipe — OBS-23
+/// consolidates under the acceptance rule OBS-22 (b) established — so it is
+/// registered as a bar to clear, never as a value to reproduce.
+pub const OBS23_DEFICIT_REF: f64 = 0.00587;
+
+/// OBS-23 / G70 — Q3: that the two halves INTERACT, and favourably.
+/// `I = D_both - D_revisit - D_sleep`, PREDICTED NEGATIVE.
+///
+/// OBS-21's result IS an interaction: a sleep improved the TARGETED models
+/// by 6-11% while WORSENING fresh draws and untargeted revisits. If that
+/// survives being placed by a schedule rather than chosen, the combination
+/// must beat what the two halves predict additively.
+///
+/// **A refutation is the most informative outcome available here**, and what
+/// it would establish is narrow: that OBS-21's interaction did not carry
+/// over to THIS repeated trajectory policy. It would NOT establish that
+/// SCHEDULING caused the disappearance — repetition, the model states, the
+/// drifting labels, the feedback a consolidation has into what later
+/// revisits target, and the objective itself all differ from OBS-21 too.
+///
+/// Nor may a confirmation be narrated as "sleep uses repaired evidence
+/// better": after the first consolidation the window's ranking changes, so
+/// `both` and `revisit` need not target the same locations at their second
+/// and third interventions. This design cannot separate the two readings.
+pub const OBS23_INTERACTION: f64 = 0;
+
+/// OBS-23 / G70 — Q4: the RESOURCE TRADE, which OBS-22 did not report at
+/// all. `k_final(both) / k_final(none)`, PREDICTED in [0.40, 0.80].
+///
+/// **REGISTERED AND REFUTED. Measured 0.87983.** Three halvings leave far
+/// more capacity standing than the bound allowed: checkpoint-mean population
+/// is 0.928 of `none`'s and the PEAK is 1.067 — *above one*, because a
+/// consolidation is followed by a regrowth that overshoots. OBS-22 refuted
+/// cumulative shrinkage by counting two regrowths; this extends that across
+/// a whole trajectory.
+///
+/// **The saving MISSED the prediction; it did not disappear.** `both` ends
+/// with roughly 12 per cent fewer kernels and a 7 per cent lower
+/// checkpoint-mean population than `none`, while scoring worse on error and
+/// peaking HIGHER. So there IS an accuracy-capacity trade — it is smaller
+/// than registered, and it is UNPRICED: nothing in this phase says what 12
+/// per cent of the kernels is worth against the error it costs.
+///
+/// The bound is left standing rather than tuned, and G70 reports Q4 without
+/// asserting it.
+///
+/// NOT one eighth. OBS-22 counted the regrowth between sleeps — 645->322->727
+/// and 727->363->817, a return to ~1.13x the pre-sleep population — so three
+/// halvings do not compound. The bounds are SOFT and derived from one arm's
+/// regrowth in a different phase; they are registered so that they can be
+/// wrong.
+///
+/// **Final population is not trajectory resource expenditure** — it can miss
+/// most of the history — so the population at every checkpoint, its
+/// trajectory mean and its peak are carried beside it, with births kept
+/// apart from sleeps because they are different costs.
+///
+/// If this reveals an accuracy-capacity trade it does NOT invalidate
+/// OBS-22's comparison. That comparison was VALID for its stated objective
+/// and merely INCOMPLETE as a resource account; the two statements "`none`
+/// wins on error" and "`none` spends more capacity" can both be true.
+pub const OBS23_CAPACITY_LO: f64 = 0.40;
+pub const OBS23_CAPACITY_HI: f64 = 0.80;
+
+/// OBS-23 / G70 — Q5: that the replay-loss acceptance rule is INERT at these
+/// placements. PREDICTED zero rejections, and `unguarded` equal to `both`
+/// EXACTLY — asserted on the f64 outputs rather than to printed precision,
+/// because with no rejection the guard restores nothing.
+///
+/// **What this contrast measures is the trajectory effect of enabling
+/// acceptance and rollback, and it changes the policy being evaluated.** An
+/// exploding descent IS a possible cost of the unguarded intervention, not a
+/// distortion removed by guarding. It does NOT measure computational
+/// overhead: both arms attempt the refinement, and the guard adds snapshot,
+/// check and restore work on top of it.
+///
+/// OBS-22's divergence was on the `schedule` arm at t = 82 096; `informed`'s
+/// instants differ, and OBS-22's own informed arm reached 0.09520 at worst
+/// with no catastrophe. If a rejection DOES fire here, that is the phase's
+/// finding and not an inconvenience — which is why the count is reported for
+/// every arm whether or not the guard is on.
+pub const OBS23_GUARD_REJECTIONS: usize = 0;
 
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

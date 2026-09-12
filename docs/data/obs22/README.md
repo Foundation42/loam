@@ -11,6 +11,7 @@ interpretation that was current when they were taken.
 | `g69b.log` | First localisation of the `schedule`/5678 blow-up: per-intervention RMS, populations, births, fitting error; and a three-way fork at the worst sleep. |
 | `g69c.log` | The same with the acquisition comparison corrected (frozen model scored at completion time) and two further forks: `norefine` and `guarded`. |
 | `g69e.log` | The same with the `relabel` oracle probe added, and per-fork instrumentation at the forked sleep. |
+| `g69-rerun-after-obs23-ordering-fix.log` | G69 re-run under OBS-23's runner change, 9 min 50 s. **Every number reproduces** — all 29 distinct figures in `g69.log` appear here, none missing. OBS-23 added an immediate-sleep path and with it a checkpoint-deferral rule; none of G69's sleeps lands on a checkpoint and every G69 arm revisits, so the fix could not move it. Re-run rather than argued. It exits 0 where `g69.log` failed, because the gate was amended afterwards to REPORT Q2 rather than assert it — the refutation stands, the assertion does not. |
 
 ## What the logs establish, and what they refuted
 

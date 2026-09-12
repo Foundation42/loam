@@ -8574,3 +8574,87 @@ green. G69 (a), (c), (d), (e) pass ReleaseSafe in 8-11 s each, none sleeping.
 Reporting corrections were compile-verified and validated in G69 (c) rather
 than by repeating the expensive run. docs/data/obs22/ holds the preserved
 runs.
+
+## OBS-23 / G70 — what does an intervention actually cost?
+
+OBS-22's Q6 refutation was unattributed. "An intervention" is two mechanisms
+— 4096 targeted revisits paid out of the same horizon, and a consolidation —
+and OBS-22 measured their sum against zero. The campaign's own rule (*when a
+correction changes several things at once, attribute none of it*) says that
+cannot name the half that failed. This is the 2×2, at OBS-22's privileged
+`informed` placement so the trigger is not a third factor.
+
+`Recipe` carries the two mechanisms separably, with defaults equal to OBS-22's
+recipe exactly, so every gate written before this one keeps its numbers by
+passing `.{}`. Six arms and not four, because the clock forces it: an arm
+spending `r` on revisits cannot also consolidate at the fire instant, so the
+matched no-revisit cell is placed at `t + r` and consolidates immediately.
+`sleep@t` isolates that offset; `unguarded` prices the guard decision rather
+than assuming it free.
+
+THE CLOCK BUG, caught in review before the sleeps were paid for. The
+immediate-sleep path did not exist when OBS-22 was written and adding it
+reintroduced OBS-22's score-ordering bug on the new branch — scoring 30 000,
+60 000 and 90 000 and only then consolidating. The rule applies to each half
+separately: an arm spending `r` completes later than it starts, so a
+checkpoint at its start instant belongs before it; one spending none
+completes where it starts, so that checkpoint waits. Mutation: restoring the
+old behaviour drives check-before-sleep 0 → 3 on exactly the immediate arms
+and fails G70 (a). G69 was RE-RUN rather than argued — all 29 distinct
+numbers reproduce, 9 min 50 s.
+
+THE COLLAPSE CONTRACT is what makes attribution possible. With the
+consolidation stubbed, the six arms must reduce to exactly two trajectories,
+matched on error by phase, population, peak and births — not merely on drawn
+locations, because a controller side effect moves no query. G70 (a) asserts
+it, plus the stream hashes, the event order on both sleep paths, exactly one
+score per checkpoint, and that the first intervention's revisit targets are
+identical across all three revisiting arms.
+
+RESULTS. revisit .08090/.08607 beats none .08492/.08828 — the first policy in
+this campaign to beat not intervening. both = unguarded .09079/.11294, which
+is OBS-22's `informed` arm to every digit and validates THAT ARM's numerical
+continuity rather than the lattice. Paired contrasts formed within a
+trajectory: C1 −.00401, C2 +.03584, C3 +.00989, C4 −.02997, C5 −.02596,
+C6 +.02792. Every sign replicates; C2, C5 and C6 have between-trajectory
+differences larger than their means.
+
+Q4 REGISTERED AND REFUTED at .87983 against [.40, .80] — reported, not
+asserted, the bound left standing. The saving missed the prediction and did
+not disappear, and the births column then inverted the account: a
+consolidating arm buys 2.25× the topology `none` does (1903 against 844) to
+end 12% smaller. That column read 292 in the first run because a sleep
+replaces the model and the child's birth counter starts at zero. What exposed
+it is an invariant nobody had registered — nothing dies except at a
+consolidation, so `none` read births exactly equal to its final population.
+Asserted now; the total is banked at every replacement.
+
+The aggregate hid a sign change. Per phase, `both` is the BEST arm through
+the abrupt step (.07181) and the stationary stretch after it (.05788); its
+whole deficit arrives in the drift and tail. And the per-checkpoint traces,
+added on Astra's instruction and asserting their own contract (indices at
+exactly (k+1)·check, count matching the objective, sum equal to `err_sum` bit
+for bit, phases partitioning the same checkpoints), localise the 5678 gap to
+a late excursion: identical to the digit through t = 28 000, then .16067 →
+.92824 → .90681 across 94 000–98 000, immediately after a third consolidation
+that the guard did not reject.
+
+Scope kept in the gate: C6 shifts all three placements and contrasts two
+complete SCHEDULES, so it is not a window comparison; a tail gap is an
+inability to ATTRIBUTE and never an exoneration, since an early intervention
+can act late; zero rejections plus poor trajectory error establishes only
+that acceptance did not ensure a beneficial policy, a local claim needing
+same-world pre/post measurements; and C5 may not be narrated as "sleep uses
+repaired evidence better", because the targeting signatures show the second
+and third interventions aim elsewhere once one arm has slept.
+
+Process note, and it is a repeat rather than a new rule: `pkill -f` matched
+its own wrapper again and killed the cancelling command. Use the task handle.
+A `grep && run` guard refused to launch once because the predicate itself was
+wrong (`grep -c` counts lines) — the right failure for the wrong reason.
+
+Validation: G70 EXIT 0 in 15 min 55 s, every registered quantity identical to
+an earlier run of the same comparison, which is a free replication of the
+lattice. G70 (a) passes in seconds and sleeps not at all; it is in the smoke
+list. G69 re-run preserved beside OBS-22's own logs. `docs/data/obs23/` holds
+the run.
