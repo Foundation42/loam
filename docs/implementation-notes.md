@@ -8746,3 +8746,62 @@ that the acceptance rule cannot detect it when it does.
 
 Validation: G71 EXIT 0 in 2 min 15 s; G71 (a) in the smoke list.
 `docs/data/obs24/` holds the run.
+
+## OBS-25 / G72 — do available signals rank the candidates as the world does?
+
+OBS-24 established that replay non-increase is insufficient for current-world
+protection. The obvious response is a better acceptance rule; this phase does
+not build one. It asks the prior question, because a signal that cannot
+discriminate cannot ground any rule however written.
+
+THREE CONTRACTS THE FIRST REGISTRATION COULD NOT SATISFY, all caught before
+any code. A held-out split taken AFTER a fit is not held out of it — OBS-24's
+candidates were fitted on the whole buffer — so validation entries are now
+removed BEFORE selection, the linear refit and the refinement, and one shared
+candidate set serves every family. Those are NEW candidates on a smaller
+buffer, so the diagnostic ordering is MEASURED and none of OBS-24's figures
+is asserted. Recent evidence already carries current-world labels here, so
+fresh is not the only current-labelled family, and every comparison is
+between EVIDENCE SOURCES rather than an isolated effect. And fresh queries
+are PAID and occupy a SPAN, with no checkpoint permitted inside it — a
+constraint the cheap gate asserts and which caught its own first placement.
+
+THE RESULT. Diagnostic parent .16446 / linear .27467 / refined .76761,
+selecting parent. Held-out replay selects linear (.14012 against refined's
+.14145 — a 0.9% margin), recent selects linear, fresh selects linear. ALL
+THREE DISAGREE WITH THE DIAGNOSTIC.
+
+Q0 HELD, Q2 HELD and both asserted. Q1 REFUTED narrowly and Q3 REFUTED —
+reported, never asserted, left standing to be struck.
+
+Q3 IS THE PHASE, and the SHAPE of its failure is not what the phase was built
+to look for. Fresh is current-labelled and never trained on, and it estimates
+the PARENT almost exactly — .16393 against .16446 — while underestimating
+linear by 3.4x and refined by 7.0x. It fails specifically on the CONSOLIDATED
+candidates, so label staleness cannot be the mechanism. Eight draws of 256 on
+frozen candidates: six linear, two refined, none parent — systematic at this
+V, not draw noise.
+
+A HYPOTHESIS FITS EVERY NUMBER AND IS NOT TESTED: that the damage is
+concentrated where a 256-point draw under-samples. It is equally consistent
+with the candidates being wrong where the diagnostic probes sit. Separating
+them needs the per-probe error distribution and a sweep of V, both
+scoring-only on frozen candidates.
+
+THE COST, two-sided and both halves load-bearing: continuations from 94 352,
+each trained on the same 256 already-paid observations, give parent .17569,
+linear .18404, refined .47338. ALL THREE SIGNALS AVOIDED THE CATASTROPHIC
+CANDIDATE AND NONE SELECTED THE BEST ONE; the unanimous choice costs 4.8%
+against declining. Fresh spends 256 paid observations, 2.6% of what remained;
+the historical families spend none, and that differential is reported rather
+than folded in.
+
+NO ACCEPTANCE POLICY IS ESTABLISHED: one consolidation, one trajectory, one
+parent, ONE statistic, and no false-alarm rate on consolidations that were
+fine.
+
+Validation: G72 EXIT 0 in 2 min 9 s; G72 (a) in the smoke list, with the
+exclusion checked by an INDEPENDENT pass over the built sets rather than a
+counter incremented where the construction already branched. Mutation:
+leaving the held-out entries in the fit fails it. `docs/data/obs25/` holds
+the run.

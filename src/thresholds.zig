@@ -4293,4 +4293,61 @@ pub const OBS24_RECOVERY_INCOMPLETE: f64 = 0;
 /// they point opposite ways. Reported, not asserted; the bound stands.
 pub const OBS24_LINEAR_HELPS: f64 = 0;
 
+/// OBS-25 / G72 — Q0: that the REDUCED-FIT refined candidate still harms.
+/// A smaller fit set is a different consolidation and might simply not
+/// reproduce OBS-24's failure. **HELD: world 0.76761 against the parent's
+/// 0.16446.**
+///
+/// Registered first so its consequence was fixed before it was known: a
+/// failure would have removed the known harmful-refinement case, NOT made
+/// candidate ranking moot — every family's selection is reported against the
+/// newly measured ordering either way.
+pub const OBS25_Q0_STILL_HARMS: f64 = 0;
+
+/// OBS-25 / G72 — Q1: that HELD-OUT REPLAY adopts the harmful candidate.
+/// **REGISTERED AND REFUTED.** It adopts `linear` — but by 0.9%, 0.14012
+/// against `refined`'s 0.14145. It came within a hair of selecting the
+/// candidate that reaches 0.76761 on held-out probes.
+///
+/// What a selection either way establishes is narrow: what THIS minimum-RMS
+/// rule does on THIS evidence, never that no rule on that evidence could
+/// discriminate. Reported, not asserted.
+pub const OBS25_Q1_HELDOUT_ADOPTS_REFINED: f64 = 0;
+
+/// OBS-25 / G72 — Q2: that the RECENT WINDOW ranks `refined` worse, relative
+/// to `linear`, than held-out replay does. **HELD: 2.57x against 1.01x.**
+/// Asserted as a ratio, because the two families' absolute scales differ and
+/// a difference of RMS between them would compare two things.
+pub const OBS25_Q2_RECENT_RANKS_WORSE: f64 = 0;
+
+/// OBS-25 / G72 — Q3: that FRESH evidence recovers the measured diagnostic
+/// ordering. **REGISTERED AND REFUTED, and this is the phase.**
+///
+/// Fresh is current-labelled and never trained on, and it still selects
+/// `linear` where the world selects `parent`. The shape of the failure is
+/// not staleness: it estimates the PARENT almost exactly — 0.16393 against
+/// the diagnostic's 0.16446 — while underestimating `linear` by 3.4x
+/// (0.08138 against 0.27467) and `refined` by 7.0x (0.11028 against
+/// 0.76761). It fails specifically on the CONSOLIDATED candidates.
+///
+/// 6 of 8 independent draws agree with the paid one and the two dissenters
+/// pick `refined`; none picks `parent`. So this is systematic at V = 256 and
+/// not draw noise.
+///
+/// **A hypothesis consistent with every number here — that the consolidated
+/// candidates' damage is concentrated where a 256-point draw under-samples —
+/// IS NOT TESTED.** It would need the per-probe error distribution or a
+/// sweep of V, and neither is in this run.
+pub const OBS25_Q3_FRESH_RECOVERS: f64 = 0;
+
+/// OBS-25 / G72 — what the three selections cost over the remaining 9648
+/// observations. Reported, not predicted: parent 0.17569, linear 0.18404,
+/// refined 0.47338.
+///
+/// The two-sided reading, and both halves matter: **all three signals
+/// avoided the catastrophic candidate, and none selected the best one.** The
+/// unanimous choice of `linear` costs 4.8% of trajectory error against
+/// declining to consolidate.
+pub const OBS25_COST_REPORTED: f64 = 0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

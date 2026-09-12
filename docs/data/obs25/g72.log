@@ -1,0 +1,49 @@
+test
++- run test stderr
+  G72 (a) [ReleaseSafe] validation fork at t = 10900, deciding at 10964; V = 64, 8 draws, refinement STUBBED
+     buffer 1000 = fit 896 + held-out 64 + recent-in-buffer 40; recent family 64; fit/validation overlap 0 (independent pass)
+     family               parent     linear    refined   picks
+     DIAGNOSTIC world    0.12328    0.18452    0.18452   parent
+     held-out replay     0.19626    0.28195    0.28195   parent
+     recent window       0.05590    0.13458    0.13458   parent
+     fresh               0.10466    0.22820    0.22820   parent
+     fresh draws on the FROZEN candidates: parent parent linear linear parent parent linear linear
+     the criterion is TOTAL: ties resolve toward the least-changed candidate, including linear and refined tying below parent
+     stubbed: linear and refined are one model, every family scores them identically, and the tie rule never picks refined
+     draw 0 is the PAID family; the other 7 are a variability diagnostic and not a policy — taking them all would cost 512 observations, not 64
+     the diagnostic ordering is MEASURED for these reduced-fit candidates; OBS-24's figures are context and are asserted nowhere
+
+  G72 [ReleaseSafe] validation fork on sleep@t+r / acq 5678 at t = 94096; V = 256 PAID queries over [94096, 94352), deciding at 94352
+     buffer 8192 = fit 7797 + held-out 256 + recent-in-buffer 139; recent family 256; fit/validation overlap 0 (independent pass)
+     ONE shared candidate set, fitted on the REDUCED buffer. These are NOT OBS-24's candidates and none of its figures is asserted.
+     family                parent     linear    refined   selects
+     DIAGNOSTIC world     0.16446    0.27467    0.76761   parent
+     held-out replay      0.16952    0.14012    0.14145   linear  (DISAGREES)
+     recent window        0.08019    0.06081    0.15614   linear  (DISAGREES)
+     fresh                0.16393    0.08138    0.11028   linear  (DISAGREES)
+     Q0: does the reduced-fit refined candidate still harm? world 0.76761 against the parent's 0.16446 -> YES
+     A Q0 failure removes the known harmful-refinement case; it does NOT make the ranking question moot. Every family's
+     selection is reported against the NEWLY MEASURED ordering either way.
+     8 fresh draws of V on the FROZEN candidates — draw 0 is the PAID family, the rest hypothetical: linear linear linear refined refined linear linear linear
+     6 of 8 draws select the same candidate as draw 0 — the variability of a V-point decision AT THIS FORK
+     THE CONTINUATIONS, from 94352 with the V paid observations trained in, 9648 queries remaining
+     adopted         96000      98000     100000     102000     104000         mean    k_final
+     parent        0.17629    0.19722    0.18392    0.17146    0.14958      0.17569       1202
+     linear        0.27552    0.16682    0.16901    0.14954    0.15928      0.18404        798
+     refined       0.81547    0.82630    0.20422    0.30709    0.21382      0.47338        842
+     COST: the fresh family spends 256 paid observations, 2.6% of the 9904 remaining at the fork; the historical families spend none.
+     VERDICT
+       Q0  the reduced-fit refined candidate still harms          HELD
+       Q1  held-out replay adopts `refined`                       REFUTED   (it selects linear; refined/linear = 1.0095)
+       Q2  recent ranks `refined` worse than held-out does        HELD   (2.5677 against 1.0095)
+       Q3  fresh recovers the measured diagnostic order           REFUTED   (fresh selects linear; the world selects parent)
+       fresh estimates the PARENT at 0.16393 against the diagnostic's 0.16446, and underestimates linear by 3.4x and refined by 7.0x.
+       So the failure is NOT label staleness — fresh is current-labelled and never trained on. It fails on the CONSOLIDATED candidates.
+       A hypothesis fitting every number — damage concentrated where a 256-point draw under-samples — IS NOT TESTED here. It would
+       need the per-probe error distribution or a sweep of V, and neither is in this run.
+     Q1 and Q3 are REGISTERED AND REFUTED: reported, never asserted, and left standing in thresholds.zig to be struck.
+     SCOPE: these are comparisons between EVIDENCE SOURCES, not isolated effects — held-out against recent varies label age AND
+     location sampling; recent against fresh varies prior learning exposure AND location sampling. NO ACCEPTANCE POLICY IS
+     ESTABLISHED: one consolidation, one trajectory, one parent, ONE statistic, and no false-alarm rate on consolidations that were fine.
+zig build test -Dtest-filter="G72"  140.89s user 0.75s system 110% cpu 2:08.32 total
+G72 EXIT=0

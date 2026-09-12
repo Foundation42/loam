@@ -7016,6 +7016,10 @@ pub fn validateFork(
     out: *Val,
     cands: *[3]marl.Model,
     hand_out: *Hand,
+    /// The V PAID validation queries, handed back so the adopted candidate
+    /// can train on them AFTER the decision — charged once, never twice.
+    paid_x: [][3]f32,
+    paid_y: []f64,
 ) !void {
     var trig = Trigger.init(2048, 16384, c.budget);
     var pre = Tally{};
@@ -7150,6 +7154,8 @@ pub fn validateFork(
         const tp = worldAt(c, hand.at + j, worlds[0], worlds[1], worlds[2]);
         qx[j] = .{ st.unit(), st.unit(), st.unit() };
         qv[j] = .{marl.truthOf(tp, qx[j])};
+        paid_x[j] = qx[j];
+        paid_y[j] = @as(f64, qv[j][0]);
     }
     for (cands, 0..) |*m, k| out.fam[2][k] = try m.rms(qx, qv, null);
     for (0..3) |f| out.pick[f] = decide(out.fam[f]);
@@ -7194,8 +7200,12 @@ test "G72 (a) the OBS-25 validation fork's contracts" {
     //     family — and those are NEW candidates whose diagnostic ordering is
     //     measured, never carried over.
     //   * `recent` already carries CURRENT-WORLD labels on this fixture, so
-    //     fresh is not the only current-labelled family. What recent and
-    //     fresh differ in is prior learning exposure and location sampling.
+    //     fresh is not the only current-labelled family. These are
+    //     comparisons between EVIDENCE SOURCES and not isolated effects:
+    //     held-out against recent varies label age AND location sampling,
+    //     since the two are drawn by different mechanisms and their
+    //     locations are not matched; recent against fresh varies prior
+    //     learning exposure AND location sampling.
     //   * fresh queries are PAID and occupy a SPAN, not an instant.
     const gpa = testing.allocator;
     var o = marl.Options{};
@@ -7240,7 +7250,11 @@ test "G72 (a) the OBS-25 validation fork's contracts" {
     var hand: Hand = undefined;
     var so = Options{ .exact = true };
     so.steps = 0; // the refinement stubbed: this gate tests structure
-    try validateFork(gpa, o, c, &AT, worlds, pr.p, 5678, so, 2, V, DRAWS, &val, &cands, &hand);
+    const px = try gpa.alloc([3]f32, V);
+    defer gpa.free(px);
+    const py = try gpa.alloc(f64, V);
+    defer gpa.free(py);
+    try validateFork(gpa, o, c, &AT, worlds, pr.p, 5678, so, 2, V, DRAWS, &val, &cands, &hand, px, py);
     defer for (&cands) |*m| m.deinit();
 
     std.debug.print("\n  G72 (a) [{s}] validation fork at t = {d}, deciding at {d}; V = {d}, {d} draws, refinement STUBBED\n", .{
@@ -7316,4 +7330,177 @@ test "G72 (a) the OBS-25 validation fork's contracts" {
     // OBS-24's; nothing here asserts 0.16446 / 0.27473 / 0.86959.
     for (val.world) |wv| try testing.expect(std.math.isFinite(wv) and wv > 0);
     std.debug.print("     the diagnostic ordering is MEASURED for these reduced-fit candidates; OBS-24's figures are context and are asserted nowhere\n", .{});
+}
+
+test "G72 do available validation signals rank the candidates as the world does?" {
+    // OBS-24 established that replay non-increase is insufficient for
+    // current-world protection. OBS-25 asks the narrower prior question: do
+    // historical validation evidence and two sources of current-labelled
+    // evidence RANK A COMMON, EXPLICITLY CONSTRUCTED candidate set the way
+    // the current world does?
+    //
+    // `tools/obs25_predict.py` holds the registration; G72 (a) holds the
+    // contracts and runs in seconds. **No acceptance policy is established
+    // here** — one consolidation, one trajectory, one parent, one statistic,
+    // and no false-alarm rate on consolidations that were fine.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const bounds = [_]u64{ 12_000, 30_000, 48_000, 60_000, 90_000, 104_000 };
+    const c = Traj{
+        .total = 104_000,
+        .r = 4_096,
+        .w = 16_384,
+        .n = 8_192,
+        .check = 2_000,
+        .cold_end = 12_000,
+        .change_at = 30_000,
+        .drift_lo = 60_000,
+        .drift_hi = 90_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+    const pr = try marl.probesOf(gpa, wb, 31337, 2048);
+    defer {
+        gpa.free(pr.p);
+        gpa.free(pr.y);
+    }
+    const deferred = [_]u64{ 34_096, 64_096, 94_096 };
+    const V: usize = 256;
+    const DRAWS: usize = 8;
+
+    var val = Val{};
+    var cands: [3]marl.Model = undefined;
+    var hand: Hand = undefined;
+    const px = try gpa.alloc([3]f32, V);
+    defer gpa.free(px);
+    const py = try gpa.alloc(f64, V);
+    defer gpa.free(py);
+    try validateFork(gpa, o, c, &deferred, worlds, pr.p, 5678, .{ .exact = true }, 2, V, DRAWS, &val, &cands, &hand, px, py);
+    defer for (&cands) |*m| m.deinit();
+
+    // ── THE CONTINUATIONS. A continuation depends only on WHICH candidate
+    // was adopted, so three suffice and each family's outcome is a lookup.
+    // Every one trains on the SAME V already-paid observations — charged
+    // once — and then runs the remaining queries from the same stream state,
+    // so the decisions are compared on a common clock. The historical
+    // families would not have paid that cost in deployment; that differential
+    // is reported rather than folded in.
+    var tal: [3]Tally = undefined;
+    {
+        const vals = try gpa.alloc([1]f32, pr.p.len);
+        defer gpa.free(vals);
+        for (&cands, 0..) |*m, b| {
+            for (px, py) |q, yv| _ = try m.observe(q, .{@as(f32, @floatCast(yv))});
+            var bst = hand.st;
+            var bwin = try Window.init(gpa, c.w);
+            defer bwin.deinit(gpa);
+            tal[b] = Tally{};
+            try continueFrom(m, c, worlds, pr.p, vals, &bwin, &bst, val.decide_at, false, &tal[b]);
+        }
+    }
+
+    // ── EVERYTHING PRINTED BEFORE ANYTHING IS ASSERTED ───────────────────
+    std.debug.print("\n  G72 [{s}] validation fork on sleep@t+r / acq 5678 at t = {d}; V = {d} PAID queries over [{d}, {d}), deciding at {d}\n", .{
+        @tagName(builtin.mode), val.at, V, val.at, val.decide_at, val.decide_at,
+    });
+    std.debug.print("     buffer {d} = fit {d} + held-out {d} + recent-in-buffer {d}; recent family {d}; fit/validation overlap {d} (independent pass)\n", .{
+        val.n_buffer, val.n_fit, val.n_heldout, val.n_recent_in_buffer, val.n_recent, val.overlap_fit_val,
+    });
+    std.debug.print("     ONE shared candidate set, fitted on the REDUCED buffer. These are NOT OBS-24's candidates and none of its figures is asserted.\n", .{});
+    std.debug.print("     {s:<17} {s:>10} {s:>10} {s:>10}   {s}\n", .{ "family", "parent", "linear", "refined", "selects" });
+    std.debug.print("     {s:<17} {d:>10.5} {d:>10.5} {d:>10.5}   {s}\n", .{
+        "DIAGNOSTIC world", val.world[0], val.world[1], val.world[2], CAND_NAMES[decide(val.world)],
+    });
+    for (FAMILY_NAMES, 0..) |fname, f| std.debug.print("     {s:<17} {d:>10.5} {d:>10.5} {d:>10.5}   {s}{s}\n", .{
+        fname,                                                                   val.fam[f][0], val.fam[f][1], val.fam[f][2], CAND_NAMES[val.pick[f]],
+        if (val.pick[f] == decide(val.world)) "  (agrees)" else "  (DISAGREES)",
+    });
+    std.debug.print("     Q0: does the reduced-fit refined candidate still harm? world {d:.5} against the parent's {d:.5} -> {s}\n", .{
+        val.world[CAND_REFINED],                                               val.world[CAND_PARENT],
+        if (val.world[CAND_REFINED] > val.world[CAND_PARENT]) "YES" else "NO",
+    });
+    std.debug.print("     A Q0 failure removes the known harmful-refinement case; it does NOT make the ranking question moot. Every family's\n", .{});
+    std.debug.print("     selection is reported against the NEWLY MEASURED ordering either way.\n", .{});
+    std.debug.print("     {d} fresh draws of V on the FROZEN candidates — draw 0 is the PAID family, the rest hypothetical:", .{val.draws});
+    for (val.draw_pick[0..val.draws]) |p| std.debug.print(" {s}", .{CAND_NAMES[p]});
+    std.debug.print("\n", .{});
+    var agree: usize = 0;
+    for (val.draw_pick[0..val.draws]) |p| {
+        if (p == val.draw_pick[0]) agree += 1;
+    }
+    std.debug.print("     {d} of {d} draws select the same candidate as draw 0 — the variability of a V-point decision AT THIS FORK\n", .{ agree, val.draws });
+    std.debug.print("     THE CONTINUATIONS, from {d} with the V paid observations trained in, {d} queries remaining\n", .{ val.decide_at, c.total - val.decide_at });
+    std.debug.print("     {s:<10} {s:>10} {s:>10} {s:>10} {s:>10} {s:>10}   {s:>10} {s:>10}\n", .{ "adopted", "96000", "98000", "100000", "102000", "104000", "mean", "k_final" });
+    for (CAND_NAMES, 0..) |n, b| {
+        std.debug.print("     {s:<10}", .{n});
+        var acc: f64 = 0;
+        for (tal[b].check_err[0..tal[b].checks]) |e| {
+            std.debug.print(" {d:>10.5}", .{e});
+            acc += e;
+        }
+        std.debug.print("   {d:>10.5} {d:>10}\n", .{ acc / @as(f64, @floatFromInt(@max(1, tal[b].checks))), tal[b].k_final });
+    }
+    std.debug.print("     COST: the fresh family spends {d} paid observations, {d:.1}% of the {d} remaining at the fork; the historical families spend none.\n", .{
+        V, 100.0 * @as(f64, @floatFromInt(V)) / @as(f64, @floatFromInt(c.total - val.at)), c.total - val.at,
+    });
+    const q0 = val.world[CAND_REFINED] > val.world[CAND_PARENT];
+    const q1 = val.pick[0] == CAND_REFINED;
+    const rr = val.fam[1][CAND_REFINED] / val.fam[1][CAND_LINEAR];
+    const rh = val.fam[0][CAND_REFINED] / val.fam[0][CAND_LINEAR];
+    const q2 = rr > rh;
+    const q3 = val.pick[2] == decide(val.world);
+    std.debug.print("     VERDICT\n", .{});
+    std.debug.print("       Q0  the reduced-fit refined candidate still harms          {s}\n", .{if (q0) "HELD" else "REFUTED"});
+    std.debug.print("       Q1  held-out replay adopts `refined`                       {s}   (it selects {s}; refined/linear = {d:.4})\n", .{
+        if (q1) "HELD" else "REFUTED", CAND_NAMES[val.pick[0]], rh,
+    });
+    std.debug.print("       Q2  recent ranks `refined` worse than held-out does        {s}   ({d:.4} against {d:.4})\n", .{
+        if (q2) "HELD" else "REFUTED", rr, rh,
+    });
+    std.debug.print("       Q3  fresh recovers the measured diagnostic order           {s}   (fresh selects {s}; the world selects {s})\n", .{
+        if (q3) "HELD" else "REFUTED", CAND_NAMES[val.pick[2]], CAND_NAMES[decide(val.world)],
+    });
+    std.debug.print("       fresh estimates the PARENT at {d:.5} against the diagnostic's {d:.5}, and underestimates linear by {d:.1}x and refined by {d:.1}x.\n", .{
+        val.fam[2][CAND_PARENT],                          val.world[CAND_PARENT],
+        val.world[CAND_LINEAR] / val.fam[2][CAND_LINEAR], val.world[CAND_REFINED] / val.fam[2][CAND_REFINED],
+    });
+    std.debug.print("       So the failure is NOT label staleness — fresh is current-labelled and never trained on. It fails on the CONSOLIDATED candidates.\n", .{});
+    std.debug.print("       A hypothesis fitting every number — damage concentrated where a {d}-point draw under-samples — IS NOT TESTED here. It would\n", .{V});
+    std.debug.print("       need the per-probe error distribution or a sweep of V, and neither is in this run.\n", .{});
+    std.debug.print("     Q1 and Q3 are REGISTERED AND REFUTED: reported, never asserted, and left standing in thresholds.zig to be struck.\n", .{});
+    std.debug.print("     SCOPE: these are comparisons between EVIDENCE SOURCES, not isolated effects — held-out against recent varies label age AND\n", .{});
+    std.debug.print("     location sampling; recent against fresh varies prior learning exposure AND location sampling. NO ACCEPTANCE POLICY IS\n", .{});
+    std.debug.print("     ESTABLISHED: one consolidation, one trajectory, one parent, ONE statistic, and no false-alarm rate on consolidations that were fine.\n", .{});
+
+    // ── CONTRACTS ────────────────────────────────────────────────────────
+    try testing.expectEqual(deferred[2], val.at);
+    try testing.expectEqual(val.at + @as(u64, V), val.decide_at);
+    try testing.expectEqual(val.n_buffer, val.n_fit + val.n_heldout + val.n_recent_in_buffer);
+    try testing.expectEqual(@as(usize, V), val.n_heldout);
+    try testing.expectEqual(@as(usize, V), val.n_recent);
+    try testing.expectEqual(@as(usize, 0), val.overlap_fit_val);
+    try testing.expectEqual(val.updates_before, val.updates_after);
+    var k = val.at;
+    while (k < val.decide_at) : (k += 1) try testing.expect(k % c.check != 0);
+    for (0..3) |b| {
+        try testing.expectEqual(@as(u64, V) + tal[b].paid, c.total - val.at);
+        try testing.expectEqual(@as(usize, 5), tal[b].checks);
+    }
+    try testing.expectEqual(val.pick[2], val.draw_pick[0]);
+    try testing.expectEqual(DRAWS, val.draws);
+    for (val.world) |wv| try testing.expect(std.math.isFinite(wv) and wv > 0);
+    // ── THE REGISTERED QUESTIONS THAT HELD. Q1 and Q3 are refuted and are
+    // deliberately NOT asserted: a threshold is not tuned to make a gate
+    // pass, and the negation of a refuted prediction is this run's result
+    // rather than a registered one.
+    try testing.expect(q0);
+    try testing.expect(q2);
 }

@@ -3813,3 +3813,136 @@ separation, the non-increase distinction, the rounded-precision tolerance,
 the bounded maxima and the correction that "damaged the world" was a
 prediction rather than a premise are all Astra's.*
 
+## OBS-25 / G72 — do available signals rank the candidates as the world does?
+
+OBS-24 established that replay non-increase is insufficient for current-world
+protection. The obvious response is a better acceptance rule; **this phase
+does not build one.** It asks the prior question, because a signal that
+cannot discriminate cannot ground any rule however the rule is written:
+
+> Do historical validation evidence and two sources of current-labelled
+> evidence rank a common, explicitly constructed candidate set the way the
+> current world does?
+
+### Three contracts the first registration could not satisfy
+
+All three were found before any code existed.
+
+**A held-out split taken after a fit is not held out of it.** OBS-24's
+candidates were fitted on the *whole* selected buffer, so splitting it
+afterwards held nothing back. The validation entries are now removed **before**
+kernel selection, the linear refit and the refinement, and one shared
+candidate set serves every family. Those are therefore *new* candidates on a
+smaller buffer, so their diagnostic ordering is **measured** and none of
+OBS-24's figures is asserted anywhere.
+
+**Recent evidence already carries current-world labels here.** The drift ends
+at 90 000 and the recent window spans 93 840–94 096, so `fresh` is not the
+only current-labelled family. These are comparisons between **evidence
+sources**, not isolated effects: held-out against recent varies label age
+*and* location sampling, since the two are drawn by different mechanisms and
+their locations are not matched; recent against fresh varies prior learning
+exposure *and* location sampling.
+
+**Fresh queries are paid and occupy a span, not an instant.** Candidates stay
+frozen over [94 096, 94 352) while the 256 queries are collected and scored;
+the decision is at the span's end; the adopted candidate then trains on those
+already-paid points, charged once. No checkpoint may fall inside the span —
+a design constraint G72 (a) asserts, and which caught the cheap fixture's own
+first placement.
+
+### What the signals chose
+
+| family | parent | linear | refined | selects |
+|---|---|---|---|---|
+| **DIAGNOSTIC world** | **0.16446** | 0.27467 | 0.76761 | **parent** |
+| held-out replay | 0.16952 | 0.14012 | 0.14145 | linear — disagrees |
+| recent window | 0.08019 | 0.06081 | 0.15614 | linear — disagrees |
+| fresh | 0.16393 | 0.08138 | 0.11028 | linear — disagrees |
+
+**Q0 held**: the reduced-fit refined candidate still harms, 0.76761 against
+the parent's 0.16446, so the harmful case survived the smaller buffer.
+
+**Q1 refuted, narrowly.** Held-out replay selects `linear` rather than
+`refined` — by 0.9%, a ratio of 1.0095. It came within a hair of choosing the
+candidate that reaches 0.76761.
+
+**Q2 held.** Recent ranks `refined` at 2.5677× `linear` where held-out ranks
+it at 1.0095×.
+
+**Q3 refuted, and it is the phase.**
+
+> Fresh evidence is current-labelled and was never trained on, and it still
+> selects `linear` where the world selects `parent`.
+
+And the *shape* of that failure is not what the phase was built to look for.
+Fresh estimates the **parent** almost exactly — 0.16393 against the
+diagnostic's 0.16446 — while underestimating `linear` by **3.4×** and
+`refined` by **7.0×**. It fails specifically on the *consolidated*
+candidates, so label staleness cannot be the mechanism: these labels are
+current and unseen.
+
+The draws say it is systematic rather than noise. Eight independent draws of
+256 on the frozen candidates: **6 select `linear`, 2 select `refined`, none
+selects `parent`.**
+
+**A hypothesis fits every number here and is not tested**: that the
+consolidated candidates' damage is concentrated where a 256-point draw
+under-samples. It is equally consistent with the candidates being wrong in a
+way that correlates with where the diagnostic probes sit. Separating them
+needs the per-probe error distribution and a sweep of V, and neither is in
+this run.
+
+### What the choices cost
+
+| adopted | 96 000 | 98 000 | 100 000 | 102 000 | 104 000 | mean | k_final |
+|---|---|---|---|---|---|---|---|
+| parent | 0.17629 | 0.19722 | 0.18392 | 0.17146 | 0.14958 | **0.17569** | 1202 |
+| linear | 0.27552 | 0.16682 | 0.16901 | 0.14954 | 0.15928 | 0.18404 | 798 |
+| refined | 0.81547 | 0.82630 | 0.20422 | 0.30709 | 0.21382 | 0.47338 | 842 |
+
+The reading is two-sided and both halves matter: **all three signals avoided
+the catastrophic candidate, and none selected the best one.** The unanimous
+choice of `linear` costs 4.8% of trajectory error against declining to
+consolidate — not the catastrophe, not the optimum.
+
+Every continuation trains on the same 256 already-paid observations and runs
+the remaining 9648 from a common stream state, so the decisions compare on
+one clock. The cost differential — fresh spends 256 paid observations, 2.6%
+of what remained at the fork, and the historical families spend none — is
+reported beside that rather than folded into it.
+
+### What OBS-25 records
+
+> At this fork, none of the three available signals ranked the candidate set
+> as the held-out probes did: each selected the linear candidate where the
+> probes selected the parent. Current labels and no prior exposure were not
+> sufficient — fresh evidence estimated the parent to within 0.3% while
+> underestimating both consolidated candidates several-fold.
+
+### Scope
+
+**No acceptance policy is established.** One consolidation, one trajectory,
+one parent, **one statistic**, and no false-alarm rate on consolidations that
+were fine — OBS-24 forked the one that was not. A selection either way shows
+what *this* minimum-RMS rule does on *that* evidence, never that no rule on
+the same evidence could discriminate.
+
+### Still owed
+
+- **Is the damage concentrated?** The per-probe error distribution for each
+  candidate, and V swept upward to see whether fresh's estimate converges on
+  the diagnostic. Both are scoring-only on frozen candidates — no refitting,
+  no sleeps — so a short gate rather than another fork.
+- **A statistic other than mean RMS.** A quantile or a maximum over the
+  validation points would be a different rule on the same evidence, which is
+  exactly what this phase could not rule out.
+- **A false-alarm rate**, which needs forks at consolidations that were fine.
+- OBS-24's leftovers, unchanged.
+
+Cost: G72 is 2 min 9 s; G72 (a) is seconds. `docs/data/obs25/` holds the run.
+
+*The construction, the three contract corrections, the evidence-source
+framing, the Q0 consequence, the inference limits on Q1 and Q3, and the
+reading of the cheap fixture's draw split are all Astra's.*
+

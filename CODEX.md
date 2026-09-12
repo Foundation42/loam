@@ -82,7 +82,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
-| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..24; src/consolidate.zig, G58-G71; docs/data/obs22..obs24 |
+| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..25; src/consolidate.zig, G58-G72; docs/data/obs22..obs25 |
 | Complexity and fresh windows | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-4; src/observational_windows.zig, G51; docs/data/obs4 |
 | Adaptive inverse births | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-3; src/adaptive_inferred.zig, G50; docs/data/obs3 |
 | Hidden potential inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-2; src/inferred.zig, G49 |
@@ -362,7 +362,7 @@ seed establish REPRODUCIBILITY, never additional replication.
 G70 is now the campaign's largest gate at ~16 min; G70 (a) is seconds and
 sleeps not at all.
 
-Latest: OBS-24 / G71, THE REFINEMENT THAT DESCENDED, AND DAMAGED (2026-09-12).
+Previously: OBS-24 / G71, THE REFINEMENT THAT DESCENDED, AND DAMAGED (2026-09-12).
 OBS-23 localised the damage on acq 5678 to ONE consolidation at t = 94,096,
 ACCEPTED by the guard. OBS-22 had registered the gap that leaves: recovery
 from a REJECTED refinement establishes nothing about an accepted one. This
@@ -426,3 +426,56 @@ validation stream could supply current evidence, but its timing,
 representativeness and OBSERVATION COST need explicit treatment. Then: why the
 buffer and the world disagree (staleness, coverage, or the error weighting);
 then the same fork at the other two consolidations and on 1234.
+
+Latest: OBS-25 / G72, DO AVAILABLE SIGNALS RANK THE CANDIDATES AS THE WORLD
+DOES? (2026-09-12). OBS-24 showed replay non-increase is insufficient for
+current-world protection. The obvious response is a better acceptance rule;
+THIS PHASE DOES NOT BUILD ONE. A signal that cannot discriminate cannot ground
+any rule however written, so this asks the prior question. 2:09.
+
+THREE CONTRACTS THE FIRST REGISTRATION COULD NOT SATISFY, all caught before
+code. A HELD-OUT SPLIT TAKEN AFTER A FIT IS NOT HELD OUT OF IT: validation
+entries are now removed BEFORE selection, the linear refit and the refinement,
+and ONE SHARED CANDIDATE SET serves every family — new candidates on a smaller
+buffer, so the diagnostic ordering is MEASURED and no OBS-24 figure is
+asserted. RECENT ALREADY CARRIES CURRENT-WORLD LABELS here, so fresh is not
+the only current-labelled family and every comparison is between EVIDENCE
+SOURCES, never an isolated effect. FRESH QUERIES ARE PAID AND OCCUPY A SPAN,
+with no checkpoint permitted inside it — asserted, and it caught the cheap
+gate's own first placement.
+
+THE RESULT. Diagnostic parent .16446 / linear .27467 / refined .76761 ->
+selects PARENT. Held-out replay -> linear (.14012 against refined's .14145, a
+0.9% margin). Recent -> linear. Fresh -> linear. ALL THREE DISAGREE.
+
+Q0 HELD and Q2 HELD, both asserted. Q1 REFUTED narrowly, Q3 REFUTED —
+reported, never asserted, left standing.
+
+Q3 IS THE PHASE AND ITS SHAPE IS THE SURPRISE. Fresh is current-labelled and
+never trained on, and still selects wrong. It estimates the PARENT to within
+0.3% (.16393 against .16446) while UNDERESTIMATING linear by 3.4x and refined
+by 7.0x — it fails specifically on the CONSOLIDATED candidates, so LABEL
+STALENESS CANNOT BE THE MECHANISM. Eight draws of 256 on frozen candidates:
+six linear, two refined, NONE parent. Systematic at this V, not draw noise.
+
+A HYPOTHESIS FITS EVERY NUMBER AND IS UNTESTED: damage concentrated where a
+256-point draw under-samples. Equally consistent: the candidates being wrong
+where the diagnostic probes sit. Separating them needs the PER-PROBE ERROR
+DISTRIBUTION and a SWEEP OF V, both scoring-only on frozen candidates.
+
+THE COST, two-sided and both halves load-bearing: parent .17569, linear
+.18404, refined .47338 over the remaining 9648. ALL THREE SIGNALS AVOIDED THE
+CATASTROPHIC CANDIDATE AND NONE SELECTED THE BEST ONE; the unanimous choice
+costs 4.8% against declining. Fresh spends 256 paid observations (2.6% of
+what remained), the historical families none — reported, not folded in.
+
+NO ACCEPTANCE POLICY IS ESTABLISHED: one consolidation, one trajectory, one
+parent, ONE STATISTIC, and no false-alarm rate on consolidations that were
+fine. A selection either way shows what THIS minimum-RMS rule does on THAT
+evidence, never that no rule on it could discriminate.
+
+Next: is the damage CONCENTRATED? (per-probe error distribution per candidate,
+and V swept — a short scoring-only gate, not another fork). Then a statistic
+other than mean RMS, which is exactly the alternative this phase could not
+rule out. Then a FALSE-ALARM RATE, which needs forks at consolidations that
+were fine.

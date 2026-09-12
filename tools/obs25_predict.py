@@ -63,9 +63,15 @@ CANDIDATES = [
 #
 # Does the reduced-fit refined candidate still damage the current world?
 # A smaller fit set is a different consolidation, and it may simply not
-# reproduce OBS-24's failure.  **If it does not, the discrimination question
-# is moot at this fork and the phase reports that** rather than treating it
-# as a setback.  Registered first so it cannot be quietly skipped.
+# reproduce OBS-24's failure.
+#
+# **A failure here removes the known harmful-refinement case; it does NOT
+# make candidate ranking moot.**  The experiment is whether the signals rank
+# a common candidate set the way the current world does, and that question
+# survives intact — it is simply asked against the NEWLY MEASURED ordering,
+# whatever that turns out to be.  Every family's selection is reported
+# against that ordering either way.  Registered first so it cannot be
+# quietly skipped, and so its consequence is fixed before it is known.
 Q0_STILL_HARMS = True   # predicted, and refutable alone
 
 # ── THE THREE FAMILIES, AND WHAT ACTUALLY SEPARATES THEM ─────────────────
@@ -99,10 +105,15 @@ FAMILIES = [
      "freshly sampled locations; costs V paid observations",
      V),
 ]
-# The factorisation this gives, stated so no result is over-read:
-#   held-out vs recent : varies LABEL AGE (drift-spanning against post-drift)
-#   recent vs fresh    : varies PRIOR LEARNING EXPOSURE and LOCATION SAMPLING
-# Nothing here varies label currency alone.
+# **These are comparisons between EVIDENCE SOURCES, not isolated effects.**
+# Nothing here varies one factor at a time:
+#   held-out vs recent : label age AND location sampling — the two sets are
+#                        drawn by different mechanisms (error-weighted
+#                        selection against recency), and their locations are
+#                        NOT matched
+#   recent vs fresh    : prior learning exposure AND location sampling
+# Isolating label age would need locations explicitly matched across the two
+# historical families, which this design does not do.
 #
 # **An age statistic is not a wrong-label fraction.**  Roughly three quarters
 # of the window predates the end of the drift; how many of those labels are
@@ -183,10 +194,15 @@ Q2_REVERSES = None
 #     decisions is reported. That separates "the signal cannot order these
 #     candidates" from "this draw did not".
 #
-#     **This is already known to matter.** On the cheap structural fixture at
-#     V = 64 the eight draws split 4/4 between two different decisions. Draw
-#     0 is the PAID family; the other seven are hypothetical, and taking them
-#     all would cost K x V observations rather than V.
+#     **This is already known to matter somewhere.** On the cheap structural
+#     fixture at V = 64 the eight draws split 4/4 between two decisions. That
+#     establishes SENSITIVITY TO THE DRAW on THAT fixture — it is not a
+#     coin-flip probability, and it is not the variability to expect at this
+#     fork, where V is four times larger and the candidates differ. The
+#     registered eight draws at V = 256 are what will measure that.
+#
+#     Draw 0 is the PAID family; the other seven are hypothetical, and taking
+#     them all would cost K x V observations rather than V.
 Q3_RECOVERS_ORDER = True
 Q3_DRAWS = K
 
