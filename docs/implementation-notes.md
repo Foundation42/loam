@@ -8622,22 +8622,28 @@ differences larger than their means.
 Q4 REGISTERED AND REFUTED at .87983 against [.40, .80] — reported, not
 asserted, the bound left standing. The saving missed the prediction and did
 not disappear, and the births column then inverted the account: a
-consolidating arm buys 2.25× the topology `none` does (1903 against 844) to
-end 12% smaller. That column read 292 in the first run because a sleep
+consolidating arm performs 2.25× as many kernel-birth events (1903 against
+844) to end 12% smaller — at EQUAL paid observation budgets, so it is more
+topology rebuilding and not more acquisition, with the compute unpriced. That column read 292 in the first run because a sleep
 replaces the model and the child's birth counter starts at zero. What exposed
 it is an invariant nobody had registered — nothing dies except at a
 consolidation, so `none` read births exactly equal to its final population.
 Asserted now; the total is banked at every replacement.
 
-The aggregate hid a sign change. Per phase, `both` is the BEST arm through
-the abrupt step (.07181) and the stationary stretch after it (.05788); its
-whole deficit arrives in the drift and tail. And the per-checkpoint traces,
+The aggregate hid a phase-level reversal. `both` has the LOWEST OBSERVED
+mean error in the step phase (.07181) and the stationary stretch after it
+(.05788) and still loses over the full trajectory, its deficit accumulating
+in the drift and tail. That is a measured variation in policy performance
+across phases with an OPEN mechanism — it does not establish that gradual
+change is what makes a consolidation hurt, since those phases are also
+everything downstream of three interventions. And the per-checkpoint traces,
 added on Astra's instruction and asserting their own contract (indices at
 exactly (k+1)·check, count matching the objective, sum equal to `err_sum` bit
-for bit, phases partitioning the same checkpoints), localise the 5678 gap to
-a late excursion: identical to the digit through t = 28 000, then .16067 →
-.92824 → .90681 across 94 000–98 000, immediately after a third consolidation
-that the guard did not reject.
+for bit, phases partitioning the same checkpoints), localise the VISIBLE DAMAGE in the
+5678 gap: identical to the digit through t = 28 000, then .16067 → .92824 →
+.90681 across 94 000–98 000, immediately after a third consolidation the
+guard did not reject. It does not exclude the earlier sleeps, which shaped
+the state that failed.
 
 Scope kept in the gate: C6 shifts all three placements and contrasts two
 complete SCHEDULES, so it is not a window comparison; a tail gap is an
@@ -8654,7 +8660,8 @@ A `grep && run` guard refused to launch once because the predicate itself was
 wrong (`grep -c` counts lines) — the right failure for the wrong reason.
 
 Validation: G70 EXIT 0 in 15 min 55 s, every registered quantity identical to
-an earlier run of the same comparison, which is a free replication of the
-lattice. G70 (a) passes in seconds and sleeps not at all; it is in the smoke
+an earlier run of the same comparison — a REPRODUCIBILITY check on identical
+seeds, NOT independent replication. The evidence is still two acquisition
+trajectories. G70 (a) passes in seconds and sleeps not at all; it is in the smoke
 list. G69 re-run preserved beside OBS-22's own logs. `docs/data/obs23/` holds
 the run.

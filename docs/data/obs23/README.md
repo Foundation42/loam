@@ -8,7 +8,8 @@ An earlier run of the same comparison produced **identical** figures for
 every registered quantity (Q1 −0.00401, Q2 +0.03584, Q3 −0.02596, Q4 0.87983,
 Q5 0) and is not preserved separately: it differed only in carrying a wrong
 births column and no checkpoint trace, both of which this run fixes. The
-agreement is a free replication of the whole lattice.
+agreement is a REPRODUCIBILITY check on identical seeds, not independent
+replication: the evidence is still two acquisition trajectories.
 
 ## What it establishes
 
@@ -28,12 +29,16 @@ evidence for the other five paths is G70 (a)'s structural checks.
 
 ## What the phase means and traces add
 
-**The aggregate hid a sign change.** `both` is the best arm through the
-abrupt step (0.07181) and the stationary stretch after it (0.05788), and its
-whole deficit arrives in the drift and tail. Consolidation is not uniformly a
-cost here; where it costs is after a *gradual* change.
+**The aggregate hid a phase-level reversal.** `both` has the lowest observed
+mean error in the step phase (0.07181) and the stationary stretch after it
+(0.05788) and still loses over the full trajectory, its deficit accumulating
+in the drift and tail. A measured variation in policy performance across
+phases, with an open mechanism — it does not establish that gradual change is
+what makes a consolidation hurt.
 
-**The 5678 tail gap is a late excursion, not a first-window effect.** The
+**The visible damage in the 5678 tail gap is late, not a first-window
+effect — which does not exclude the earlier sleeps as contributors to the
+state that failed.** The
 arms are identical to the digit through t = 28 000; `sleep@t` separates at
 30 000 and `sleep@t+r` at 36 000, the first checkpoint after each one's first
 sleep. Then `sleep@t+r` runs 0.16067 → **0.92824** → 0.90681 across
@@ -61,5 +66,7 @@ by*: the model feeding that sleep was shaped by the two before it.
   next" fits equally. The first intervention's targets are identical, and
   asserted.
 - **Q4 is refuted, and the saving did not disappear** — 12% fewer final
-  kernels and 7% lower checkpoint-mean, bought with **2.25× the births**
-  (1903 against 844). Unpriced either way. The bound stands unstruck.
+  kernels and 7% lower checkpoint-mean, against **2.25× as many kernel-birth
+  events** (1903 against 844) at EQUAL paid observation budgets — more
+  topology rebuilding, not more acquisition. The compute is unpriced. The
+  bound stands unstruck.

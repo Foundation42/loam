@@ -280,27 +280,33 @@ kernels, 7% lower checkpoint-mean, while error is worse and PEAK is 1.067,
 above one. There IS a trade; it is smaller than registered and UNPRICED.
 
 AND THE RESOURCE ACCOUNT INVERTS ONCE BIRTHS ARE COUNTED PROPERLY. A
-consolidating arm buys 2.25x the topology `none` does — 1903 births against
+consolidating arm performs 2.25x as many KERNEL-BIRTH EVENTS — 1903 against
 844 — to end 12% smaller, because every sleep discards kernels the birth rule
-re-purchases. The first run printed 292 and read as the opposite: A SLEEP
+re-purchases. PAID OBSERVATION BUDGETS ARE EQUAL, so this is MORE TOPOLOGY
+REBUILDING and NOT more acquisition; the compute it costs is UNPRICED. The first run printed 292 and read as the opposite: A SLEEP
 REPLACES THE MODEL AND THE CHILD'S BIRTH COUNTER STARTS AT ZERO, so one read
 at the end measures only the last segment. What exposed it is an invariant
 nobody had registered — NOTHING DIES EXCEPT AT A CONSOLIDATION, so `none`
 read births EXACTLY equal to its final population. Now asserted, and the
 total banked at every replacement.
 
-THE AGGREGATE HID A SIGN CHANGE. Per-phase: `both` is the BEST arm through
-the abrupt step (.07181) and the stationary stretch after it (.05788), and
-its whole deficit arrives in the DRIFT and TAIL. Consolidation is not
-uniformly a cost here; where it costs is after a GRADUAL change.
+THE AGGREGATE HID A PHASE-LEVEL REVERSAL, and it belongs beside the
+headline. `both` has the LOWEST OBSERVED mean error in the step phase
+(.07181) and the stationary stretch after it (.05788) and STILL LOSES over
+the full trajectory, its deficit accumulating in DRIFT and TAIL. That is a
+measured variation in policy performance across phases with an OPEN
+mechanism — it does NOT establish that gradual change is what makes a
+consolidation hurt, since those phases are also everything downstream of
+three interventions.
 
 AND THE 5678 TAIL GAP IS A LATE EXCURSION. The arms are identical to the
 digit through t = 28,000; sleep@t separates at 30,000 and sleep@t+r at
 36,000 — the first checkpoint after each one's first sleep, which is the
 ordering rule visible in the data. Then sleep@t+r runs .16067 -> .92824 ->
 .90681 across t = 94,000-98,000, immediately after its THIRD consolidation at
-94,096, with ZERO rejections. APPEARS AFTER IS NOT CAUSED BY: the model
-feeding that sleep was shaped by the two before it.
+94,096, with ZERO rejections. That localises the VISIBLE DAMAGE and does NOT
+exclude the earlier sleeps as contributors to the state that failed. APPEARS
+AFTER IS NOT CAUSED BY.
 
 C6 IS NOT A WINDOW COMPARISON. It shifts all three placements, and only the
 first pair is about stale-versus-fresh labels — historical labels are not
@@ -329,12 +335,12 @@ err_sum BIT FOR BIT, and the phase segmentation partitions the same
 checkpoints. The first visible separation says WHERE TO INVESTIGATE, not
 where the causal difference originated.
 
-Next (OBS-24, Astra's design): the traces put the separation that matters at
-sleep@t+r/5678's THIRD consolidation, t = 94,096. Fork from a COMMON PARENT
-before that sleep — sleep now, sleep
-after 4,096 ordinary observations, or skip — identical fresh queries, compared
-at common paid times, recording immediate pre/post-sleep replay AND
-current-world error. Also owed: the magnitude of the targeting divergence;
+Next (OBS-24, Astra's design): PRESERVE THE COMMON PARENT immediately before
+sleep@t+r/5678's THIRD consolidation at t = 94,096. Compare SKIP, GUARDED
+CONSOLIDATION and LINEAR-REFIT-ONLY, scoring each against the SAME
+COMPLETION-TIME WORLD before continuing with identical fresh queries. That
+distinguishes damage from this consolidation from damage from its REFINEMENT,
+and needs no further full-lattice run. Also owed: the magnitude of the targeting divergence;
 pricing the 12% capacity saving; `revisit` at other budgets.
 
 PROCESS: `pkill -f` matched its own wrapper AGAIN and killed the cancelling

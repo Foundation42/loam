@@ -3419,11 +3419,14 @@ regrowth that overshoots. OBS-22 refuted cumulative shrinkage by counting two
 regrowths; this extends that across a whole trajectory.
 
 But the births column says the standing population was never the whole cost.
-**A consolidating arm buys 2.25× the topology `none` does** — 1903 births
-against 844 — to end 12% smaller. Every sleep discards kernels that the birth
-rule then re-purchases. So the trade is not "12% fewer kernels for worse
-error"; it is *12% fewer kernels at the end, for more than twice the
-acquisition, and worse error.*
+**A consolidating arm performs 2.25× as many kernel-birth events** — 1903
+against 844 — to end 12% smaller. Every sleep discards kernels the birth rule
+then re-purchases.
+
+The paid observation budgets are **equal**, so this is not more acquisition:
+every arm sees exactly 104 000 observations. What it is is *more topology
+rebuilding, fewer standing kernels, and worse error.* The compute that
+rebuilding costs is **unpriced**, here and everywhere in this phase.
 
 That column read 292 in this gate's first run, which inverted the story
 completely: a sleep replaces the model and the child's birth counter starts
@@ -3434,7 +3437,7 @@ kernels as it ever birthed. `none` read 844 births against 844 kernels. It is
 asserted now, and the trajectory total is banked at every replacement.
 
 The trade remains **unpriced**: nothing here says what 12% of standing
-kernels is worth against 2.25× the births and the error it costs. The bound
+kernels is worth against 2.25× the birth events and the error it costs. The bound
 is left standing in `thresholds.zig` to be struck rather than tuned to fit,
 and the gate reports Q4 without asserting it.
 
@@ -3519,11 +3522,15 @@ The phase means, averaged over both trajectories:
 | sleep@t+r | 0.08953 | 0.07839 | 0.10403 | 0.08378 | 0.12112 | **0.25443** |
 | both | 0.08953 | 0.07839 | **0.07181** | **0.05788** | 0.10920 | 0.12096 |
 
-**The aggregate hid a sign change.** `both` is the *best* arm through the
-abrupt step and the stationary stretch after it — 0.07181 and 0.05788,
-beating `revisit` and well beating `none` — and the whole of its deficit
-arrives in the drift and the tail. Consolidation is not uniformly a cost on
-this trajectory; where it costs is after a *gradual* change.
+**The aggregate hid a phase-level reversal.** `both` has the *lowest observed
+mean error* in the step phase and the stationary stretch after it — 0.07181
+and 0.05788, beating `revisit` and well beating `none` — and yet it loses over
+the full trajectory, its whole deficit accumulating in the drift and the tail.
+
+That is a **measured variation in policy performance across phases, and its
+mechanism is open.** It does not establish that gradual change is what makes
+a consolidation hurt: the drift and tail are also everything downstream of
+three interventions, and nothing here separates the two readings.
 
 (`sleep@t`'s stat A differs from the others at 0.07957 because it
 consolidates at exactly 30 000, a phase boundary and a checkpoint, so that
@@ -3545,11 +3552,10 @@ That excursion lands immediately after `sleep@t+r`'s third consolidation at
 94 096, and **the guard did not reject it** — the refinement descended on
 replay while the current world went to 0.93.
 
-**So the drift-and-tail gap is not about the first window after the step.**
-It is where a late consolidation went wrong. But *appears after* is not
-*caused by*: the model feeding that sleep was shaped by the two before it,
-and the trace says where to investigate rather than where the difference
-originated.
+**So the visible damage is localised to a late consolidation, not to the
+first window after the step.** It does not exclude the earlier sleeps: they
+shaped the state that then failed, and *appears after* is not *caused by*.
+The trace says where to investigate, never where the difference originated.
 
 ### Scope
 

@@ -4177,8 +4177,12 @@ pub const OBS23_INTERACTION: f64 = 0;
 /// with roughly 12 per cent fewer kernels and a 7 per cent lower
 /// checkpoint-mean population than `none`, while scoring worse on error and
 /// peaking HIGHER. So there IS an accuracy-capacity trade — it is smaller
-/// than registered, and it is UNPRICED: nothing in this phase says what 12
-/// per cent of the kernels is worth against the error it costs.
+/// than registered, and it is UNPRICED in both directions: nothing in this
+/// phase says what 12 per cent of the standing kernels is worth against the
+/// error it costs, and the same arm performs **2.25x as many kernel-birth
+/// events** (1903 against 844) at an EQUAL paid observation budget — more
+/// topology rebuilding rather than more acquisition, at a compute cost
+/// nothing here measures.
 ///
 /// The bound is left standing rather than tuned, and G70 reports Q4 without
 /// asserting it.
