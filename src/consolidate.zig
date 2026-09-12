@@ -6929,3 +6929,391 @@ test "G71 forking the consolidation that failed" {
     // threshold is not tuned to make a gate pass; the finding is recorded and
     // the prediction left standing in `thresholds.zig` for Christian.
 }
+
+/// OBS-25's frozen acceptance criterion, written before any decision of its
+/// is compared with a diagnostic probe.
+///
+///     adopt the candidate with the LOWEST validation RMS;
+///     on ANY tie, prefer the earlier of parent < linear < refined.
+///
+/// The strict `<` is what makes the tie rule total: a later candidate must be
+/// STRICTLY better to displace an earlier one, so every tie — including
+/// `linear` and `refined` tying below `parent` — resolves toward the
+/// least-changed candidate. An earlier draft said "prefer the parent on a
+/// tie", which named no winner in exactly that case (Astra).
+pub fn decide(rms: [3]f64) usize {
+    var best: usize = 0;
+    for (1..3) |i| {
+        if (rms[i] < rms[best]) best = i;
+    }
+    return best;
+}
+
+pub const CAND_PARENT = 0;
+pub const CAND_LINEAR = 1;
+pub const CAND_REFINED = 2;
+pub const CAND_NAMES = [_][]const u8{ "parent", "linear", "refined" };
+pub const FAMILY_NAMES = [_][]const u8{ "held-out replay", "recent window", "fresh" };
+
+/// Everything OBS-25 measures at the fork, before any continuation.
+pub const Val = struct {
+    at: u64 = 0,
+    decide_at: u64 = 0,
+    /// Buffer accounting. `fit + excluded` must equal the selected buffer,
+    /// and the fit must contain NO validation point.
+    n_buffer: usize = 0,
+    n_fit: usize = 0,
+    n_heldout: usize = 0,
+    n_recent: usize = 0,
+    n_recent_in_buffer: usize = 0,
+    /// Fit points matching a validation point of EITHER family, found by an
+    /// independent pass over the built sets rather than counted inside the
+    /// loop that builds them — a counter incremented where the `continue`
+    /// already happened can only restate the construction, never check it.
+    overlap_fit_val: usize = 0,
+    /// The DIAGNOSTIC ordering, measured for THESE candidates and never
+    /// asserted from OBS-24's — they are fitted on a smaller buffer and are
+    /// a different consolidation.
+    world: [3]f64 = .{0} ** 3,
+    /// Each family's RMS over the three candidates, and what the frozen rule
+    /// picks from it.
+    fam: [3][3]f64 = .{.{0} ** 3} ** 3,
+    pick: [3]usize = .{0} ** 3,
+    /// K independent FRESH draws on the FROZEN candidates, so a failure to
+    /// recover the diagnostic order separates "the signal cannot order
+    /// these" from "this draw did not".
+    draw_pick: [16]usize = .{0} ** 16,
+    draws: usize = 0,
+    /// Summed kernel updates over the three candidates, before and after all
+    /// scoring. Validation SCORES and never observes, so these must match —
+    /// a historical family must not receive a second training pass.
+    updates_before: u64 = 0,
+    updates_after: u64 = 0,
+};
+
+/// OBS-25's fork. One shared candidate set that every validation family is
+/// genuinely held out of, and three families scored on it.
+///
+/// **The construction is the whole experiment.** OBS-24's candidates were
+/// fitted on the WHOLE selected buffer, so a split taken afterwards is not
+/// held out of anything — Astra caught that in the first registration. Here
+/// the validation entries are removed BEFORE selection, the linear refit and
+/// the refinement, so one candidate set serves every family. They are
+/// therefore NEW candidates on a smaller buffer, and their diagnostic
+/// ordering is MEASURED rather than carried over from OBS-24.
+pub fn validateFork(
+    gpa: std.mem.Allocator,
+    o: marl.Options,
+    c: Traj,
+    at: []const u64,
+    worlds: [3]marl.TruthParams,
+    probes: [][3]f32,
+    seed: u64,
+    so_in: Options,
+    stop_before: usize,
+    v: usize,
+    draws: usize,
+    out: *Val,
+    cands: *[3]marl.Model,
+    hand_out: *Hand,
+) !void {
+    var trig = Trigger.init(2048, 16384, c.budget);
+    var pre = Tally{};
+    var st = rng.Stream.region(seed, 0x4f32_3254, 0);
+    var hand = Hand{ .stop_before = stop_before };
+    try runArm(gpa, o, c, .{ .at = at }, &trig, worlds, probes, true, &st, &pre, .{}, .{ .revisit = false, .consolidate = true, .guard = true }, &hand);
+    std.debug.assert(hand.taken);
+    var parent = hand.m;
+    var win = hand.win;
+    defer win.deinit(gpa);
+    out.at = hand.at;
+    out.decide_at = hand.at + v;
+
+    // ── THE RECENT-WINDOW FAMILY, identified EXACTLY by observation time.
+    // The window stores `t` per slot, so "the V most recent" needs no
+    // coordinate matching and cannot accidentally catch an older duplicate.
+    const cut = hand.at - @as(u64, v);
+    const rx = try gpa.alloc([3]f32, v);
+    defer gpa.free(rx);
+    const rv = try gpa.alloc([1]f32, v);
+    defer gpa.free(rv);
+    {
+        var got: usize = 0;
+        const f = win.filled();
+        const start = win.n - @as(u64, f);
+        var i: u64 = 0;
+        while (i < f and got < v) : (i += 1) {
+            const j: usize = @intCast((start + i) % @as(u64, win.x.len));
+            if (win.t[j] < cut) continue;
+            rx[got] = win.x[j];
+            rv[got] = .{@as(f32, @floatCast(win.y[j]))};
+            got += 1;
+        }
+        out.n_recent = got;
+    }
+
+    // ── THE SELECTED BUFFER, then the two exclusions.
+    var buf = try Replay.initWith(gpa, c.n, .err, 0x33);
+    defer buf.deinit(gpa);
+    win.selectInto(&buf);
+    out.n_buffer = c.n;
+
+    const fx = try gpa.alloc([3]f32, c.n);
+    defer gpa.free(fx);
+    const fy = try gpa.alloc(f64, c.n);
+    defer gpa.free(fy);
+    const hx = try gpa.alloc([3]f32, v);
+    defer gpa.free(hx);
+    const hv = try gpa.alloc([1]f32, v);
+    defer gpa.free(hv);
+    var nfit: usize = 0;
+    var nheld: usize = 0;
+    {
+        // Every buffer entry observed at or after the cut belongs to the
+        // RECENT family and is excluded from the fit. Of the rest, every
+        // `stride`-th is designated HELD-OUT REPLAY, also excluded. What
+        // remains is the fit, and it contains no validation point at all.
+        var eligible: usize = 0;
+        for (0..c.n) |k| {
+            if (buf.t[k] >= cut) {
+                out.n_recent_in_buffer += 1;
+                continue;
+            }
+            eligible += 1;
+        }
+        const stride = @max(1, eligible / @max(1, v));
+        var seen: usize = 0;
+        for (0..c.n) |k| {
+            if (buf.t[k] >= cut) continue; // recent: excluded, scored by that family
+            if (nheld < v and seen % stride == 0) {
+                hx[nheld] = buf.x[k];
+                hv[nheld] = .{@as(f32, @floatCast(buf.y[k]))};
+                nheld += 1;
+            } else {
+                fx[nfit] = buf.x[k];
+                fy[nfit] = buf.y[k];
+                nfit += 1;
+            }
+            seen += 1;
+        }
+    }
+    out.n_fit = nfit;
+    out.n_heldout = nheld;
+    // An INDEPENDENT pass: does any fit point coincide with a validation
+    // point of either family? This checks the construction rather than
+    // restating it.
+    for (fx[0..nfit]) |fp| {
+        for (hx[0..nheld]) |vp| {
+            if (fp[0] == vp[0] and fp[1] == vp[1] and fp[2] == vp[2]) out.overlap_fit_val += 1;
+        }
+        for (rx[0..out.n_recent]) |vp| {
+            if (fp[0] == vp[0] and fp[1] == vp[1] and fp[2] == vp[2]) out.overlap_fit_val += 1;
+        }
+    }
+
+    // ── ONE SHARED CANDIDATE SET, fitted on the reduced buffer.
+    var so = so_in;
+    so.guard = true;
+    var rep: Report = undefined;
+    var split = Split{};
+    defer split.deinit(gpa);
+    const keep: usize = parent.kernels.items.len / 2;
+    cands[CAND_REFINED] = try sleepOnReporting(gpa, &parent, fx[0..nfit], fy[0..nfit], keep, so, &rep, &split);
+    cands[CAND_LINEAR] = try adopt(gpa, o, split.linear);
+    cands[CAND_PARENT] = parent;
+
+    for (cands) |*m| for (m.kernels.items) |kk| {
+        out.updates_before += kk.updates;
+    };
+
+    // ── THE DIAGNOSTIC, measured for THESE candidates. An oracle, used only
+    // to judge decisions after they are made and never offered to the rule.
+    const pv = try gpa.alloc([1]f32, probes.len);
+    defer gpa.free(pv);
+    const dw = worldAt(c, out.decide_at, worlds[0], worlds[1], worlds[2]);
+    for (probes, 0..) |pz, k| pv[k] = .{marl.truthOf(dw, pz)};
+    for (cands, 0..) |*m, k| out.world[k] = try m.rms(probes, pv, null);
+
+    // ── THE THREE FAMILIES. Historical ones are SCORED, never observed.
+    for (cands, 0..) |*m, k| {
+        out.fam[0][k] = try m.rms(hx[0..nheld], hv[0..nheld], null);
+        out.fam[1][k] = try m.rms(rx[0..out.n_recent], rv[0..out.n_recent], null);
+    }
+
+    // ── FRESH: PAID queries occupying [at, at + v), advancing the common
+    // clock. Candidates stay frozen while they are collected and scored.
+    const qx = try gpa.alloc([3]f32, v);
+    defer gpa.free(qx);
+    const qv = try gpa.alloc([1]f32, v);
+    defer gpa.free(qv);
+    for (0..v) |j| {
+        const tp = worldAt(c, hand.at + j, worlds[0], worlds[1], worlds[2]);
+        qx[j] = .{ st.unit(), st.unit(), st.unit() };
+        qv[j] = .{marl.truthOf(tp, qx[j])};
+    }
+    for (cands, 0..) |*m, k| out.fam[2][k] = try m.rms(qx, qv, null);
+    for (0..3) |f| out.pick[f] = decide(out.fam[f]);
+
+    // ── K INDEPENDENT FRESH DRAWS on the FROZEN candidates. Draw 0 is the
+    // paid family above; the rest are a VARIABILITY DIAGNOSTIC and are not a
+    // policy — taking them all would cost `draws * v` observations.
+    out.draw_pick[0] = out.pick[2];
+    var d: usize = 1;
+    var dst = st;
+    while (d < draws and d < out.draw_pick.len) : (d += 1) {
+        for (0..v) |j| {
+            qx[j] = .{ dst.unit(), dst.unit(), dst.unit() };
+            qv[j] = .{marl.truthOf(dw, qx[j])};
+        }
+        var r: [3]f64 = undefined;
+        for (cands, 0..) |*m, k| r[k] = try m.rms(qx, qv, null);
+        out.draw_pick[d] = decide(r);
+    }
+    out.draws = d;
+
+    for (cands) |*m| for (m.kernels.items) |kk| {
+        out.updates_after += kk.updates;
+    };
+    hand_out.* = hand;
+    hand_out.st = st; // advanced past the V paid queries
+}
+
+test "G72 (a) the OBS-25 validation fork's contracts" {
+    // OBS-24 established that replay non-increase is insufficient for
+    // current-world protection. OBS-25 asks the narrower prior question: do
+    // historical validation evidence and two sources of current-labelled
+    // evidence RANK A COMMON candidate set differently?
+    //
+    // `tools/obs25_predict.py` holds the registration. This gate holds the
+    // contracts — and the first draft of that registration had three that
+    // could not be satisfied, all found by Astra before any code existed:
+    //
+    //   * a held-out split taken AFTER a fit is not held out of it. The
+    //     validation entries are now removed BEFORE selection, the linear
+    //     refit and the refinement, so one shared candidate set serves every
+    //     family — and those are NEW candidates whose diagnostic ordering is
+    //     measured, never carried over.
+    //   * `recent` already carries CURRENT-WORLD labels on this fixture, so
+    //     fresh is not the only current-labelled family. What recent and
+    //     fresh differ in is prior learning exposure and location sampling.
+    //   * fresh queries are PAID and occupy a SPAN, not an instant.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 2;
+    o.responsibility = 3;
+    const bounds = [_]u64{ 2_000, 5_000, 6_500, 7_000, 10_000, 12_000 };
+    const c = Traj{
+        .total = 12_000,
+        .r = 1_000,
+        .w = 2_000,
+        .n = 1_000,
+        .check = 500,
+        .cold_end = 2_000,
+        .change_at = 5_000,
+        .drift_lo = 7_000,
+        .drift_hi = 10_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    // The placements must leave NO CHECKPOINT inside the validation span,
+    // or a score would land on a candidate about to be replaced. 10 900 is
+    // not a multiple of `check`, and neither is anything in [10 900, 10 964).
+    // The registered fixture satisfies this too — 94 096 % 2000 = 96 — and
+    // the gate ASSERTS it rather than relying on the arithmetic holding.
+    const AT = [_]u64{ 6_000, 8_000, 10_900 };
+    const V: usize = 64;
+    const DRAWS: usize = 8;
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+    const pr = try marl.probesOf(gpa, wb, 31337, 512);
+    defer {
+        gpa.free(pr.p);
+        gpa.free(pr.y);
+    }
+
+    var val = Val{};
+    var cands: [3]marl.Model = undefined;
+    var hand: Hand = undefined;
+    var so = Options{ .exact = true };
+    so.steps = 0; // the refinement stubbed: this gate tests structure
+    try validateFork(gpa, o, c, &AT, worlds, pr.p, 5678, so, 2, V, DRAWS, &val, &cands, &hand);
+    defer for (&cands) |*m| m.deinit();
+
+    std.debug.print("\n  G72 (a) [{s}] validation fork at t = {d}, deciding at {d}; V = {d}, {d} draws, refinement STUBBED\n", .{
+        @tagName(builtin.mode), val.at, val.decide_at, V, val.draws,
+    });
+    std.debug.print("     buffer {d} = fit {d} + held-out {d} + recent-in-buffer {d}; recent family {d}; fit/validation overlap {d} (independent pass)\n", .{
+        val.n_buffer, val.n_fit, val.n_heldout, val.n_recent_in_buffer, val.n_recent, val.overlap_fit_val,
+    });
+    std.debug.print("     {s:<16} {s:>10} {s:>10} {s:>10}   {s}\n", .{ "family", "parent", "linear", "refined", "picks" });
+    std.debug.print("     {s:<16} {d:>10.5} {d:>10.5} {d:>10.5}   {s}\n", .{ "DIAGNOSTIC world", val.world[0], val.world[1], val.world[2], CAND_NAMES[decide(val.world)] });
+    for (FAMILY_NAMES, 0..) |fn_, f| std.debug.print("     {s:<16} {d:>10.5} {d:>10.5} {d:>10.5}   {s}\n", .{
+        fn_, val.fam[f][0], val.fam[f][1], val.fam[f][2], CAND_NAMES[val.pick[f]],
+    });
+    std.debug.print("     fresh draws on the FROZEN candidates:", .{});
+    for (val.draw_pick[0..val.draws]) |p| std.debug.print(" {s}", .{CAND_NAMES[p]});
+    std.debug.print("\n", .{});
+
+    // ── THE EXCLUSION IS REAL, not nominal. Every buffer entry is either in
+    // the fit, designated held-out, or recent — and the fit contains no
+    // validation point of any family.
+    try testing.expectEqual(val.n_buffer, val.n_fit + val.n_heldout + val.n_recent_in_buffer);
+    try testing.expect(val.n_fit > 0);
+    try testing.expectEqual(V, val.n_heldout);
+    try testing.expectEqual(V, val.n_recent);
+    try testing.expectEqual(@as(usize, 0), val.overlap_fit_val);
+    try testing.expect(val.n_fit < val.n_buffer);
+
+    // ── VALIDATION SCORES AND NEVER OBSERVES. A historical family must not
+    // receive a second training pass — its points were learned from when
+    // they arrived.
+    try testing.expectEqual(val.updates_before, val.updates_after);
+
+    // ── THE CLOCK. The fresh queries occupy a SPAN and the decision is at
+    // its end; no checkpoint may fall inside it, or a score would land on a
+    // candidate that is about to be replaced.
+    try testing.expectEqual(val.at + @as(u64, V), val.decide_at);
+    var k = val.at;
+    while (k < val.decide_at) : (k += 1) try testing.expect(k % c.check != 0);
+    try testing.expect(val.decide_at < c.total);
+
+    // ── THE FROZEN CRITERION IS TOTAL. Every tie resolves toward the
+    // least-changed candidate, including the case an earlier draft left
+    // unspecified: linear and refined tying BELOW the parent.
+    try testing.expectEqual(@as(usize, CAND_PARENT), decide(.{ 1.0, 1.0, 1.0 }));
+    try testing.expectEqual(@as(usize, CAND_LINEAR), decide(.{ 2.0, 1.0, 1.0 }));
+    try testing.expectEqual(@as(usize, CAND_PARENT), decide(.{ 1.0, 2.0, 2.0 }));
+    try testing.expectEqual(@as(usize, CAND_REFINED), decide(.{ 2.0, 2.0, 1.0 }));
+    try testing.expectEqual(@as(usize, CAND_LINEAR), decide(.{ 2.0, 1.0, 3.0 }));
+    std.debug.print("     the criterion is TOTAL: ties resolve toward the least-changed candidate, including linear and refined tying below parent\n", .{});
+
+    // ── THE STUB. With zero descent steps the refinement is a no-op, so
+    // `refined` and `linear` must be the same model — and every family must
+    // therefore score them identically and be UNABLE to separate them. That
+    // is the structural check that the two candidates really do share a fit.
+    try testing.expectEqual(val.world[CAND_LINEAR], val.world[CAND_REFINED]);
+    for (0..3) |f| try testing.expectEqual(val.fam[f][CAND_LINEAR], val.fam[f][CAND_REFINED]);
+    // And the tie rule then makes every family prefer `linear` over
+    // `refined` — never the other way — whichever of them wins.
+    for (0..3) |f| try testing.expect(val.pick[f] != CAND_REFINED);
+    std.debug.print("     stubbed: linear and refined are one model, every family scores them identically, and the tie rule never picks refined\n", .{});
+
+    // ── THE VARIABILITY DIAGNOSTIC EXISTS and is separate from the paid
+    // family. Draw 0 IS the paid one; the rest are hypothetical, and taking
+    // them all would cost {d} observations rather than {d}.
+    try testing.expectEqual(DRAWS, val.draws);
+    try testing.expectEqual(val.pick[2], val.draw_pick[0]);
+    std.debug.print("     draw 0 is the PAID family; the other {d} are a variability diagnostic and not a policy — taking them all would cost {d} observations, not {d}\n", .{
+        val.draws - 1, val.draws * V, V,
+    });
+
+    // ── AND THE DIAGNOSTIC IS MEASURED, NOT CARRIED OVER. These candidates
+    // are fitted on a reduced buffer and are a different consolidation from
+    // OBS-24's; nothing here asserts 0.16446 / 0.27473 / 0.86959.
+    for (val.world) |wv| try testing.expect(std.math.isFinite(wv) and wv > 0);
+    std.debug.print("     the diagnostic ordering is MEASURED for these reduced-fit candidates; OBS-24's figures are context and are asserted nowhere\n", .{});
+}

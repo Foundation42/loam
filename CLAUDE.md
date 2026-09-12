@@ -131,6 +131,8 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G71 (a)"         # OBS-24: the FORK's contracts — both branches from the same BYTES, the control continuing the actual parent. Seconds
     zig build test -Dtest-filter="G71 forking"     # OBS-24: the fork itself — a refinement that DESCENDED on replay and tripled same-world error. 2:15
     python3 tools/obs24_predict.py                 # ... its pre-registration; replay keeps the buffer's own labels, and acceptance means NON-INCREASE, not descent
+    zig build test -Dtest-filter="G72 (a)"         # OBS-25: the VALIDATION fork's contracts — one shared candidate set every family is held out of. Seconds
+    python3 tools/obs25_predict.py                 # ... its pre-registration; a held-out split taken AFTER a fit is not held out of it
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a

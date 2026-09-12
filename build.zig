@@ -159,6 +159,12 @@ pub fn build(b: *std.Build) void {
             // births), and — with the refinement stubbed — the two branches
             // identical THROUGH CONTINUATION rather than merely at adoption.
             "G71 (a)", // fork contract
+            // OBS-25's validation fork: the validation entries removed BEFORE
+            // selection, the linear refit and the refinement, so one shared
+            // candidate set is genuinely held out of every family; scoring
+            // that never observes; a validation SPAN with no checkpoint
+            // inside it; and a tie rule that is total.
+            "G72 (a)", // validation contract
         };
     }
     const run_tests = b.addRunArtifact(tests);

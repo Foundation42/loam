@@ -4,209 +4,274 @@
 OBS-24 established that at one parent, both consolidation stages reduced
 historical replay RMS while increasing current-world RMS, and that refinement
 alone increased world RMS from 0.27473 to 0.86959.  The guard behaved exactly
-as specified in accepting it: replay non-increase is **insufficient** for
-current-world protection.
+as specified: replay non-increase is **insufficient** for current-world
+protection.
 
-The obvious next move is a better acceptance rule.  **This phase does not
-build one.**  It asks the prior question:
+The obvious response is a better acceptance rule.  **This phase does not
+build one.**  It asks a narrower question:
 
-    Is there any AVAILABLE signal — one a deployed system could actually
-    compute at consolidation time — whose ranking of the candidates agrees
-    with the current world's?
+    Do historical validation evidence and two sources of current-labelled
+    evidence RANK A COMMON, EXPLICITLY CONSTRUCTED candidate set differently?
 
-A signal that cannot discriminate cannot be the basis of any rule, however
-the rule is written.  So OBS-25 is a DISCRIMINATION DIAGNOSTIC, and **no
-acceptance policy is established by it.**
+That is all it can be.  Astra's framing, after a first draft whose held-out
+split was incoherent.
 
     python3 tools/obs25_predict.py
 """
 
-# ── 1. WHICH CANDIDATES IT COMPARES ───────────────────────────────────────
+# ── THE CONSTRUCTION, AND WHY OBS-24'S CANDIDATES CANNOT BE REUSED ───────
 #
-# Astra's first pin. Exactly the three OBS-24 already measures, from the same
-# `Split` construction, at the same fork:
-CANDIDATES = [
-    ("parent",   "the model entering the consolidation; adopting it IS declining"),
-    ("linear",   "selection, compression and the linear refit; no descent"),
-    ("refined",  "the refinement on top — the candidate that harmed"),
-]
-# Their current-world RMS at the fork, from OBS-24, is the DIAGNOSTIC TRUTH
-# this phase judges each signal against. It is an oracle and is never
-# available to any signal being tested.
-DIAGNOSTIC_WORLD = {"parent": 0.16446, "linear": 0.27473, "refined": 0.86959}
-DIAGNOSTIC_ORDER = ["parent", "linear", "refined"]      # best to worst
-# And their replay RMS, which is what the incumbent rule reads:
-INCUMBENT_REPLAY = {"parent": 0.22300, "linear": 0.12414, "refined": 0.06259}
-INCUMBENT_ORDER = ["refined", "linear", "parent"]       # exactly reversed
-
-# ── 2. DO VALIDATION OBSERVATIONS TRAIN THE LEARNER? ─────────────────────
+# **The first draft was incoherent.**  OBS-24's candidates were fitted using
+# the WHOLE selected buffer, so taking a split of that buffer afterwards does
+# not make it held out of anything.  Two coherent options existed:
 #
-# Astra's second pin, and it has to be answered per family because the answer
-# differs.
+#   (a) keep OBS-24's exact candidates and call the split a TRAINING-BUFFER
+#       diagnostic — honest, but not a held-out experiment;
+#   (b) exclude the validation entries BEFORE kernel selection, linear
+#       refitting and refinement, and build ONE SHARED CANDIDATE SET that
+#       every family is genuinely held out of.
 #
-#   * HELD-OUT REPLAY and RECENT-WINDOW evidence is ALREADY PAID. Those
-#     observations were learned from when they arrived, at their own paid
-#     times. They are withheld from the consolidation's FIT, not from the
-#     learner's history — so "held out" here means held out of the refit,
-#     and the candidates have all seen them before. **That is a weaker form
-#     of held-out than it sounds and the registration says so.**
-#   * FRESH VALIDATION queries are drawn at the decision instant and cost
-#     paid observations. They are scored against all three candidates
-#     FIRST, and only then learned from, BY THE ADOPTED CANDIDATE ALONE.
-#     Learning from them before the decision would make them training data
-#     for exactly the comparison they are meant to judge.
-TRAINS_BEFORE_DECISION = False
-TRAINS_AFTER_DECISION = "the adopted candidate only"
-
-# ── 3. HISTORICAL AGAINST RECENT, WITH TIMING AND COST EXPLICIT ──────────
+# OBS-25 takes (b), which is the experiment that was wanted.
 #
-# The fork is at t = 94 096. The hard window holds W = 16 384 observations,
-# so it spans t = 77 712 .. 94 096 — which STRADDLES the end of the drift at
-# t = 90 000. That is not a detail: roughly three quarters of the window was
-# observed while the world was still moving, and carries labels from worlds
-# that no longer exist.
+# **These are therefore NEW CANDIDATES.**  They are fitted on a smaller
+# buffer than OBS-24's, so OBS-24's world figures are context and nothing
+# more: this phase MEASURES the diagnostic ordering of its own candidates and
+# asserts none of OBS-24's numbers.
+#
+# The exclusion covers BOTH historical families.  If the recent-window
+# entries stayed in the fit while the held-out ones were removed, a
+# historical-versus-recent comparison would vary label age AND fitting
+# overlap together, and neither could be read.
 FORK_AT = 94_096
 W = 16_384
-WINDOW_SPAN = (FORK_AT - W, FORK_AT)                    # 77 712 .. 94 096
+N = 8_192          # selected buffer size, as OBS-18..24
+V = 256            # per validation family
+K = 8              # independent FRESH draws, for sampling variability
+
+# The exclusion set, fixed once so that one candidate set serves every
+# family: V entries designated held-out replay, plus every buffer entry whose
+# observation is among the V most recent in the window.
+EXCLUDED = "the V held-out replay entries, plus any buffer entry among the V most recent observations"
+
+CANDIDATES = [
+    ("parent",  "the model entering the consolidation; adopting it IS declining"),
+    ("linear",  "selection, compression and the linear refit on the REDUCED buffer"),
+    ("refined", "the refinement on top of that same reduced-buffer candidate"),
+]
+
+# ── Q0, WHICH COMES FIRST AND MAY END THE PHASE ──────────────────────────
+#
+# Does the reduced-fit refined candidate still damage the current world?
+# A smaller fit set is a different consolidation, and it may simply not
+# reproduce OBS-24's failure.  **If it does not, the discrimination question
+# is moot at this fork and the phase reports that** rather than treating it
+# as a setback.  Registered first so it cannot be quietly skipped.
+Q0_STILL_HARMS = True   # predicted, and refutable alone
+
+# ── THE THREE FAMILIES, AND WHAT ACTUALLY SEPARATES THEM ─────────────────
+#
+# **A correction to the first draft, and it changes the whole reading.**  The
+# fork is at t = 94 096 and the drift ends at t = 90 000, so the V most recent
+# observations in the window span 93 840..94 096 — ALL of them post-drift,
+# under the SAME STATIONARY WORLD as the decision.
+#
+# So `fresh` is NOT the only family carrying current-world labels.  Recent
+# and fresh differ in PRIOR LEARNING EXPOSURE, possible FITTING OVERLAP and
+# SAMPLED LOCATIONS — not in label currency, on this fixture.
+WINDOW_SPAN = (FORK_AT - W, FORK_AT)      # 77 712 .. 94 096
 DRIFT_HI = 90_000
-STALE_FRACTION = (DRIFT_HI - WINDOW_SPAN[0]) / W        # ~0.75
+RECENT_SPAN = (FORK_AT - V, FORK_AT)      # 93 840 .. 94 096, all post-drift
 
 FAMILIES = [
-    # name, evidence, when observed, query cost, what it can and cannot see
-    ("held-out replay", "a split of the SELECTED buffer, withheld from the refit",
-     "t in 77 712..94 096, the same span the fit sees", 0,
-     "tests generalisation to held-out HISTORICAL evidence. Its labels are as stale as the fit's, so it can approve exactly the change that harmed."),
-    ("recent window", "the most recent V observations in the window",
-     "t in 94 096-V .. 94 096, all POST-drift", 0,
-     "recent, but still historical: every label was drawn before the decision. Free, and representative only of where the stream happened to go."),
-    ("fresh", "V newly drawn queries at the decision instant",
-     "t = 94 096 exactly, current-world labels", "V paid observations",
-     "the only family carrying CURRENT evidence. It is not free, and the observations it spends are not available for learning before the decision."),
+    ("held-out replay",
+     "V entries of the selected buffer, excluded from the fit",
+     f"drawn from {WINDOW_SPAN[0]}..{WINDOW_SPAN[1]}, spanning the drift",
+     "historical labels of MIXED currency; already learned from when they arrived",
+     0),
+    ("recent window",
+     f"the V most recent observations, {RECENT_SPAN[0]}..{RECENT_SPAN[1]}",
+     "all POST-drift, so current-world labels",
+     "already learned from; locations are wherever the stream happened to go",
+     0),
+    ("fresh",
+     f"V newly drawn queries over [{FORK_AT}, {FORK_AT + V})",
+     "current-world labels, NOT yet learned from",
+     "freshly sampled locations; costs V paid observations",
+     V),
 ]
-V = 256
-# V = 256 against the 9904 observations remaining: 2.6% of the horizon. Chosen
-# before measuring, small enough that the cost is real but not decisive, and
-# it is a REGISTERED DIAL rather than a tuned one — a sweep is a later phase.
-REMAINING = 9904
-COST_FRACTION = V / REMAINING
-
-# REPRESENTATIVENESS. Fresh queries are drawn uniformly over the cube, which
-# on this fixture is also the observation stream's distribution, so the two
-# coincide HERE and would not on a fixture with a routed stream. Recorded so
-# that the result is not read as general.
-
-# ── 4. THE ACCEPTANCE CRITERION, FROZEN BEFORE ITS DECISIONS ARE JUDGED ──
+# The factorisation this gives, stated so no result is over-read:
+#   held-out vs recent : varies LABEL AGE (drift-spanning against post-drift)
+#   recent vs fresh    : varies PRIOR LEARNING EXPOSURE and LOCATION SAMPLING
+# Nothing here varies label currency alone.
 #
-# Astra's fourth pin. One rule, written here, applied identically to every
-# family, and frozen before any decision is compared with the diagnostic:
+# **An age statistic is not a wrong-label fraction.**  Roughly three quarters
+# of the window predates the end of the drift; how many of those labels are
+# actually wrong for the current world is NOT measured, and the two must not
+# be conflated.
+
+# ── THE CLOCK, PINNED ─────────────────────────────────────────────────────
+#
+# Fresh validation queries are PAID OBSERVATIONS and advance the common
+# clock.  They occupy [94 096, 94 352) — not an instant.
+#
+#   * candidates stay FROZEN while the V queries are collected and scored;
+#   * the decision is taken at t = 94 352;
+#   * the adopted candidate then trains on those ALREADY-PAID observations,
+#     charged once and not twice;
+#   * every continuation runs the remaining 9648 queries.
+#
+# **All three families' continuations start at 94 352 having trained on the
+# same 256 observations**, so the decisions are compared on a common clock.
+# The historical families would not have paid that cost in deployment; that
+# differential is REPORTED as Q4 rather than folded into the comparison.
+#
+# Because a continuation depends only on WHICH candidate was adopted, three
+# continuations suffice and each family's outcome is a lookup.
+DECIDE_AT = FORK_AT + V                      # 94 352
+REMAINING_AFTER = 104_000 - DECIDE_AT        # 9 648
+CHECK = 2000
+# **A DESIGN CONSTRAINT, not an observation:** no checkpoint may fall inside
+# the validation span, or a score would land on a candidate about to be
+# replaced.  The registered fixture satisfies it (94 096 % 2000 = 96, and the
+# next checkpoint is 96 000) and G72 (a) ASSERTS it, so a future placement
+# that broke it would fail the gate rather than silently mis-score.  The
+# cheap gate's own first placement DID break it and was moved.
+#
+# And the historical families must receive NO SECOND TRAINING PASS: their
+# entries were learned from when they arrived, and validation SCORES them,
+# never observes them. Asserted by checking the candidates' summed kernel
+# updates are unchanged across all scoring.
+
+# ── THE FROZEN CRITERION, NOW TOTAL ──────────────────────────────────────
+#
+# One rule, applied identically to every family, frozen before any decision
+# meets the diagnostic probes:
 #
 #     adopt the candidate with the LOWEST validation RMS;
-#     on an exact tie, prefer the parent.
+#     on any tie, prefer the EARLIER of parent < linear < refined.
 #
-# Preferring the parent on a tie makes the rule conservative in the only
-# direction a safety rule should be, and the tie case is registered rather
-# than left to whatever the comparison happens to do.
-#
-# **The diagnostic probes are never available to the rule.** They are used
-# only to score the decision after it is made.
+# The first draft said "prefer the parent on a tie", which does not specify a
+# winner when linear and refined tie below the parent. The order above is
+# total and resolves every case toward the least-changed candidate.
+ORDER = ["parent", "linear", "refined"]
 
 # ── REGISTERED QUESTIONS ──────────────────────────────────────────────────
+
+# Q1  Does HELD-OUT REPLAY adopt the harmful candidate?  PREDICTED YES.
 #
-# The measurable quantity is whether a family's RANKING of the three
-# candidates agrees with the diagnostic ranking, and separately which
-# candidate its frozen rule would adopt.
+#     **What a YES would and would not establish.**  It would show that THIS
+#     minimum-RMS rule, on THIS evidence, chooses the harmful candidate. It
+#     would NOT establish that no rule using held-out historical evidence
+#     could discriminate — a different statistic on the same points is
+#     untested, and this phase tests one.
+Q1_ADOPTS_REFINED = True
 
-# Q1  Does HELD-OUT REPLAY approve the harmful candidate?  PREDICTED YES —
-#     it would adopt `refined`. Its labels carry the same staleness as the
-#     fit's, and ~75% of the window predates the end of the drift. If this
-#     holds it is the phase's central negative: **the free signal cannot
-#     discriminate, so no rule built on it can.**
-Q1_APPROVES_REFINED = True
+# Q2  Does the RECENT WINDOW rank `refined` worse than held-out replay does?
+#     PREDICTED YES.  Whether it REVERSES the decision is deliberately
+#     unregistered: its labels are current but its points were learned from,
+#     and its locations are wherever the stream went.
+Q2_RANKS_REFINED_WORSE = True
+Q2_REVERSES = None
 
-# Q2  Does the RECENT WINDOW discriminate better than held-out replay?
-#     PREDICTED PARTIALLY — its ranking should place `refined` worse than
-#     held-out replay does, because its labels are all post-drift. Whether
-#     it reverses the decision is NOT predicted: every label is still
-#     pre-decision, and the candidates were fitted on an overlapping span.
-Q2_BETTER_THAN_HELDOUT = True
-Q2_REVERSES = None      # deliberately unregistered
-
-# Q3  Does FRESH evidence recover the diagnostic ranking?  PREDICTED YES,
-#     with V = 256 sufficient to order three candidates separated by
-#     0.16446 / 0.27473 / 0.86959. If fresh evidence does NOT recover it,
-#     that is the more important result: it would say the gap is not about
-#     label currency at all.
+# Q3  Does FRESH evidence recover the measured diagnostic ordering?
+#     PREDICTED YES.
+#
+#     **A failure would not rule out label currency as a contributor.**
+#     Sampling variability, or regions the draw covers poorly, could prevent
+#     recovery on 256 points. So the fresh draw is repeated K = 8 times on
+#     the FROZEN candidates — scoring only, no refitting — and the spread of
+#     decisions is reported. That separates "the signal cannot order these
+#     candidates" from "this draw did not".
+#
+#     **This is already known to matter.** On the cheap structural fixture at
+#     V = 64 the eight draws split 4/4 between two different decisions. Draw
+#     0 is the PAID family; the other seven are hypothetical, and taking them
+#     all would cost K x V observations rather than V.
 Q3_RECOVERS_ORDER = True
+Q3_DRAWS = K
 
-# Q4  What does the discrimination COST?  Reported, not predicted: V paid
-#     observations, and the continuation after each decision is scored so the
-#     spend is visible against the benefit rather than assumed worth it.
+# Q4  The COST, reported and not predicted: V paid observations for the fresh
+#     family and none for the historical ones, against whatever the decisions
+#     are worth over the remaining 9648.
 
 # ── WHAT THIS PHASE CANNOT ESTABLISH ──────────────────────────────────────
 #
-# **No acceptance policy.** It measures whether signals discriminate at ONE
-# consolidation, on ONE trajectory, at ONE parent. A signal that discriminates
-# here might not elsewhere, and a rule needs a false-alarm rate on
-# consolidations that were fine — which this phase does not have, because
+# **No acceptance policy.**  One consolidation, one trajectory, one parent,
+# one statistic, and no false-alarm rate on consolidations that were fine —
 # OBS-24 forked the one that was not.
 #
-# It also cannot separate "recent" from "post-drift" on this fixture: the
-# drift ends at 90 000 and the fork is at 94 096, so every recent observation
-# is also a stationary-world one. On a fixture still drifting at the fork
-# they would come apart.
+# It cannot separate "recent" from "post-drift" on this fixture, because the
+# drift ends before the window's last V observations begin.  On a fixture
+# still drifting at the fork they would come apart.
 #
-# And "held out" is weaker than the term suggests: the held-out replay points
-# were learned from when they arrived. They are held out of the REFIT, not of
-# the model's history.
+# And "held out" means held out of THIS REFIT.  Those points were learned
+# from when they arrived, so no family is held out of the model's history.
 
 
 def main() -> None:
     print(__doc__.rstrip())
     print()
-    print("  the three candidates, and the DIAGNOSTIC truth they are judged against")
+    print("  the construction")
     print("  " + "-" * 72)
-    print(f"  {'candidate':<10} {'world RMS':>10} {'replay RMS':>11}   note")
+    print(f"  fork at t = {FORK_AT}; buffer N = {N} selected from a window of W = {W}")
+    print(f"  EXCLUDED from the fit, before selection/refit/refinement:")
+    print(f"    {EXCLUDED}")
+    print("  ONE shared candidate set, and its diagnostic ordering is MEASURED:")
     for name, note in CANDIDATES:
-        print(f"  {name:<10} {DIAGNOSTIC_WORLD[name]:>10.5f} {INCUMBENT_REPLAY[name]:>11.5f}   {note}")
-    print(f"  diagnostic order (best first): {' < '.join(DIAGNOSTIC_ORDER)}")
-    print(f"  incumbent replay order:        {' < '.join(INCUMBENT_ORDER)}   — EXACTLY REVERSED")
+        print(f"    {name:<9} {note}")
+    print("  OBS-24's world figures are CONTEXT. None is asserted here.")
     print()
-    print("  validation families")
+    print("  Q0, first and refutable alone: does the reduced-fit refined candidate")
+    print("  still damage the current world? If not, the discrimination question is")
+    print("  moot at this fork and the phase reports that.")
+    print()
+    print("  the three families")
     print("  " + "-" * 72)
-    for name, ev, when, cost, note in FAMILIES:
+    for name, ev, when, note, cost in FAMILIES:
         print(f"  {name}")
         print(f"      evidence : {ev}")
-        print(f"      when     : {when}")
-        print(f"      cost     : {cost}")
+        print(f"      labels   : {when}")
         print(f"      limit    : {note}")
+        print(f"      cost     : {cost} paid observations")
     print()
-    print(f"  the window at the fork spans {WINDOW_SPAN[0]} .. {WINDOW_SPAN[1]} and the drift ends at {DRIFT_HI},")
-    print(f"  so {STALE_FRACTION:.0%} of it was observed while the world was still moving")
-    print(f"  V = {V}, which is {COST_FRACTION:.1%} of the {REMAINING} observations remaining")
-    print()
-    print("  training contract")
+    print("  what actually separates them on THIS fixture")
     print("  " + "-" * 72)
-    print(f"  validation observations train the learner BEFORE the decision: {TRAINS_BEFORE_DECISION}")
-    print(f"  after the decision: {TRAINS_AFTER_DECISION}")
-    print("  held-out replay points WERE learned from when they arrived — they are")
-    print("  held out of the REFIT, not of the model's history")
+    print(f"  the drift ends at {DRIFT_HI} and the recent window spans {RECENT_SPAN[0]}..{RECENT_SPAN[1]},")
+    print("  so RECENT ALREADY CARRIES CURRENT-WORLD LABELS. Fresh is not the only")
+    print("  current-labelled family.")
+    print("    held-out vs recent : varies LABEL AGE")
+    print("    recent vs fresh    : varies PRIOR LEARNING EXPOSURE and LOCATION SAMPLING")
+    print("  An age statistic is NOT a wrong-label fraction; the latter is unmeasured.")
     print()
-    print("  the frozen criterion, identical for every family")
+    print("  the clock")
     print("  " + "-" * 72)
-    print("  adopt the candidate with the LOWEST validation RMS; on an exact tie, the parent")
-    print("  the diagnostic probes are NEVER available to the rule")
+    print(f"  fresh queries are PAID and occupy [{FORK_AT}, {DECIDE_AT}) — not an instant")
+    print(f"  candidates frozen while collecting; decide at {DECIDE_AT}; the adopted")
+    print(f"  candidate then trains on those already-paid points, charged ONCE")
+    print(f"  every continuation runs the remaining {REMAINING_AFTER} queries")
+    print(f"  no checkpoint falls inside the span (next is {((FORK_AT // CHECK) + 1) * CHECK}) — asserted, not assumed")
+    print("  historical families are SCORED, never re-observed: no second training pass")
+    print()
+    print("  the frozen criterion, now total")
+    print("  " + "-" * 72)
+    print(f"  lowest validation RMS; on any tie prefer the earlier of {' < '.join(ORDER)}")
     print()
     print("  registered questions")
     print("  " + "-" * 72)
+    print("  Q0  the reduced-fit refined candidate still harms          PREDICTED YES")
     print("  Q1  held-out replay adopts `refined`                       PREDICTED YES")
-    print("  Q2  recent window ranks `refined` worse than held-out does PREDICTED YES")
-    print("      whether it REVERSES the decision                      deliberately unregistered")
-    print("  Q3  fresh evidence recovers the diagnostic order          PREDICTED YES")
-    print("  Q4  the cost of discriminating                            reported, not predicted")
+    print("      — establishes what THIS rule on THIS evidence does, not that no")
+    print("        rule on that evidence could discriminate")
+    print("  Q2  recent ranks `refined` worse than held-out does        PREDICTED YES")
+    print("      whether it REVERSES the decision                      unregistered")
+    print(f"  Q3  fresh recovers the measured diagnostic order          PREDICTED YES")
+    print(f"      over K = {K} independent draws, so a failure separates 'the signal")
+    print("      cannot order these' from 'this draw did not'")
+    print("  Q4  the cost                                              reported")
     print()
-    print("  NO ACCEPTANCE POLICY IS ESTABLISHED BY THIS PHASE. One consolidation,")
-    print("  one trajectory, one parent, and no false-alarm rate on consolidations")
-    print("  that were fine — OBS-24 forked the one that was not.")
+    print("  NO ACCEPTANCE POLICY IS ESTABLISHED. One consolidation, one trajectory,")
+    print("  one parent, ONE STATISTIC, and no false-alarm rate on consolidations")
+    print("  that were fine.")
 
 
 if __name__ == "__main__":
