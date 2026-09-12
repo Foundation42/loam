@@ -121,6 +121,10 @@ run per edit makes the harness the activity rather than the work.
     python3 tools/obs20_predict.py                 # ... its pre-registration; the pool is a SHARED object, so the contract is asserted not argued
     zig build test -Dtest-filter="G68"             # OBS-21: RE-OBSERVATION -- you can pay to consolidate early, but only if you AIM
     python3 tools/obs21_predict.py                 # ... its pre-registration; the cost match is arithmetic, and FRESH is the control
+    zig build test -Dtest-filter="G69 (a)"         # OBS-22: the trajectory CONTROLLER's contracts, driven with a sleep stub. Seconds, no sleeps
+    zig build test -Dtest-filter="G69 (c)"         # ... the detector traced on both trajectories; G69 (d) initialisation, G69 (e) the no-move counterfactual
+    zig build test -Dtest-filter="G69 when"        # ... the registered comparison itself, ~10 min. Q2 and Q6 REFUTED; docs/data/obs22 holds the runs
+    python3 tools/obs22_predict.py                 # ... its pre-registration, including the three contract bugs its FIRST draft had
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:
 run a gate when you have changed what it watches, smoke checks before a

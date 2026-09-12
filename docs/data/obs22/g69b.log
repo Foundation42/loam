@@ -1,0 +1,15 @@
+test
++- run test stderr
+  G69 (b) [ReleaseSafe] replaying schedule/5678 UNCHANGED, instrumented
+         at RMS before  after acq after sleep | k before k after  births | fit first  fit last
+      30096    0.06059    0.13428    0.14330 |     645     322     645 |   0.08118   0.01974
+      56096    0.07705    0.06017    0.03222 |     727     363     405 |   0.07449   0.01250
+      82096    0.15771    0.15604    6.72213 |     817     408     454 |   0.13965   0.35844
+     whole 0.37240, drift+tail 0.77093; the sleep that costs most is #2 at t = 82096, which moves the world RMS 0.15604 -> 6.72213
+     POPULATIONS, counted rather than assumed: 645->322 (+645 born) 727->363 (+405 born) 817->408 (+454 born) 
+     fork #2 = half (registered)      whole 0.37240  drift+tail 0.77093  sleeps 3
+     fork #2 = skip                   whole 0.11174  drift+tail 0.15483  sleeps 3
+     fork #2 = full (no compression)  whole 0.41992  drift+tail 0.88327  sleeps 3
+     the fork's null case reproduces the replay exactly (0.37240), so the two variants differ only in the consolidation
+zig build test -Dtest-filter="G69 (b)"  478.31s user 1.53s system 102% cpu 7:48.47 total
+EXIT=0

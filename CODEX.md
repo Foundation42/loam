@@ -66,6 +66,15 @@ User instructions take precedence. Keep this file short and current.
   belongs to, and what it still cannot isolate.
 - **When a correction changes several things at once, report the delta
   and attribute none of it.** Naming a cause needs a matched ablation.
+- **Controls distinguish NECESSITY, CONTRIBUTION and SUFFICIENCY, and
+  prose must preserve those distinctions.** A fork showing a factor is
+  not needed for a failure has not shown it contributes nothing. OBS-22
+  narrowed four explanations and eliminated one; a draft called all four
+  "killed".
+- **Separate a claim that needs a new EXPERIMENT from one that needs a
+  RE-READ.** "Not a response to anything" took a no-move counterfactual
+  to overturn; a peak contrast misread as a climb took only rereading
+  the numbers already printed. Conflating them mis-prices the next step.
 
 ## Targeted recovery map
 
@@ -73,7 +82,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
-| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..21; src/consolidate.zig, G58-G68 |
+| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..22; src/consolidate.zig, G58-G69; docs/data/obs22 |
 | Complexity and fresh windows | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-4; src/observational_windows.zig, G51; docs/data/obs4 |
 | Adaptive inverse births | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-3; src/adaptive_inferred.zig, G50; docs/data/obs3 |
 | Hidden potential inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-2; src/inferred.zig, G49 |
@@ -154,59 +163,64 @@ Records in docs/data/obs4 include sensors, window-pre-update scores,
 evaluation history, coverage, requests and diagnostic. G51(a/b/c) passed
 separately; use smoke at commit, not the full suite.
 
-Latest: OBS-21 / G68, TARGETED REVISITING (2026-09-11, corrected 09-12).
-Re-observation spends a real observation to ask again AT A LOCATION THE MODEL
-CHOOSES. The phase's load-bearing decision: A RE-OBSERVATION IS AN
-OBSERVATION — it pushes into the ring and evicts the oldest, so every
-placement slides the window identically and ELIGIBILITY IS IDENTICAL BY
-CONSTRUCTION, not merely equal in old-share. The gate asserts the ring's
-invariants (nothing older than n - W, t % W == slot).
+Latest: OBS-22 / G69, WHEN IS INTERVENTION WORTH ITS COST? (2026-09-12).
+Astra's framing, replacing "detect the change": surprise also rises because a
+model is undertrained, and detection is ILL-POSED here by construction — the
+trajectory holds a 30,000-observation gradual drift with no instant to name.
+Every phase from OBS-18 to OBS-21 was told when the world moved; this is the
+first where the policy decides.
 
-THE FIRST VERSION VIOLATED THAT CONTRACT AND IS KEPT AS HISTORICAL EVIDENCE:
-it mutated slots IN PLACE and advanced Window.n, retaining 2709 entries older
-than the cutoff, putting 881 into a sleep, destroying the timestamp-to-slot
-mapping, and reporting a mean aimed lift of +0.39. A GREEN GATE DOES NOT
-RESOLVE A CONTRACT IT NEVER ASSERTS.
+THREE CONTRACT BUGS WERE CAUGHT BEFORE ANY CODE EXISTED and are recorded in
+the predictor: calibration that saw its own future; a budget promised EXACT
+while the policy could stay silent (now AT MOST three, unspent capacity
+becoming ordinary observations); and an unstated CLOCK (every paid
+observation advances it, revisits included, so drift continues THROUGH an
+intervention).
 
-THE FINDING: across two acquisition trajectories and two sleep selections
-each, targeted revisiting produced lower post-sleep error than either uniform
-alternative. Sleep improved the targeted models by 6-11% while WORSENING both
-alternatives, under matched observation budgets and within-trajectory kernel
-budgets. Means aimed .07044, revisit .10185, fresh .10471 (3.4x and 5.0x the
-worst relevant spread). The no-budget reference is destructive at
--.3010/-.2034 — OBS-19 QUALITATIVELY, not its numerical checkpoint.
+BUILD THE CHEAP STRUCTURAL GATE FIRST. G69 (a) drives the REAL controller
+with the sleep stubbed — eleven scenarios, seconds — and found three bugs
+that would otherwise have surfaced nine minutes into a run: zero-init opens
+the ratio at 8.00 from the update rates alone; an unready request is DEFERRED
+and a horizon-blocked one REFUSED, both counted; the event order is
+observation -> sleep -> score; and the drift snapshot comes from
+interventions STARTED, not from a trigger scheduled arms never touch.
 
-ACQUISITION REPLICATION EARNED ITS COST: fresh's acquisition spread (.01021)
-is 2.5x its selection spread (.00407), and it governs the headline margin.
-It varies the whole life INCLUDING the branch model, so it is not
-acquisition-stage randomness isolated at a fixed parent.
+THE COMPARISON. Threshold frozen at 1.30274 = mean 1.07993 + 3 x sd .07427 —
+the mean being 1.08 vindicates `mean + 3 sd` over `1 + 3 sd`, since a
+stationary world does not imply a ratio centred at one. Results: none
+.08492/.08828, informed .09079/.11294, trigger .09387/.11328, schedule
+.22949/.43382 (whole / drift+tail).
 
-HITS COUNT CONTESTED LOCATIONS OBSERVED, NOT WRONG LABELS REPAIRED: selection
-ranges over the whole window including current entries, and a push leaves the
-older copy until expiry. Untargeted 408/400 against a DERIVED 387; targeted
-1359/1357. That establishes TARGETING CONCENTRATION.
+Q6 REFUTED — no intervention policy beat NOT intervening. Q2 REFUTED and
+ACQUISITION-DEPENDENTLY — 0 cold-start ticks on one trajectory, 11,917 on the
+other. Readiness makes an EXECUTION test vacuous, so the claim is asked of
+CROSSINGS.
 
-SURVIVING: targeted acquisition beats fresh draws BEFORE any sleep
-(.0770/.0761 vs .0849/.0859) — MARL-4's routing at consolidation time — and
-UNTARGETED revisiting is WORSE than fresh draws, because it re-asks where the
-model was already right.
+ONE CATASTROPHE, LOCALISED, and four of my explanations died: populations
+REGROW (645->322->727) so cumulative shrinkage is refuted; the full-population
+fork is WORSE so compression is not necessary; acquisition "damage" was an
+INSTRUMENTATION ARTEFACT (the acquisition spans the step, so before/after were
+scored against different worlds); and an oracle relabelling STILL diverges, so
+historical labels are not necessary either. What remains is ONE NONLINEAR
+REFINEMENT DIVERGING — replay .13965 -> .35844, held-out world 6.72213 — which
+OBS-11's registered null names exactly and nothing noticed. A replay-loss
+acceptance check prevents it entirely (guarded == norefine, restore verified
+byte-for-byte). That establishes THIS RULE PREVENTS THIS FAILURE, not that a
+descending replay loss improves the current world.
 
-WITHDRAWN: compounding of repair with reprioritisation. A frozen-score control
-moved the selected old share .312 -> .276, the WRONG WAY; targeting
-already-high-weight entries is sufficient and rescoring partly offsets it.
-Under push semantics nothing is rescored in place.
+THE DETECTOR, in three cheap gates. (c) traces both trajectories: seeds of
+.049409 and .006119, an eightfold gap, because one first observation has
+EXACTLY zero surprise. The slow half-life of 16,384 is where the seed's
+contribution HALVES, not a cutoff. (d) replays the IDENTICAL surprise sequence
+through an alternative specified in advance: cold-start ticks 11,917 -> 0.
+(e) forks at the change into MOVE and NO MOVE: the move raises the ratio in
+EVERY cell. RECORDED — the move increases surprise and the ratio under both
+initialisations; only one combination crosses; initialisation affects the
+ratio's LEVEL AND ITS RESPONSE, so crossings are sensitive to its history.
 
-NOT ATTRIBUTABLE: the correction reduced mean aimed lift from ~+0.39 to
-+0.079, but it changed FIVE things at once (ring semantics, fixed k, removal
-of a change-boundary oracle, the candidate population, a second trajectory).
-Blaming the expired entries would need a matched ablation, not run.
-
-STILL CONFOUNDED: observations and k matched within a trajectory, parent
-populations not (688/689/686) — a query-budget comparison.
-
-Next: a matched ablation if the effect's SIZE matters as much as its sign;
-budget size; acquisition randomness at a FIXED parent; and still nothing
-DETECTS a move.
+Next: `relabel + norefine`, the missing arm; a reduced-rate fork with a sparse
+loss trace (starting RMS is NOT a curvature measurement); a guarded POLICY as
+its own experiment; Q4's per-trajectory drift-and-tail spread.
 
 G66 is the campaign's largest gate — twenty-two sleeps; G67 is ~8:45 with thirteen, almost all of it, each
 ~30 s and almost entirely the 400-step descent over 8192 replay points; all

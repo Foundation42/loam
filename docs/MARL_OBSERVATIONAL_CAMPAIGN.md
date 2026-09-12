@@ -3023,3 +3023,221 @@ Cost: G68 is ~7 min 55 s — fourteen sleeps, six full re-runs of the life.
 compounding, the acquisition-replication requirement, the change-boundary
 oracle, the hits/repairs distinction and the caution against attributing the
 fivefold reduction are all Astra's.*
+
+## OBS-22 / G69 — when is intervention worth its cost?
+
+Every phase from OBS-18 to OBS-21 assumed someone said when the world moved.
+OBS-19 chose its offsets, OBS-20 set its cutoff, OBS-21 spent its budget —
+all because the experiment said so. This is the first where the policy has
+to decide.
+
+Astra's framing replaced the one the phase nearly got built on:
+
+> *"When is intervention worth its cost?" rather than "detect the change."*
+> Surprise also rises because a model is undertrained.
+
+**And detection is ill-posed here by construction.** The trajectory contains
+a gradual drift, during which there is no instant to name. "Is an
+intervention worth its cost now" stays well-posed throughout.
+
+### The design, and the three contract bugs its first draft had
+
+Six regimes over 104 000 observations: cold start, stationary, an abrupt
+step, stationary again, a 30 000-observation drift, and a tail. Surprise
+rises for three different reasons and not all of them are worth acting on.
+
+The intervention is frozen — OBS-21's targeted revisiting followed by a
+consolidation — so the phase tests the **trigger**. Four arms: an online
+`trigger`, a budget-matched `schedule`, an `informed` privileged timing
+reference, and `none`.
+
+`tools/obs22_predict.py` records its own first draft's failures, because
+they were caught in review before a line of code existed:
+
+- **calibration that saw its own future** — the threshold was to be
+  estimated from observations 12 000–30 000 and then used to judge firing
+  *before* 12 000. Fixed with a separate calibration trajectory, never
+  scored, its seed and variance convention pinned.
+- **a budget promised as exact while the policy was allowed to stay
+  silent.** Registered instead as *at most* three, with unspent capacity
+  becoming ordinary observations so the observation horizon matches exactly
+  and the intervention count is an outcome.
+- **an unstated clock.** Every paid observation advances it, revisits
+  included, each evaluated against the world at its own instant, so the
+  drift continues through an intervention rather than waiting for it.
+
+### The cheap structural gate, built first
+
+G69 (a) drives the real controller with the expensive call stubbed, in
+seconds. Eleven scenarios, each asserting a contract the headline depends
+on — and three of them found bugs that would otherwise have surfaced nine
+minutes into a run:
+
+| | |
+|---|---|
+| **EWMA initialisation** | zero-init opens at a ratio of **8.00**, purely from the update rates. Seeding waits for the first *nonzero* surprise, because this fixture has an exactly-zero region. |
+| **deferral** | an unready request is **deferred**, not discarded; a horizon-blocked one is **refused outright**. Both counted — the difference between a policy that didn't want to act and one that wasn't allowed to. |
+| **event order** | observation → the completed intervention's sleep → score. A checkpoint landing on an intervention's last query is deferred past the consolidation. |
+| **the drift snapshot** | taken on the common clock from interventions *started*, not from a trigger that scheduled arms never touch. |
+
+### The comparison, and what it refuted
+
+Frozen threshold **1.30274** — `mean 1.07993 + 3 × sd 0.07427`. That the
+mean is 1.08 rather than 1.00 is the vindication of `mean + 3·sd` over
+`1 + 3·sd`: a stationary world does not imply a ratio centred at one,
+because the learner's residuals are not stationary either.
+
+| arm | whole | drift+tail |
+|---|---|---|
+| **none** | **0.08492** | **0.08828** |
+| informed | 0.09079 | 0.11294 |
+| trigger | 0.09387 | 0.11328 |
+| schedule | 0.22949 | 0.43382 |
+
+**Q6 is refuted: no intervention policy tested beat not intervening.**
+
+**Q2 is refuted, and acquisition-dependently.** The trigger produced zero
+cold-start above-threshold ticks on one trajectory and **11 917 of 12 000**
+on the other, from t = 83. And readiness makes an execution test vacuous —
+the window is not full until 16 384, later than the whole cold start — so
+the claim is asked of *crossings*.
+
+### Localising the one catastrophe
+
+`schedule` on acquisition 5678 reached 0.37240 against 0.08658 on the other
+trajectory. The diagnostic **narrowed four explanations, all of them mine —
+and narrowing is not eliminating.** A control can establish that something is
+not *necessary* for a failure without showing it contributes nothing:
+
+- **repeated halving** — refuted by counting. Populations regrow fully:
+  645→322→**727**, 727→363→**817**. No cumulative shrinkage. *(This refutes
+  cumulative shrinkage only, not every effect of compression.)*
+- **compression** — the full-population fork is *worse*, so compression is
+  not necessary for the failure.
+- **acquisition damage** — an instrumentation artefact. The first
+  acquisition spans the step change, so its before/after were scored against
+  different worlds. With the pre-acquisition model frozen and scored at
+  completion time, acquisition is neutral once and helpful twice.
+- **historical labels** — an oracle relabelling probe still diverges,
+  0.12298 → 0.19900 on replay loss, so they are **not necessary** either.
+  They may still contribute: relabelling also changes kernel selection, the
+  linear solution and the refinement's starting state, so the
+  6.72213 → 0.70931 difference flows through all of that.
+
+Of the four, only **acquisition damage** is eliminated outright — it was an
+artefact of the measurement rather than a claim about the system.
+Compression and historical labels remain possible contributors. What is
+established is that neither is *necessary*, and that a diverging refinement
+is *sufficient*.
+
+What remains is **one nonlinear refinement diverging** — replay RMS
+0.13965 → 0.35844 at t = 82 096, leaving the held-out world at **6.72213**.
+OBS-11 registered the null (*a descent that does not descend is not the
+thing being measured*) and nothing in the pipeline noticed.
+
+| fork at the failing sleep | whole | drift+tail |
+|---|---|---|
+| half (registered) | 0.37240 | 0.77093 |
+| skip (parent reference) | 0.11174 | 0.15483 |
+| **norefine** (linear refit only) | **0.09896** | **0.12463** |
+| **guarded** (reject a replay-loss rise) | **0.09896** | **0.12463** |
+| relabel (oracle probe) | 0.16018 | 0.26933 |
+
+A replay-loss acceptance check prevents it entirely, and `guarded` equals
+`norefine` — the restored candidate *is* the pre-refinement candidate,
+verified byte-for-byte where the restore happens. **Recovery establishes
+that this rule prevents this failure**, not that a descent which does
+descend on replay improves the current world. And `guarded` still loses to
+`none` (0.09896 against 0.08441), so removing the catastrophe does not make
+the schedule worth its cost.
+
+### The detector: initialisation, and a response that does not cross
+
+Three cheap gates, no sleeps between them.
+
+**G69 (c) traces both trajectories.** They seed on **0.049409** and
+**0.006119** — an eightfold gap, because 5678's first observation has
+exactly zero surprise and the "first nonzero" rule then takes an atypically
+small second draw. The slow EWMA's half-life is 16 384 monitoring updates,
+so that seed's contribution *halves* there and stays relevant after; it is
+not a cutoff.
+
+**G69 (d) replays the identical recorded surprise sequence** through the
+incumbent seeding and a rule specified in advance — seed from the mean of
+the first 256 nonzero surprises — with the threshold frozen. Cold-start
+ticks go **11 917 → 0**.
+
+**G69 (e) forks at the change into move and no-move**, identical future
+query locations, identical detector state at the fork:
+
+| | peak MOVE | peak NO MOVE | contrast | ticks |
+|---|---|---|---|---|
+| 5678 rule A | 1.4160 | 1.0769 | +0.3391 | 4452 / 0 |
+| 5678 rule B | 0.8920 | 0.7229 | +0.1692 | 0 / 0 |
+| 1234 rule A | 1.0032 | 0.7974 | +0.2058 | 0 / 0 |
+| 1234 rule B | 0.9118 | 0.7270 | +0.1848 | 0 / 0 |
+
+The move raises surprise itself (0.0331 against 0.0235) and raises the ratio
+in **every cell**, with paired-time columns as the contemporaneous evidence.
+So the finding inverts an earlier draft of this section, which called the
+5678 crossings "not a response to anything":
+
+> On these uninterrupted-learning trajectories, the move increases surprise
+> and the detector ratio under both initialisations. **Only one combination
+> crosses the frozen threshold.** Initialisation affects the ratio's level
+> *and* its response, making threshold crossings sensitive to its history.
+
+Three scope limits, recorded in the gates themselves: these are
+**uninterrupted-learning** sequences, and G69's own trigger/5678 arm
+intervened at 16 384, so the replay shares only the *prefix* with it. Rule B
+was judged at rule A's frozen calibration, so "rule B is worse" is not
+available. And the response's decay across the traced window is *measured*,
+not attributed — separating the learner's adaptation from the EWMAs' own
+adjustment would need its own control.
+
+### The methodological lesson
+
+> **Controls distinguish necessity, contribution and sufficiency, and prose
+> must preserve those distinctions.**
+
+Astra's, and this phase is where the campaign paid for it. Four explanations
+were narrowed and only one eliminated, while an earlier draft of this section
+said all four were "killed". The same slip in the other direction produced
+*"not a response to anything"* — which was not loose prose but a claim that
+needed a **new counterfactual experiment** to overturn, and G69 (e) is that
+experiment. Two other slips, the peak contrast read as a climb and a
+half-life read as a cutoff, needed only closer reading of what had already
+been measured. **Those are different failures and the difference matters:
+one costs a run, the other costs a re-read.**
+
+### What OBS-22 records
+
+> The tested controller policies did not beat `none` on mean trajectory
+> error; one consolidation suffered a localised refinement failure, which a
+> replay-loss acceptance rule prevents; and separate controls establish
+> initialisation-sensitive threshold behaviour despite a measurable response
+> to change.
+
+### Still owed
+
+- **`relabel + norefine`** — the missing arm. Comparing the oracle
+  refinement against historical-label `norefine` varies labels *and*
+  refinement together, so neither is attributable.
+- **A reduced-rate fork** at the failing sleep, rate chosen before running,
+  with a sparse loss trace to distinguish immediate instability from late
+  deterioration. A successful lower rate would establish rate sensitivity at
+  that checkpoint, not curvature as the cause — starting RMS is not a
+  curvature measurement.
+- **A guarded policy** is a subsequent experiment. `Options.guard` defaults
+  false and nothing registered was changed to accommodate it.
+- **Q4's margin** needs per-trajectory drift-and-tail spread, which the
+  preserved run did not record; the gate now reports it.
+
+Cost: G69 is ~10 min; G69 (a), (c), (d) and (e) are 8–11 s each and none
+sleeps. `docs/data/obs22/` holds the preserved runs.
+
+*The framing, the three pre-code contract bugs, the window-contract
+violation, the frozen-score control, the change-boundary oracle, the
+hits/repairs distinction, the sleep/score ordering bug, the `budget_at_drift`
+bug, the peak-contrast conflation and the no-move counterfactual are all
+Astra's.*

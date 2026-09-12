@@ -61,6 +61,20 @@ pub const Options = struct {
     /// for. See `allocate`. False is the incumbent and stays the default,
     /// because G62 (b), G63 and G64 were measured under it.
     exact: bool = false,
+    /// ACCEPTANCE: reject a refinement that ends non-finite or above the
+    /// loss it started at, restoring the pre-refinement candidate.
+    ///
+    /// OBS-11 registered the null — *a descent that does not descend is not
+    /// the thing being measured* — and G69 (b) caught one doing exactly
+    /// that: replay RMS 0.13965 -> 0.35844, with the held-out world at
+    /// 6.72213 afterwards. Nothing in the pipeline noticed.
+    ///
+    /// The decision uses REPLAY loss, which is what the optimiser sees.
+    /// Current-world probes stay diagnostic and never enter it.
+    ///
+    /// Default false: this is a diagnostic fork, and a guarded policy is a
+    /// SUBSEQUENT experiment, not a silent change to the registered one.
+    guard: bool = false,
 };
 
 pub const Report = struct {
@@ -68,6 +82,9 @@ pub const Report = struct {
     /// does not descend is not the thing being measured.
     first: f64,
     last: f64,
+    /// Whether `Options.guard` rejected this refinement and restored the
+    /// candidate it started from.
+    rejected: bool = false,
     /// Times the reach projection fired — the clamp pushing back against a
     /// descent that wants a wider kernel than the gather allows. A large
     /// count means the two are fighting, which is its own failure mode.
@@ -1376,6 +1393,585 @@ pub const Window = struct {
     }
 };
 
+/// OBS-22's intervention trigger: a RATIO OF TIMESCALES, never a level.
+///
+/// A trigger on the LEVEL of surprise fires hardest during a cold start,
+/// when the model is merely untrained and the correct action is to keep
+/// learning. During learning surprise is high and FALLING; at a change it
+/// JUMPS. So the statistic is the rise, not the height.
+///
+/// **The initialisation is a contract, not a detail.** With both EWMAs
+/// started at zero their first nonzero ratio is `alpha_fast/alpha_slow` =
+/// `h_slow/h_fast` = 8 on these half-lives — an alarm manufactured entirely
+/// by the update rates, before any data exists. Both are therefore seeded
+/// with the FIRST monitoring surprise, so the ratio starts at exactly 1.
+///
+/// **The detector sees MONITORING observations only.** Targeted queries have
+/// a different surprise distribution from uniform ones, so feeding their
+/// residuals back would let an intervention manufacture its own next alarm.
+/// Revisits enter the model and the replay window and never this. Astra's
+/// contract, written before the first run rather than after it.
+///
+/// It needs NO ADDITIONAL SENSING QUERIES — `observe` already returns
+/// surprise. The arithmetic is small but not zero.
+pub const Trigger = struct {
+    fast: f64 = 0,
+    slow: f64 = 0,
+    af: f64,
+    as_: f64,
+    /// MONITORING observations seen. The cooldown is counted in these, not
+    /// in wall indices, because an intervention's own queries must not run
+    /// the clock down on the silence that follows it.
+    seen: u64 = 0,
+    started: bool = false,
+    /// Frozen on a SEPARATE calibration trajectory before any evaluation.
+    /// Zero means uncalibrated and `fire` refuses.
+    thresh: f64 = 0,
+    cool_until: u64 = 0,
+    /// How many nonzero monitoring surprises establish the seed.
+    ///
+    /// One is the incumbent and seeds from a SINGLE DRAW, which is the
+    /// weakness G69 (c) traced: the two trajectories seeded on 0.049409 and
+    /// 0.006119, an eightfold gap, and the slow EWMA's half-life carries it
+    /// for a long time. Larger values seed from an ESTIMATE instead. The
+    /// surprises consumed during seeding establish it and are not otherwise
+    /// fed. At 1 the arithmetic is the incumbent's exactly.
+    seed_from: usize = 1,
+    seed_sum: f64 = 0,
+    seed_n: usize = 0,
+    budget: usize,
+    fired: usize = 0,
+    /// Set while an intervention is in progress: firing is paused, and the
+    /// detector takes no updates because no monitoring is happening.
+    busy: bool = false,
+
+    pub fn init(half_fast: f64, half_slow: f64, budget: usize) Trigger {
+        return .{
+            .af = 1 - std.math.pow(f64, 2, -1 / half_fast),
+            .as_ = 1 - std.math.pow(f64, 2, -1 / half_slow),
+            .budget = budget,
+        };
+    }
+    /// One MONITORING observation. Returns the ratio after the update.
+    ///
+    /// **Seeding waits for the first NONZERO surprise.** Seeding on the
+    /// first surprise whatever it is does not fix the manufactured alarm
+    /// when that surprise is zero — both accumulators start at zero again
+    /// and the next positive value reopens the ratio at `h_slow/h_fast`.
+    /// This fixture HAS an exactly-zero region: past the window the target
+    /// is zero, an empty model predicts zero, and the residual is exactly
+    /// zero. Astra found it in review, before any run. Until the seed
+    /// arrives the ratio is 1 — neutral, and firing is refused anyway
+    /// because an unseeded detector has nothing to compare.
+    ///
+    /// Refuses to update while BUSY, so that a controller which wrongly
+    /// routed an acquisition query here cannot silently corrupt the
+    /// detector; the controller is separately asserted not to call it.
+    pub fn monitor(self: *Trigger, surprise: f32) f64 {
+        if (self.busy) return self.ratio();
+        const s = @as(f64, surprise);
+        if (!self.started) {
+            if (s == 0) {
+                self.seen += 1;
+                return 1;
+            }
+            self.seed_sum += s;
+            self.seed_n += 1;
+            self.seen += 1;
+            if (self.seed_n < self.seed_from) return 1;
+            const m0 = self.seed_sum / @as(f64, @floatFromInt(self.seed_n));
+            self.fast = m0;
+            self.slow = m0;
+            self.started = true;
+            return 1;
+        } else {
+            self.fast += self.af * (s - self.fast);
+            self.slow += self.as_ * (s - self.slow);
+        }
+        self.seen += 1;
+        return self.ratio();
+    }
+    pub fn ratio(self: Trigger) f64 {
+        if (!self.started) return 1;
+        return self.fast / @max(1e-9, self.slow);
+    }
+    /// Whether an intervention starts now. Refuses while busy, while
+    /// uncalibrated, while cooling down, and once the budget is spent.
+    /// Whether the detector CROSSES its threshold now. A crossing is not an
+    /// intervention: the controller decides whether one can be executed, and
+    /// charges the budget only when it starts. Reporting them apart is what
+    /// lets a cold-start prediction be tested on the STATISTIC rather than
+    /// on whatever readiness rule happens to gate it.
+    pub fn crosses(self: *Trigger) bool {
+        if (self.busy or self.thresh == 0 or !self.started) return false;
+        if (self.seen < self.cool_until) return false;
+        return self.ratio() > self.thresh;
+    }
+    /// Charge one intervention. Only the controller calls this, and only
+    /// when an intervention actually begins.
+    pub fn charge(self: *Trigger) void {
+        self.fired += 1;
+    }
+    pub fn spent(self: Trigger) bool {
+        return self.fired >= self.budget;
+    }
+    pub fn cooldown(self: *Trigger, obs: u64) void {
+        self.cool_until = self.seen + obs;
+    }
+};
+
+/// OBS-22's trajectory shape. One clock, and every paid observation advances
+/// it — revisits included — so a gradual drift continues through an
+/// intervention rather than waiting politely for it.
+pub const Traj = struct {
+    total: u64,
+    /// Queries per intervention.
+    r: usize,
+    /// The hard window, and the replay slots the sleep consolidates from.
+    w: usize,
+    n: usize,
+    /// Score the model against the world AT THAT INSTANT, this often.
+    check: u64,
+    /// End of the cold start — where the model is merely undertrained. Q2's
+    /// interval, and NOT the same as `change_at`: between them lies a
+    /// stationary stretch with a settled model, where a crossing means
+    /// something different. Counted apart.
+    cold_end: u64,
+    change_at: u64,
+    drift_lo: u64,
+    drift_hi: u64,
+    budget: usize,
+    /// Phase end indices, for segmenting the objective. The registered
+    /// drift-and-tail score is the last two.
+    bounds: []const u64,
+
+    pub fn phaseOf(self: Traj, i: u64) usize {
+        for (self.bounds, 0..) |b, k| {
+            if (i <= b) return k;
+        }
+        return self.bounds.len - 1;
+    }
+};
+
+/// The world at one instant. Linear in the drift band, and this is the ONE
+/// definition — a controller that interpolated privately would prove only
+/// that its own formula was self-consistent.
+pub fn worldAt(c: Traj, i: u64, a: marl.TruthParams, b: marl.TruthParams, d: marl.TruthParams) marl.TruthParams {
+    if (i < c.change_at) return a;
+    if (i <= c.drift_lo) return b;
+    if (i >= c.drift_hi) return d;
+    const u = @as(f32, @floatFromInt(i - c.drift_lo)) / @as(f32, @floatFromInt(c.drift_hi - c.drift_lo));
+    var t = b;
+    inline for (0..3) |k| t.shift[k] = b.shift[k] + u * (d.shift[k] - b.shift[k]);
+    return t;
+}
+
+/// How an arm decides when to intervene.
+pub const Plan = union(enum) {
+    /// Online, from monitoring observations only.
+    trigger,
+    /// A fixed cadence, detecting nothing. Not a straw man: it is what a
+    /// system without a trigger actually does.
+    at: []const u64,
+    /// No interventions at all: the whole horizon spent observing.
+    never,
+};
+
+/// What happened and when, for asserting ORDER rather than counts.
+///
+/// `do_sleep = false` cannot reveal whether a checkpoint saw the replacement
+/// model, because there is no replacement — so the event is emitted either
+/// way and the cheap gate asserts the sequence. Astra's instrument.
+pub const Event = struct {
+    kind: enum { start, sleep, check },
+    at: u64,
+};
+
+/// Everything the runner must be held to, counted rather than assumed.
+pub const Tally = struct {
+    /// Every paid observation, of every kind. Must equal `Traj.total`.
+    paid: u64 = 0,
+    /// Those the detector was offered. Revisits must never appear here.
+    monitored: u64 = 0,
+    revisits: u64 = 0,
+    /// Steps at which the detector was eligible and above threshold, whether
+    /// or not an intervention followed. **Not the same as interventions**:
+    /// readiness gates every cold-start execution regardless of what the
+    /// statistic wanted, so a restraint claim tested on EXECUTIONS would be
+    /// vacuous.
+    crossings: usize = 0,
+    /// Split at `cold_end` and `change_at`, because "before the world moved"
+    /// lumps an undertrained model together with a settled one and Q2 is
+    /// about the first.
+    crossings_cold: usize = 0,
+    crossings_settled: usize = 0,
+    first_cross: u64 = 0,
+    /// Crossings refused because the window was not yet full (DEFERRED, and
+    /// re-evaluated every step) or because fewer than `r` queries remained
+    /// before the horizon (BLOCKED outright).
+    unready: usize = 0,
+    horizon_blocked: usize = 0,
+    /// Interventions actually begun, and consolidations actually run.
+    started: usize = 0,
+    sleeps: usize = 0,
+    checks: usize = 0,
+    /// Time-averaged error: the MEAN RMS over checkpoints, not pooled MSE.
+    err_sum: f64 = 0,
+    /// The same, segmented by phase, so the registered drift-and-tail
+    /// objective is a measurement rather than an arithmetic afterthought.
+    err_phase: [8]f64 = .{0} ** 8,
+    checks_phase: [8]usize = .{0} ** 8,
+    /// Error over the two checkpoints after each intervention completes —
+    /// Q7's "what the error did afterwards", reported per intervention and
+    /// never scored as a false alarm.
+    post_err: [8]f64 = .{0} ** 8,
+    post_n: [8]usize = .{0} ** 8,
+    watch_until: u64 = 0,
+    watch_idx: usize = 0,
+    watching: bool = false,
+    /// Interventions begun, by phase.
+    started_phase: [8]usize = .{0} ** 8,
+    /// Budget remaining when the clock first reaches drift onset, on the
+    /// COMMON paid clock and counting interventions actually STARTED — so it
+    /// is correct for arms whose plan never touches the trigger, and an
+    /// intervention beginning exactly at drift onset is NOT counted, because
+    /// the snapshot is taken before the decision at that index.
+    budget_at_drift: usize = 0,
+    drift_marked: bool = false,
+    fired_at: [8]u64 = .{0} ** 8,
+    trace: [32]Event = undefined,
+    ntrace: usize = 0,
+
+    pub fn mean(self: Tally) f64 {
+        return self.err_sum / @as(f64, @floatFromInt(@max(1, self.checks)));
+    }
+    /// The registered drift-and-tail objective: the last two phases.
+    pub fn meanTail(self: Tally, nphase: usize) f64 {
+        var e: f64 = 0;
+        var n: usize = 0;
+        for (nphase - 2..nphase) |k| {
+            e += self.err_phase[k];
+            n += self.checks_phase[k];
+        }
+        return e / @as(f64, @floatFromInt(@max(1, n)));
+    }
+    fn note(self: *Tally, kind: @TypeOf(@as(Event, undefined).kind), at: u64) void {
+        if (self.ntrace < self.trace.len) {
+            self.trace[self.ntrace] = .{ .kind = kind, .at = at };
+            self.ntrace += 1;
+        }
+    }
+};
+
+/// One intervention, taken apart. Astra's diagnostic specification: the
+/// world's RMS before acquisition, after acquisition and immediately after
+/// the sleep, on IDENTICAL probes; the actual populations either side; the
+/// births since the previous sleep; and the refinement's own fitting error.
+///
+/// Without the populations, "roughly an eighth" is speculation — regrowth
+/// has to be counted, not assumed away.
+pub const Step = struct {
+    at: u64 = 0,
+    rms_before: f64 = 0,
+    /// **The pre-acquisition model, scored against the COMPLETION-TIME
+    /// world.** Without it `rms_before` and `rms_after_acq` are scored
+    /// against different worlds whenever an acquisition spans a change —
+    /// which the first one here does, running 26 000 to 30 096 across a step
+    /// at 30 000. Astra caught it; the 0.06059 -> 0.13428 it produced
+    /// establishes nothing about acquisition.
+    rms_frozen_end: f64 = 0,
+    rms_after_acq: f64 = 0,
+    rejected: bool = false,
+    rms_after_sleep: f64 = 0,
+    k_before: usize = 0,
+    k_after: usize = 0,
+    births_since: u64 = 0,
+    fit_first: f64 = 0,
+    fit_last: f64 = 0,
+};
+
+pub const Diag = struct {
+    steps: [8]Step = [_]Step{.{}} ** 8,
+    n: usize = 0,
+};
+
+/// Optional instrumentation and a fork, both off by default so that adding
+/// them cannot move a recorded number.
+pub const Probe = struct {
+    diag: ?*Diag = null,
+    /// Replace the consolidation at this intervention index (0-based).
+    fork_at: ?usize = null,
+    /// `half` is the registered recipe; `skip` performs no consolidation;
+    /// `full` consolidates to the PARENT'S population, which refits and
+    /// refines without compressing.
+    ///
+    /// `norefine` does selection and the LINEAR refit only, zero descent
+    /// steps — so a disastrous linear fit is distinguished from a disastrous
+    /// refinement. `guarded` keeps the refinement but rejects one that ends
+    /// non-finite or above its starting replay loss.
+    ///
+    /// `relabel` keeps the same points and the same selection and re-reads
+    /// every label from the world at COMPLETION TIME. It needs an oracle per
+    /// point, so it is a probe and never a policy — the same instrument
+    /// OBS-18, OBS-20 and OBS-21 used. It tests whether the historical
+    /// labels a drifting window carries are what the refinement failed on.
+    fork_mode: enum { half, skip, full, norefine, guarded, relabel } = .half,
+};
+
+/// Run one arm over the whole trajectory.
+///
+/// `do_sleep` is the injected stub: false runs every part of the controller
+/// EXCEPT the expensive `sleepOn`, so the structural gate can exercise this
+/// exact code path in seconds. The sleep EVENT is emitted either way, so
+/// ordering is testable without paying for a consolidation.
+pub fn runArm(
+    gpa: std.mem.Allocator,
+    o: marl.Options,
+    c: Traj,
+    plan: Plan,
+    trig: *Trigger,
+    worlds: [3]marl.TruthParams,
+    probes: [][3]f32,
+    do_sleep: bool,
+    st: *rng.Stream,
+    out: *Tally,
+    probe: Probe,
+) !void {
+    var m = try marl.Model.init(gpa, o);
+    defer m.deinit();
+    var win = try Window.init(gpa, c.w);
+    defer win.deinit(gpa);
+    const vals = try gpa.alloc([1]f32, probes.len);
+    defer gpa.free(vals);
+    const pick = try gpa.alloc(usize, c.w);
+    defer gpa.free(pick);
+    const pts = try gpa.alloc([3]f32, c.r);
+    defer gpa.free(pts);
+
+    var i: u64 = 0;
+    var next_at: usize = 0;
+    var births_mark: u64 = 0;
+    while (i < c.total) {
+        // The drift snapshot, on the COMMON clock and BEFORE this index's
+        // decision — so an intervention beginning exactly at onset is not
+        // counted as already spent.
+        if (!out.drift_marked and i >= c.drift_lo) {
+            out.budget_at_drift = c.budget - out.started;
+            out.drift_marked = true;
+        }
+
+        var want = false;
+        switch (plan) {
+            .never => {},
+            .at => |times| want = next_at < times.len and i >= times[next_at],
+            .trigger => want = trig.crosses(),
+        }
+        if (want) {
+            if (plan == .trigger) {
+                out.crossings += 1;
+                if (out.first_cross == 0) out.first_cross = i;
+                if (i < c.cold_end) {
+                    out.crossings_cold += 1;
+                } else if (i < c.change_at) {
+                    out.crossings_settled += 1;
+                }
+            }
+            const ready = win.n >= @as(u64, c.w);
+            const room = i + @as(u64, c.r) <= c.total;
+            if (!ready) out.unready += 1;
+            if (ready and !room) out.horizon_blocked += 1;
+            if (ready and room and !(plan == .trigger and trig.spent())) {
+                if (plan == .at) next_at += 1;
+                if (plan == .trigger) trig.charge();
+                if (out.started < out.fired_at.len) out.fired_at[out.started] = i;
+                out.started_phase[c.phaseOf(i)] += 1;
+                out.note(.start, i);
+                out.started += 1;
+                trig.busy = true;
+                var before_acq: f64 = 0;
+                var frozen: ?marl.Model = null;
+                defer if (frozen) |*f| f.deinit();
+                if (probe.diag != null) {
+                    for (probes, 0..) |pz, k| vals[k] = .{marl.truthOf(worldAt(c, i, worlds[0], worlds[1], worlds[2]), pz)};
+                    before_acq = try m.rms(probes, vals, null);
+                    // A prediction-identical copy, held back so the world's
+                    // own motion can be separated from acquisition's effect.
+                    frozen = try adopt(gpa, o, m.kernels.items);
+                }
+
+                for (0..c.w) |k| pick[k] = k;
+                std.mem.sort(usize, pick, win.s, struct {
+                    fn lt(sv: []const f32, x: usize, y: usize) bool {
+                        return sv[x] > sv[y];
+                    }
+                }.lt);
+                for (pick[0..c.r], 0..) |k, j| pts[j] = win.x[k];
+                var due = false;
+                for (pts, 0..) |q, j| {
+                    const tp = worldAt(c, i, worlds[0], worlds[1], worlds[2]);
+                    const v: f64 = marl.truthOf(tp, q);
+                    const ev = try m.observe(q, .{@as(f32, @floatCast(v))});
+                    win.push(q, v, ev.surprise, ev.cover);
+                    out.paid += 1;
+                    out.revisits += 1;
+                    i += 1;
+                    // **The registered ordering: observation, then the
+                    // completed intervention's sleep, THEN the score.** A
+                    // checkpoint landing on the LAST query is deferred past
+                    // the consolidation, so it never reports a model that is
+                    // about to be replaced. An earlier draft scored it first
+                    // and Astra caught it by reading the loop.
+                    if (i % c.check == 0) {
+                        if (j + 1 == c.r) due = true else try score(&m, c, i, worlds, probes, vals, out);
+                    }
+                }
+                var step = Step{ .at = i, .k_before = m.kernels.items.len };
+                if (probe.diag) |d| {
+                    step.rms_before = before_acq;
+                    for (probes, 0..) |pz, k| vals[k] = .{marl.truthOf(worldAt(c, i, worlds[0], worlds[1], worlds[2]), pz)};
+                    step.rms_after_acq = try m.rms(probes, vals, null);
+                    if (frozen) |*f| step.rms_frozen_end = try f.rms(probes, vals, null);
+                    step.births_since = m.stats.births - births_mark;
+                    _ = d;
+                }
+                const forked = probe.fork_at != null and probe.fork_at.? == out.started - 1;
+                const mode = if (forked) probe.fork_mode else .half;
+                if (do_sleep and mode != .skip) {
+                    var buf = try Replay.initWith(gpa, c.n, .err, 0x33);
+                    defer buf.deinit(gpa);
+                    win.selectInto(&buf);
+                    const keep: usize = if (mode == .full) m.kernels.items.len else m.kernels.items.len / 2;
+                    if (mode == .relabel) {
+                        const now = worldAt(c, i, worlds[0], worlds[1], worlds[2]);
+                        for (buf.x[0..c.n], 0..) |qz, k| buf.y[k] = marl.truthOf(now, qz);
+                    }
+                    var so = Options{ .exact = true };
+                    if (mode == .norefine) so.steps = 0;
+                    if (mode == .guarded) so.guard = true;
+                    var rep: Report = undefined;
+                    var child = try sleepOnReporting(gpa, &m, buf.x[0..c.n], buf.y[0..c.n], keep, so, &rep);
+                    errdefer child.deinit();
+                    m.deinit();
+                    m = child;
+                    step.fit_first = rep.first;
+                    step.fit_last = rep.last;
+                    step.rejected = rep.rejected;
+                }
+                if (probe.diag) |d| {
+                    step.k_after = m.kernels.items.len;
+                    for (probes, 0..) |pz, k| vals[k] = .{marl.truthOf(worldAt(c, i, worlds[0], worlds[1], worlds[2]), pz)};
+                    step.rms_after_sleep = try m.rms(probes, vals, null);
+                    if (d.n < d.steps.len) {
+                        d.steps[d.n] = step;
+                        d.n += 1;
+                    }
+                }
+                births_mark = m.stats.births;
+                out.sleeps += 1;
+                out.note(.sleep, i);
+                out.watch_until = i + 2 * c.check;
+                out.watch_idx = out.started - 1;
+                out.watching = true;
+                if (due) try score(&m, c, i, worlds, probes, vals, out);
+                trig.busy = false;
+                trig.cooldown(@as(u64, c.w));
+                continue;
+            }
+            if (plan == .at and !room) next_at += 1;
+        }
+
+        const tp = worldAt(c, i, worlds[0], worlds[1], worlds[2]);
+        const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+        const v: f64 = marl.truthOf(tp, q);
+        const ev = try m.observe(q, .{@as(f32, @floatCast(v))});
+        win.push(q, v, ev.surprise, ev.cover);
+        _ = trig.monitor(ev.surprise);
+        out.paid += 1;
+        out.monitored += 1;
+        i += 1;
+        if (i % c.check == 0) try score(&m, c, i, worlds, probes, vals, out);
+    }
+}
+
+fn score(
+    m: *marl.Model,
+    c: Traj,
+    i: u64,
+    worlds: [3]marl.TruthParams,
+    probes: [][3]f32,
+    vals: [][1]f32,
+    out: *Tally,
+) !void {
+    const tp = worldAt(c, i, worlds[0], worlds[1], worlds[2]);
+    for (probes, 0..) |p, k| vals[k] = .{marl.truthOf(tp, p)};
+    const e = try m.rms(probes, vals, null);
+    out.err_sum += e;
+    out.checks += 1;
+    const ph = c.phaseOf(i);
+    out.err_phase[ph] += e;
+    out.checks_phase[ph] += 1;
+    if (out.watching and i <= out.watch_until and out.watch_idx < out.post_err.len) {
+        out.post_err[out.watch_idx] += e;
+        out.post_n[out.watch_idx] += 1;
+        if (i >= out.watch_until) out.watching = false;
+    }
+    out.note(.check, i);
+}
+
+/// Freeze the trigger's threshold on a SEPARATE trajectory that is never
+/// scored and never reused as an evaluation arm.
+///
+/// The first draft of OBS-22 estimated it from observations 12 000-30 000 of
+/// the trajectory it was then tested on, and tested cold-start restraint at
+/// t < 12 000 — a trigger calibrated on its own future. Astra caught it
+/// before any code existed.
+///
+/// Pinned: the seed, the stretch, the sampling (every monitoring
+/// observation), and the convention — **population** standard deviation, and
+/// `mean(ratio) + 3*sd(ratio)` rather than `1 + 3*sd`, because a stationary
+/// world does not imply a ratio centred at one. The learner's own residuals
+/// are not stationary either.
+///
+/// Three standard deviations is a REGISTERED HEURISTIC, not a calibrated
+/// false-alarm probability: the checks are thousands and heavily correlated,
+/// and nothing here computes a family-wise rate.
+pub fn calibrate(
+    gpa: std.mem.Allocator,
+    o: marl.Options,
+    c: Traj,
+    worlds: [3]marl.TruthParams,
+    half_fast: f64,
+    half_slow: f64,
+    seed: u64,
+    lo: u64,
+    hi: u64,
+) !struct { thresh: f64, mean: f64, sd: f64, n: usize } {
+    var m = try marl.Model.init(gpa, o);
+    defer m.deinit();
+    var trig = Trigger.init(half_fast, half_slow, 0);
+    var st = rng.Stream.region(seed, 0x4341_4c42, 0); // "CALB"
+    var sum: f64 = 0;
+    var sum2: f64 = 0;
+    var n: usize = 0;
+    var i: u64 = 0;
+    while (i < hi) : (i += 1) {
+        const tp = worldAt(c, i, worlds[0], worlds[1], worlds[2]);
+        const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+        const v: f64 = marl.truthOf(tp, q);
+        const ev = try m.observe(q, .{@as(f32, @floatCast(v))});
+        const r = trig.monitor(ev.surprise);
+        if (i >= lo) {
+            sum += r;
+            sum2 += r * r;
+            n += 1;
+        }
+    }
+    const fn_ = @as(f64, @floatFromInt(@max(1, n)));
+    const mean = sum / fn_;
+    const sd = @sqrt(@max(0, sum2 / fn_ - mean * mean));
+    return .{ .thresh = mean + 3 * sd, .mean = mean, .sd = sd, .n = n };
+}
+
 /// Stream `n` exemplars past every buffer AND every window at once — one
 /// model, one stream, so no two arms can differ by a draw.
 pub fn wakeInto(
@@ -1424,6 +2020,22 @@ fn sleepOn(
     keep: usize,
     o: Options,
 ) !marl.Model {
+    return sleepOnReporting(gpa, m, pts, target, keep, o, null);
+}
+
+/// The same consolidation with the refinement's own `Report` handed back —
+/// the descent's fitting error at its first and last step. OBS-22's
+/// diagnostic needs it to separate damage done by ACQUISITION from damage
+/// done by CONSOLIDATION, and `sleepOn` discarded it.
+fn sleepOnReporting(
+    gpa: std.mem.Allocator,
+    m: *marl.Model,
+    pts: []const [3]f32,
+    target: []const f64,
+    keep: usize,
+    o: Options,
+    report: ?*Report,
+) !marl.Model {
     const reff = try gpa.alloc(f64, m.regions.len);
     defer gpa.free(reff);
     var total: f64 = 0;
@@ -1467,7 +2079,20 @@ fn sleepOn(
     const w = try novelty.refit(gpa, picked, target);
     defer gpa.free(w);
     for (out.items, w) |*k, wv| k.p[marl.PARAMS - 1] = @floatCast(wv);
-    _ = try refine(gpa, out.items, pts, target, m.opts.regions, o);
+    var snap: []marl.Kernel = &.{};
+    if (o.guard) snap = try gpa.dupe(marl.Kernel, out.items);
+    defer if (o.guard) gpa.free(snap);
+    var rep = try refine(gpa, out.items, pts, target, m.opts.regions, o);
+    if (o.guard and (!std.math.isFinite(rep.last) or rep.last > rep.first)) {
+        @memcpy(out.items, snap);
+        rep.rejected = true;
+        // The restore is verified where it happens, not inferred from a
+        // printed digit downstream. `rep.last` remains the ATTEMPTED
+        // post-refinement loss — it is NOT the returned candidate's loss,
+        // which is `rep.first` — and the printed column says so.
+        std.debug.assert(std.mem.eql(u8, std.mem.sliceAsBytes(out.items), std.mem.sliceAsBytes(snap)));
+    }
+    if (report) |r| r.* = rep;
     return adopt(gpa, m.opts, out.items);
 }
 
@@ -3799,4 +4424,996 @@ test "G68 targeted re-observation: can you pay to consolidate early?" {
     // misses and is NOT acquisition-stage randomness isolated at a fixed
     // parent. Reported as what it is.
     std.debug.print("     the ACQUISITION spread varies the whole life including the branch model — it catches what selection-only replication misses, and is not acquisition randomness at a FIXED parent\n", .{});
+}
+
+test "G69 (a) the trajectory controller's contracts, driven with a sleep stub" {
+    // **Astra's build order, and OBS-21's lesson applied before the fact:**
+    // build the cheap structural checks first. But the FIRST draft of this
+    // gate tested the `Trigger` in isolation and called it done — it proved
+    // arithmetic and isolated behaviour, not the contracts the trajectory
+    // RUNNER has to enforce. Astra's four objections, each fixed here:
+    //
+    //   * setting `busy` and checking `seen` cannot catch a controller that
+    //     routes acquisition queries into the detector — no query was ever
+    //     sent through any routing path.
+    //   * interpolating the world INSIDE the test verifies the formula, not
+    //     that the runner calls the shared one at each paid query.
+    //   * `used*R + (TOTAL - used*R) == TOTAL` is an identity. It cannot
+    //     catch a double-counted query, a skipped checkpoint, or an
+    //     intervention overrunning the horizon.
+    //   * refusing to fire at `thresh == 0` proves readiness, not that
+    //     evaluation never recalibrates.
+    //
+    // So every assertion below drives `runArm` itself with `do_sleep =
+    // false`: the real clock, the real routing, the real budget accounting,
+    // with the one expensive call stubbed out. Seconds.
+    //
+    // The constants are small ON PURPOSE — this gate tests CONTROL FLOW, and
+    // the expensive gate uses the registered ones.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 2;
+    o.responsibility = 3;
+    const bounds = [_]u64{ 2_000, 5_000, 6_500, 7_000, 10_000, 12_000 };
+    const c = Traj{
+        .total = 12_000,
+        .r = 1_000,
+        .w = 2_000,
+        .n = 1_000,
+        .check = 500,
+        .cold_end = 2_000,
+        .change_at = 5_000,
+        .drift_lo = 7_000,
+        .drift_hi = 10_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+    const pr = try marl.probesOf(gpa, wb, 31337, 512);
+    defer {
+        gpa.free(pr.p);
+        gpa.free(pr.y);
+    }
+
+    std.debug.print("\n  G69 (a) [{s}] driving the REAL controller with a sleep stub; {d} observations, r = {d}, w = {d}\n", .{
+        @tagName(builtin.mode), c.total, c.r, c.w,
+    });
+
+    const run = struct {
+        fn go(g: std.mem.Allocator, oo: marl.Options, cc: Traj, plan: Plan, thresh: f64, ws: [3]marl.TruthParams, pp: [][3]f32) !struct { t: Tally, tr: Trigger } {
+            // Half-lives scaled to this cheap horizon in the same ratio as
+            // the registered 2048/16384 over 104 000, so the dynamics are
+            // analogous rather than merely the same numbers on a tenth of
+            // the trajectory.
+            var trig = Trigger.init(256, 2048, cc.budget);
+            trig.thresh = thresh;
+            var out = Tally{};
+            var st = rng.Stream.region(4242, 0x4f32_3254, 0); // "O22T"
+            try runArm(g, oo, cc, plan, &trig, ws, pp, false, &st, &out, .{});
+            return .{ .t = out, .tr = trig };
+        }
+    }.go;
+
+    // ── SCENARIO 1: NEVER. The whole horizon spent observing, no
+    // interventions, no sleeps — and every paid observation monitored.
+    {
+        const r1 = try run(gpa, o, c, .never, 0, worlds, pr.p);
+        try testing.expectEqual(c.total, r1.t.paid);
+        try testing.expectEqual(c.total, r1.t.monitored);
+        try testing.expectEqual(@as(u64, 0), r1.t.revisits);
+        try testing.expectEqual(@as(usize, 0), r1.t.started);
+        try testing.expectEqual(@as(usize, 0), r1.t.sleeps);
+        try testing.expectEqual(@as(usize, @intCast(c.total / c.check)), r1.t.checks);
+        std.debug.print("     never:    paid {d} = monitored {d}, revisits {d}, checks {d}\n", .{
+            r1.t.paid, r1.t.monitored, r1.t.revisits, r1.t.checks,
+        });
+    }
+
+    // ── SCENARIO 2: THE HORIZON, and the query accounting that an identity
+    // could not check. Paid must equal the horizon EXACTLY however many
+    // interventions ran, monitored + revisits must equal paid, and revisits
+    // must be exactly r per started intervention.
+    //
+    // **This is the check that catches a double-counted query or an
+    // intervention overrunning the horizon**, neither of which the first
+    // draft could have seen.
+    {
+        const times = [_]u64{ 3_000, 6_000, 8_500 };
+        const r2 = try run(gpa, o, c, .{ .at = &times }, 0, worlds, pr.p);
+        try testing.expectEqual(c.total, r2.t.paid);
+        try testing.expectEqual(c.total, r2.t.monitored + r2.t.revisits);
+        try testing.expectEqual(@as(usize, 3), r2.t.started);
+        try testing.expectEqual(@as(u64, 3 * c.r), r2.t.revisits);
+        // The detector saw NONE of the revisits — the routing contract,
+        // exercised by actually sending them through the controller.
+        try testing.expectEqual(c.total - 3 * @as(u64, c.r), r2.t.monitored);
+        // Checkpoints are on the GLOBAL clock, so an intervention spanning
+        // them does not skip any: 1000 queries at check = 500 crosses two.
+        try testing.expectEqual(@as(usize, @intCast(c.total / c.check)), r2.t.checks);
+        std.debug.print("     schedule: paid {d}, monitored {d} + revisits {d}, started {d}, checks {d} (an intervention spans {d} of them)\n", .{
+            r2.t.paid, r2.t.monitored, r2.t.revisits, r2.t.started, r2.t.checks, c.r / c.check,
+        });
+    }
+
+    // ── SCENARIO 3: THE HORIZON EDGE. An intervention that cannot finish
+    // must never start, and must never be charged.
+    {
+        const late = [_]u64{c.total - 10};
+        const r3 = try run(gpa, o, c, .{ .at = &late }, 0, worlds, pr.p);
+        try testing.expectEqual(c.total, r3.t.paid);
+        try testing.expectEqual(@as(usize, 0), r3.t.started);
+        try testing.expect(r3.t.horizon_blocked > 0);
+        std.debug.print("     near-horizon: an intervention needing {d} queries at t = {d} is BLOCKED, not truncated ({d} refusals, 0 started)\n", .{
+            c.r, late[0], r3.t.horizon_blocked,
+        });
+    }
+
+    // ── SCENARIO 4: READINESS. A crossing before the window is full cannot
+    // become an intervention — and is COUNTED, so a cold-start prediction is
+    // tested on the STATISTIC rather than on whatever gate happens to
+    // suppress it. A threshold of 0.5 is below the neutral ratio of 1, so it
+    // crosses immediately and permanently: exactly the pathology Astra
+    // warned a low calibrated threshold would produce.
+    //
+    // **An unready request is DEFERRED, not discarded** — it is re-evaluated
+    // every step and runs once the window fills, so a schedule cannot lose an
+    // intervention to an accident of timing and a trigger re-crosses
+    // naturally. The rule was not stated in the first draft and this
+    // scenario is what forced it to be: the assertion originally said the
+    // intervention never happens, and the controller was right.
+    {
+        const eager = [_]u64{0};
+        const r4 = try run(gpa, o, c, .{ .at = &eager }, 0, worlds, pr.p);
+        try testing.expectEqual(@as(usize, 1), r4.t.started);
+        try testing.expectEqual(@as(usize, @intCast(c.w)), r4.t.unready);
+        try testing.expectEqual(@as(u64, c.w), r4.t.fired_at[0]);
+        var trig = Trigger.init(2048, 16384, c.budget);
+        trig.thresh = 0.5;
+        _ = trig.monitor(0.25);
+        try testing.expect(trig.crosses()); // a threshold under 1 fires on the seed itself
+        std.debug.print("     readiness: a request at t = 0 is refused {d} times on an unfilled window and DEFERRED to t = {d}, not lost; and a calibrated threshold BELOW 1 crosses on the seed — reported, never clamped\n", .{ r4.t.unready, r4.t.fired_at[0] });
+    }
+
+    // ── SCENARIO 5: MAXIMUM FIRINGS, and the budget as a ceiling rather
+    // than a promise. A threshold just above the neutral ratio makes the
+    // trigger want to fire constantly; it must still stop at `budget`, and
+    // the cooldown must be spent in MONITORING observations.
+    //
+    // A DEGENERATE threshold of 0.5 is used deliberately: it sits below the
+    // neutral ratio of 1, so the detector wants to fire constantly. That is
+    // the pathology a calibrated threshold under 1 would produce, and it is
+    // exactly the case in which the ceiling has to hold.
+    {
+        const r5 = try run(gpa, o, c, .trigger, 0.5, worlds, pr.p);
+        try testing.expectEqual(c.total, r5.t.paid);
+        try testing.expectEqual(c.total, r5.t.monitored + r5.t.revisits);
+        try testing.expectEqual(c.budget, r5.t.started);
+        try testing.expectEqual(r5.t.started, r5.tr.fired);
+        try testing.expect(r5.t.crossings >= r5.t.started);
+        try testing.expectEqual(@as(u64, r5.t.started) * @as(u64, c.r), r5.t.revisits);
+        std.debug.print("     ceiling:  a DEGENERATE threshold of 0.5 crosses {d} times and still starts exactly {d}; revisits {d}, budget at drift {d}\n", .{
+            r5.t.crossings, r5.t.started, r5.t.revisits, r5.t.budget_at_drift,
+        });
+    }
+
+    // ── SCENARIO 5b: AND THE COLD-START RESTRAINT, as a measurement rather
+    // than a hope. During learning the fast EWMA falls FASTER than the slow,
+    // so the ratio sits BELOW one and a threshold above one cannot fire. The
+    // statistic is doing what it was designed for, and this is the cheapest
+    // possible evidence of it — no calibration, no sleeps.
+    //
+    // **Asked of the STATISTIC, not of the executions.** The window must be
+    // full before any intervention can run, so in this config nothing can
+    // execute before t = 2000 and in the registered one nothing can execute
+    // before 16 384 — later than the whole cold start. A restraint claim
+    // tested on executions would therefore be vacuous whatever the detector
+    // did. What is asserted is that it never wanted to.
+    {
+        const r6 = try run(gpa, o, c, .trigger, 1.0001, worlds, pr.p);
+        try testing.expectEqual(c.total, r6.t.paid);
+        try testing.expectEqual(@as(usize, 0), r6.t.crossings_cold);
+        try testing.expect(r6.t.first_cross >= c.change_at);
+        std.debug.print("     restraint: {d} crossings in the COLD START (t < {d}) and {d} in the settled stretch that follows; first at t = {d}. A TOY CONFIG — scaled half-lives, threshold 1.0001, change at {d} — so it exercises the statistic, it does not establish Q2 under the frozen threshold on the registered trajectory\n", .{
+            r6.t.crossings_cold, c.cold_end, r6.t.crossings_settled, r6.t.first_cross, c.change_at,
+        });
+    }
+
+    // ── SCENARIO 8: THE REGISTERED EVENT ORDER — observation, then the
+    // completed intervention's SLEEP, then the SCORE. A checkpoint landing
+    // on an intervention's last query must be DEFERRED past the
+    // consolidation, or it reports a model that is about to be replaced.
+    //
+    // `do_sleep = false` cannot reveal this by outcome, because there is no
+    // replacement to see. The sleep EVENT is emitted either way and the
+    // order is asserted directly. Astra found the bug by reading the loop;
+    // this is what would have caught it.
+    {
+        // r = 1000 and check = 500 divide, so every intervention's last
+        // query lands exactly on a checkpoint. The worst case, chosen.
+        const times = [_]u64{ 3_000, 6_000, 8_500 };
+        const r8 = try run(gpa, o, c, .{ .at = &times }, 0, worlds, pr.p);
+        var seen_sleep: usize = 0;
+        var coincident: usize = 0;
+        for (r8.t.trace[0..r8.t.ntrace], 0..) |e, k| {
+            if (e.kind != .sleep) continue;
+            seen_sleep += 1;
+            // the very next event at the SAME index must be the check
+            if (k + 1 < r8.t.ntrace and r8.t.trace[k + 1].kind == .check and r8.t.trace[k + 1].at == e.at) coincident += 1;
+            // and no check at this index may PRECEDE the sleep
+            for (r8.t.trace[0..k]) |q| try testing.expect(!(q.kind == .check and q.at == e.at));
+        }
+        try testing.expectEqual(@as(usize, 3), seen_sleep);
+        try testing.expectEqual(@as(usize, 3), coincident);
+        std.debug.print("     ordering: {d} interventions whose last query lands ON a checkpoint; in every one the SLEEP precedes the SCORE at that index\n", .{coincident});
+    }
+
+    // ── SCENARIO 9: THE DRIFT SNAPSHOT, on an arm that never touches the
+    // trigger. It was previously taken from `trig.fired`, which a scheduled
+    // plan never increments, so every such arm reported its full budget
+    // however many interventions it had already run — and it was written
+    // only in the monitoring branch, so an intervention spanning drift onset
+    // skipped it entirely. Both fixed; both asserted here.
+    {
+        // Two interventions complete before drift onset at 7000; a third
+        // starts at 6900 and SPANS it.
+        const early = [_]u64{ 2_500, 4_000, 6_900 };
+        const r9 = try run(gpa, o, c, .{ .at = &early }, 0, worlds, pr.p);
+        try testing.expectEqual(@as(usize, 3), r9.t.started);
+        // At the first index >= drift_lo, three had started, so none remain.
+        try testing.expectEqual(@as(usize, 0), r9.t.budget_at_drift);
+        try testing.expect(r9.t.drift_marked);
+        std.debug.print("     drift snapshot: {d} interventions started before onset (one SPANNING it), budget remaining {d} — taken on the common clock from interventions STARTED, not from a trigger the arm never uses\n", .{
+            r9.t.started, r9.t.budget_at_drift,
+        });
+    }
+
+    // ── SCENARIO 10: THE THRESHOLD IS NOT TOUCHED BY EVALUATION. The
+    // degenerate-threshold scenario proves the budget ceiling; it says
+    // nothing about whether a run recalibrates. Asserted separately.
+    {
+        const r10 = try run(gpa, o, c, .trigger, 0.5, worlds, pr.p);
+        try testing.expectEqual(@as(f64, 0.5), r10.tr.thresh);
+        std.debug.print("     calibration: the supplied threshold is {d:.4} after a full evaluation run — unchanged, and never re-derived from evaluation data\n", .{r10.tr.thresh});
+    }
+
+    // ── SCENARIO 11: THE REPORTING PATHS the expensive gate will use, run
+    // cheaply so that a segmentation bug is not discovered nine minutes in.
+    {
+        const times = [_]u64{ 3_000, 6_000, 8_500 };
+        const r11 = try run(gpa, o, c, .{ .at = &times }, 0, worlds, pr.p);
+        var seg: usize = 0;
+        for (r11.t.checks_phase) |n| seg += n;
+        try testing.expectEqual(r11.t.checks, seg);
+        try testing.expect(r11.t.meanTail(bounds.len) > 0);
+        var posted: usize = 0;
+        for (r11.t.post_n[0..r11.t.started]) |n| {
+            if (n > 0) posted += 1;
+        }
+        try testing.expectEqual(r11.t.started, posted);
+        std.debug.print("     reporting: {d} checkpoints segment exactly across {d} phases; drift+tail mean {d:.5}; every one of {d} interventions has post-intervention error recorded\n", .{
+            r11.t.checks, bounds.len, r11.t.meanTail(bounds.len), posted,
+        });
+    }
+
+    // ── SCENARIO 6: THE WORLD IS THE RUNNER'S, NOT THE TEST'S. `worldAt` is
+    // the single definition both use, so a controller that interpolated
+    // privately would be caught here rather than proving its own formula
+    // self-consistent.
+    {
+        try testing.expectEqual(wa.shift, worldAt(c, c.change_at - 1, wa, wb, wc).shift);
+        try testing.expectEqual(wb.shift, worldAt(c, c.drift_lo, wa, wb, wc).shift);
+        try testing.expectEqual(wc.shift, worldAt(c, c.drift_hi, wa, wb, wc).shift);
+        const s0 = worldAt(c, c.drift_lo + 100, wa, wb, wc);
+        const s1 = worldAt(c, c.drift_lo + 100 + c.r, wa, wb, wc);
+        var moved: f32 = 0;
+        inline for (0..3) |k| moved += @abs(s1.shift[k] - s0.shift[k]);
+        try testing.expect(moved > 0);
+        std.debug.print("     clock:    the world moves {d:.5} in shift across one intervention's {d} queries — the drift does not wait\n", .{ moved, c.r });
+    }
+
+    // ── SCENARIO 7: THE ZERO-SURPRISE START, which the first draft's
+    // seeding contract did not survive. This fixture HAS an exactly-zero
+    // region, so `0, 0, positive` is a real history and must not reopen the
+    // manufactured alarm.
+    {
+        var t = Trigger.init(2048, 16384, c.budget);
+        try testing.expectEqual(@as(f64, 1), t.monitor(0));
+        try testing.expectEqual(@as(f64, 1), t.monitor(0));
+        try testing.expect(!t.started);
+        const after = t.monitor(0.4);
+        try testing.expectEqual(@as(f64, 1), after);
+        try testing.expect(t.started);
+        try testing.expectEqual(@as(u64, 3), t.seen);
+        const manufactured = t.af / t.as_;
+        std.debug.print("     zero-start: 0, 0, positive opens at {d:.2}, not the {d:.2} that zero-init manufactures\n", .{ after, manufactured });
+    }
+}
+
+test "G69 when is intervention worth its cost?" {
+    // Every phase from OBS-18 to OBS-21 assumed someone said when the world
+    // moved. OBS-19 chose its offsets, OBS-20 set its cutoff, OBS-21 spent
+    // its budget — all because the experiment said so. This is the first
+    // where the policy has to decide.
+    //
+    // Astra's framing, which replaced the one this phase nearly got built
+    // on: **"when is intervention worth its cost?" rather than "detect the
+    // change."** Surprise also rises because a model is undertrained. And
+    // detection is ill-posed during the drift by construction — there is no
+    // instant to name.
+    //
+    // `tools/obs22_predict.py` holds the registration, including the three
+    // contract bugs its first draft had. G69 (a) holds the controller's
+    // contracts and runs in seconds; this is the expensive comparison, and
+    // it runs once.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const H_FAST: f64 = 2048;
+    const H_SLOW: f64 = 16384;
+    const bounds = [_]u64{ 12_000, 30_000, 48_000, 60_000, 90_000, 104_000 };
+    const c = Traj{
+        .total = 104_000,
+        .r = 4_096,
+        .w = 16_384,
+        .n = 8_192,
+        .check = 2_000,
+        .cold_end = 12_000,
+        .change_at = 30_000,
+        .drift_lo = 60_000,
+        .drift_hi = 90_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+    const pr = try marl.probesOf(gpa, wb, 31337, 2048);
+    defer {
+        gpa.free(pr.p);
+        gpa.free(pr.y);
+    }
+
+    // ── CALIBRATION, on its own trajectory, frozen before anything is
+    // scored. Printed rather than clamped: a threshold below 1 would fire on
+    // the neutral seed itself, and that is a finding, not something to fix
+    // quietly.
+    const cal = try calibrate(gpa, o, c, worlds, H_FAST, H_SLOW, 0x0CA1, c.cold_end, c.change_at);
+    std.debug.print("\n  G69 [{s}] calibration on seed 0x0CA1, stationary {d}..{d}: ratio mean {d:.5}, population sd {d:.5} over {d} samples -> THRESHOLD {d:.5}\n", .{
+        @tagName(builtin.mode), c.cold_end, c.change_at, cal.mean, cal.sd, cal.n, cal.thresh,
+    });
+    if (cal.thresh < 1) std.debug.print("     WARNING: the frozen threshold is BELOW 1, so the neutral seeded ratio crosses it. Reported, not clamped.\n", .{});
+
+    const sched = [_]u64{ 26_000, 52_000, 78_000 };
+    const informed = [_]u64{ 30_000, 60_000, 90_000 };
+    const names = [_][]const u8{ "trigger", "schedule", "informed", "none" };
+    const acq = [_]u64{ 1234, 5678 };
+
+    var tal: [4][acq.len]Tally = undefined;
+    for (acq, 0..) |aseed, ai| {
+        for (0..4) |mi| {
+            const plan: Plan = switch (mi) {
+                0 => .trigger,
+                1 => .{ .at = &sched },
+                2 => .{ .at = &informed },
+                else => .never,
+            };
+            var trig = Trigger.init(H_FAST, H_SLOW, c.budget);
+            trig.thresh = cal.thresh;
+            var out = Tally{};
+            var st = rng.Stream.region(aseed, 0x4f32_3254, 0); // "O22T"
+            try runArm(gpa, o, c, plan, &trig, worlds, pr.p, true, &st, &out, .{});
+            tal[mi][ai] = out;
+            // The contracts G69 (a) proves cheaply, re-asserted on the real
+            // configuration — they are premises, not conveniences.
+            try testing.expectEqual(c.total, out.paid);
+            try testing.expectEqual(c.total, out.monitored + out.revisits);
+            try testing.expect(out.started <= c.budget);
+            try testing.expectEqual(@as(u64, out.started) * @as(u64, c.r), out.revisits);
+            std.debug.print("     {s:<9} acq {d}  started {d} (of at most {d})  sleeps {d}  above-threshold ticks {d} (cold {d}, settled {d})  first {d}  unready {d}  blocked {d}  budget@drift {d}  fired {any}\n", .{
+                names[mi], aseed, out.started, c.budget, out.sleeps,
+                out.crossings, out.crossings_cold, out.crossings_settled, out.first_cross,
+                out.unready, out.horizon_blocked, out.budget_at_drift,
+                out.fired_at[0..out.started],
+            });
+        }
+    }
+
+    const avg = struct {
+        fn whole(t: [acq.len]Tally) f64 {
+            return (t[0].mean() + t[1].mean()) / 2;
+        }
+        fn tail(t: [acq.len]Tally, nph: usize) f64 {
+            return (t[0].meanTail(nph) + t[1].meanTail(nph)) / 2;
+        }
+        fn spread(t: [acq.len]Tally) f64 {
+            return @abs(t[0].mean() - t[1].mean());
+        }
+        /// **The spread on the drift-and-tail objective itself.** Judging a
+        /// drift-and-tail margin against whole-trajectory spread compares a
+        /// difference to the variability of a different quantity. Astra's
+        /// correction; an earlier draft did exactly that.
+        fn tailSpread(t: [acq.len]Tally, nph: usize) f64 {
+            return @abs(t[0].meanTail(nph) - t[1].meanTail(nph));
+        }
+    };
+    std.debug.print("     TIME-AVERAGED ERROR (mean RMS over checkpoints, not pooled MSE):\n", .{});
+    for (names, 0..) |nm, mi| {
+        std.debug.print("       {s:<9} whole {d:.5} ({d:.5} / {d:.5}, spread {d:.5})   drift+tail {d:.5} ({d:.5} / {d:.5}, spread {d:.5})\n", .{
+            nm, avg.whole(tal[mi]), tal[mi][0].mean(), tal[mi][1].mean(), avg.spread(tal[mi]),
+            avg.tail(tal[mi], bounds.len), tal[mi][0].meanTail(bounds.len), tal[mi][1].meanTail(bounds.len),
+            avg.tailSpread(tal[mi], bounds.len),
+        });
+    }
+    // **Both trajectories.** An earlier draft printed only `tal[mi][0]`, so
+    // its reassuring post-intervention errors described the arm that behaved
+    // and said nothing about the one that blew up. Astra caught it reading
+    // the preserved log.
+    std.debug.print("     INTERVENTIONS BY PHASE, and the error over the two checkpoints after each — REPORTED, never scored as false alarms:\n", .{});
+    for (names, 0..) |nm, mi| {
+        for (acq, 0..) |aseed, ai| {
+            std.debug.print("       {s:<9} acq {d}", .{ nm, aseed });
+            for (0..bounds.len) |ph| std.debug.print(" p{d}:{d}", .{ ph, tal[mi][ai].started_phase[ph] });
+            std.debug.print("   post-intervention RMS:", .{});
+            for (0..tal[mi][ai].started) |k| {
+                const n = tal[mi][ai].post_n[k];
+                std.debug.print(" {d:.5}", .{tal[mi][ai].post_err[k] / @as(f64, @floatFromInt(@max(1, n)))});
+            }
+            std.debug.print("\n", .{});
+        }
+    }
+
+    // ── Q1, THE MATCH, already asserted per arm above.
+    // ── Q2, REGISTERED AND REFUTED, and the refutation is what is asserted
+    // so that a change of sign is caught.
+    //
+    // The prediction was that the detector never wants to fire during the
+    // cold start. It holds on one acquisition trajectory and fails utterly
+    // on the other: 0 above-threshold ticks against 11 917 of 12 000,
+    // beginning at t = 83. **The restraint is not a property of the
+    // statistic; it is a property of the draw.** G69 (c) traces both and
+    // describes the difference — the seeds are 0.049409 and 0.006119, an
+    // eightfold gap the slow EWMA carries for its own half-life — without
+    // claiming the seeding rule as its cause, which needs a separate
+    // diagnostic.
+    var cold_min: usize = std.math.maxInt(usize);
+    var cold_max: usize = 0;
+    for (0..acq.len) |ai| {
+        cold_min = @min(cold_min, tal[0][ai].crossings_cold);
+        cold_max = @max(cold_max, tal[0][ai].crossings_cold);
+    }
+    std.debug.print("     Q2 AS REGISTERED: the detector never crosses during the cold start. REFUTED — {d} above-threshold ticks on one trajectory and {d} on the other, so the restraint is a property of the DRAW and not of the statistic.\n", .{ cold_min, cold_max });
+    std.debug.print("     Nothing is asserted here about Q2. The regression check that these fixed trajectories still reproduce {d} against {d} lives in G69 (c), which reaches the same cold-start numbers in seconds and without a single sleep — and passing it would not mean Q2 holds.\n", .{ cold_min, cold_max });
+
+    // ── Q6, ACTING BEATS NOT ACTING — and if an arm loses to `none`, that
+    // says THAT placement failed to earn its cost on THIS trajectory, not
+    // that OBS-21's conditional result falls.
+    const none_w = avg.whole(tal[3]);
+    const trig_w = avg.whole(tal[0]);
+    const sched_w = avg.whole(tal[1]);
+    const inf_w = avg.whole(tal[2]);
+    std.debug.print("     Q5 the reference gap, signed: trigger - informed = {d:.5} (negative means the online policy BEAT the privileged schedule, which refutes THAT schedule and not the value of timing information)\n", .{trig_w - inf_w});
+    std.debug.print("     Q6 against no intervention at all: trigger {d:.5}, schedule {d:.5}, informed {d:.5}, none {d:.5}\n", .{ trig_w, sched_w, inf_w, none_w });
+
+    // ── Q4, THE DRIFT, with the budget remaining at onset printed above so
+    // that a win there is not read as drift sensitivity when it may be the
+    // consequence of earlier decisions.
+    const worst = @max(avg.tailSpread(tal[0], bounds.len), avg.tailSpread(tal[1], bounds.len));
+    std.debug.print("     Q4 drift+tail: trigger {d:.5} against schedule {d:.5}, margin {d:.5} against the worse DRIFT+TAIL acquisition spread {d:.5} (not the whole-trajectory spread, which judges a different quantity)\n", .{
+        avg.tail(tal[0], bounds.len), avg.tail(tal[1], bounds.len),
+        avg.tail(tal[1], bounds.len) - avg.tail(tal[0], bounds.len), worst,
+    });
+}
+
+test "G69 (b) localising the schedule/5678 failure" {
+    // **A diagnostic of the failed arm, not a replacement for the registered
+    // experiment.** G69's `schedule` arm reached a time-averaged error of
+    // 0.37240 on acquisition 5678 against 0.08658 on 1234 — a fourfold
+    // blow-up carrying nearly all of that arm's spread. Astra's instruction:
+    // buy LOCALISATION with the next expenditure, not another headline, and
+    // diagnose before changing any policy.
+    //
+    // My "roughly one eighth of the capacity" was speculation. Regrowth has
+    // to be counted, so the populations are recorded rather than assumed.
+    //
+    // And G69's own per-intervention table printed trajectory 1234 ONLY, so
+    // the reassuring post-intervention errors there described the arm that
+    // behaved. Astra caught that reading the preserved log.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const bounds = [_]u64{ 12_000, 30_000, 48_000, 60_000, 90_000, 104_000 };
+    const c = Traj{
+        .total = 104_000,
+        .r = 4_096,
+        .w = 16_384,
+        .n = 8_192,
+        .check = 2_000,
+        .cold_end = 12_000,
+        .change_at = 30_000,
+        .drift_lo = 60_000,
+        .drift_hi = 90_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+    const pr = try marl.probesOf(gpa, wb, 31337, 2048);
+    defer {
+        gpa.free(pr.p);
+        gpa.free(pr.y);
+    }
+    const sched = [_]u64{ 26_000, 52_000, 78_000 };
+    const SEED: u64 = 5678;
+
+    std.debug.print("\n  G69 (b) [{s}] replaying schedule/{d} UNCHANGED, instrumented\n", .{ @tagName(builtin.mode), SEED });
+
+    var diag = Diag{};
+    var tal = Tally{};
+    {
+        var trig = Trigger.init(2048, 16384, c.budget);
+        var st = rng.Stream.region(SEED, 0x4f32_3254, 0); // "O22T"
+        try runArm(gpa, o, c, .{ .at = &sched }, &trig, worlds, pr.p, true, &st, &tal, .{ .diag = &diag });
+    }
+    try testing.expectEqual(@as(usize, 3), diag.n);
+    std.debug.print("     {s:>6} {s:>10} {s:>10} {s:>10} {s:>11} | {s:>7} {s:>7} {s:>7} | {s:>9} {s:>9}\n", .{
+        "at", "RMS before", "FROZEN end", "after acq", "after sleep", "k before", "k after", "births", "replay pre", "replay post",
+    });
+    var worst: usize = 0;
+    var worst_jump: f64 = 0;
+    for (diag.steps[0..diag.n], 0..) |sx, k| {
+        const jump = sx.rms_after_sleep - sx.rms_after_acq;
+        if (jump > worst_jump) {
+            worst_jump = jump;
+            worst = k;
+        }
+        std.debug.print("     {d:>6} {d:>10.5} {d:>10.5} {d:>10.5} {d:>11.5} | {d:>7} {d:>7} {d:>7} | {d:>9.5} {d:>9.5}\n", .{
+            sx.at, sx.rms_before, sx.rms_frozen_end, sx.rms_after_acq, sx.rms_after_sleep,
+            sx.k_before, sx.k_after, sx.births_since, sx.fit_first, sx.fit_last,
+        });
+    }
+    std.debug.print("     whole {d:.5}, drift+tail {d:.5}; the sleep that costs most is #{d} at t = {d}, which moves the world RMS {d:.5} -> {d:.5}\n", .{
+        tal.mean(), tal.meanTail(bounds.len), worst, diag.steps[worst].at,
+        diag.steps[worst].rms_after_acq, diag.steps[worst].rms_after_sleep,
+    });
+    std.debug.print("     POPULATIONS, counted rather than assumed: ", .{});
+    for (diag.steps[0..diag.n]) |sx| std.debug.print("{d}->{d} (+{d} born) ", .{ sx.k_before, sx.k_after, sx.births_since });
+    std.debug.print("\n", .{});
+
+    // ── THE FORK, at the sleep that costs most. Same acquisition, same
+    // replay selection, same subsequent observations — only the
+    // consolidation differs, so compression and refitting are separated.
+    std.debug.print("     ACQUISITION, judged against the SAME world: the frozen pre-acquisition model at completion time, beside the acquired one.\n", .{});
+    for (diag.steps[0..diag.n]) |sx| {
+        std.debug.print("       t = {d:>6}  frozen {d:.5} -> acquired {d:.5}  ({s})\n", .{
+            sx.at, sx.rms_frozen_end, sx.rms_after_acq,
+            if (sx.rms_after_acq < sx.rms_frozen_end) "acquisition HELPED" else "acquisition hurt",
+        });
+    }
+
+    const modes = [_]@TypeOf(@as(Probe, undefined).fork_mode){ .half, .skip, .norefine, .guarded, .relabel };
+    const mnames = [_][]const u8{ "half (registered)", "skip (parent reference)", "norefine (linear only)", "guarded (reject a rise)", "relabel (oracle, a PROBE)" };
+    var res: [5]Tally = undefined;
+    var fdiag: [5]Diag = undefined;
+    std.debug.print("     {s:<26} {s:>9} {s:>11} |{s:>12} {s:>12} {s:>12}\n", .{
+        "fork", "whole", "drift+tail", "replay pre", "ATTEMPTED post", "world after",
+    });
+    for (modes, 0..) |md, k| {
+        var trig = Trigger.init(2048, 16384, c.budget);
+        var st = rng.Stream.region(SEED, 0x4f32_3254, 0);
+        res[k] = Tally{};
+        fdiag[k] = Diag{};
+        try runArm(gpa, o, c, .{ .at = &sched }, &trig, worlds, pr.p, true, &st, &res[k], .{ .fork_at = worst, .fork_mode = md, .diag = &fdiag[k] });
+        const fs = fdiag[k].steps[worst];
+        std.debug.print("     {s:<26} {d:>9.5} {d:>11.5} |{d:>12.5} {d:>12.5} {d:>12.5}{s}\n", .{
+            mnames[k], res[k].mean(), res[k].meanTail(bounds.len),
+            fs.fit_first, fs.fit_last, fs.rms_after_sleep,
+            if (fs.rejected) "  [REJECTED]" else "",
+        });
+    }
+    // `half` must reproduce the unforked replay exactly — the fork harness
+    // is only trustworthy if its null case is identical.
+    try testing.expectEqual(tal.mean(), res[0].mean());
+    std.debug.print("     WHAT EACH FORK SEPARATES: `norefine` keeps selection and the LINEAR refit and drops the descent, so a disastrous linear fit is\n", .{});
+    std.debug.print("     distinguished from a disastrous refinement; `guarded` keeps the descent but rejects one ending non-finite or above its starting\n", .{});
+    std.debug.print("     REPLAY loss — the objective the optimiser sees. Current-world probes are diagnostic and never enter the decision.\n", .{});
+    std.debug.print("     the fork's null case reproduces the replay exactly ({d:.5}), so the two variants differ only in the consolidation\n", .{res[0].mean()});
+}
+
+test "G69 (c) tracing the detector across both trajectories" {
+    // G69's trigger behaved completely differently on its two acquisition
+    // trajectories: 0 above-threshold ticks on 1234, and 11 917 during the
+    // cold start alone on 5678, beginning at t = 83. The detector's
+    // behaviour is the phase's own subject, so this describes it.
+    //
+    // **A trace describes the failure; it does not establish seeding as the
+    // cause.** Astra's constraint, and it shapes what this gate may claim:
+    // the initial nonzero surprise, the two EWMAs and their ratio through
+    // the cold start, and where the first crossing falls. Nothing here
+    // changes an initialisation rule or evaluates a new trigger — feeding a
+    // recorded surprise sequence through a different rule is a SEPARATE
+    // diagnostic, and a new trigger policy is a separate experiment again.
+    //
+    // No sleeps. Seconds.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const H_FAST: f64 = 2048;
+    const H_SLOW: f64 = 16384;
+    const bounds = [_]u64{ 12_000, 30_000, 48_000, 60_000, 90_000, 104_000 };
+    const c = Traj{
+        .total = 104_000,
+        .r = 4_096,
+        .w = 16_384,
+        .n = 8_192,
+        .check = 2_000,
+        .cold_end = 12_000,
+        .change_at = 30_000,
+        .drift_lo = 60_000,
+        .drift_hi = 90_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+
+    const cal = try calibrate(gpa, o, c, worlds, H_FAST, H_SLOW, 0x0CA1, c.cold_end, c.change_at);
+    std.debug.print("\n  G69 (c) [{s}] frozen threshold {d:.5} (mean {d:.5} + 3 x sd {d:.5}), from G69's own calibration seed\n", .{
+        @tagName(builtin.mode), cal.thresh, cal.mean, cal.sd,
+    });
+
+    const UNTIL: u64 = 32_000; // through the cold start and past the step
+    for ([_]u64{ 1234, 5678 }) |seed| {
+        var m = try marl.Model.init(gpa, o);
+        defer m.deinit();
+        var trig = Trigger.init(H_FAST, H_SLOW, c.budget);
+        trig.thresh = cal.thresh;
+        var st = rng.Stream.region(seed, 0x4f32_3254, 0); // G69's stream exactly
+        var seed_surprise: f32 = 0;
+        var seed_at: u64 = 0;
+        var first_cross: u64 = 0;
+        var cold_ticks: usize = 0;
+        var i: u64 = 0;
+        std.debug.print("     ── acquisition {d}\n", .{seed});
+        while (i < UNTIL) : (i += 1) {
+            // **The controller evaluates `crosses()` at the TOP of its loop,
+            // before the observation at this index.** Checking after the
+            // observation puts every crossing one index early — which is how
+            // an earlier draft of this trace reported 82 where G69's
+            // preserved output says 83. The ordering is the contract, so the
+            // trace follows it rather than resembling it.
+            if (first_cross == 0 and trig.crosses()) first_cross = i;
+            if (i < c.cold_end and trig.crosses()) cold_ticks += 1;
+            const tp = worldAt(c, i, worlds[0], worlds[1], worlds[2]);
+            const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+            const v: f64 = marl.truthOf(tp, q);
+            const ev = try m.observe(q, .{@as(f32, @floatCast(v))});
+            const was_started = trig.started;
+            const r = trig.monitor(ev.surprise);
+            if (!was_started and trig.started) {
+                seed_surprise = ev.surprise;
+                seed_at = i;
+            }
+            if (i < 400 and (i < 8 or i % 100 == 0)) {
+                std.debug.print("        t {d:>5}  surprise {d:.6}  fast {d:.6}  slow {d:.6}  ratio {d:.4}{s}\n", .{
+                    i, ev.surprise, trig.fast, trig.slow, r, if (r > cal.thresh) "  ABOVE" else "",
+                });
+            }
+            if (i % 4_000 == 0 and i >= 400) {
+                std.debug.print("        t {d:>5}  fast {d:.6}  slow {d:.6}  ratio {d:.4}{s}\n", .{
+                    i, trig.fast, trig.slow, r, if (r > cal.thresh) "  ABOVE" else "",
+                });
+            }
+        }
+        std.debug.print("        SEEDED at t = {d} on surprise {d:.6}; first above-threshold tick {d}; cold-start ticks {d} of {d}\n", .{
+            seed_at, seed_surprise, first_cross, cold_ticks, c.cold_end,
+        });
+        std.debug.print("        (the slow EWMA's half-life is {d} monitoring updates — the seed's contribution HALVES there and stays relevant after, it is not a cutoff)\n", .{@as(u64, @intFromFloat(H_SLOW))});
+        // ── A POST-HOC REGRESSION CHECK, and NOT a test of registered Q2.
+        //
+        // Q2 predicted the detector never crosses during the cold start and
+        // is REFUTED; that stands in `thresholds.zig` and in G69's own
+        // output. What is asserted here is only that these two fixed
+        // trajectories keep reproducing the numbers the refutation was read
+        // from — 0 ticks on one and >10 000 on the other. **Passing this
+        // does not mean Q2 holds.** Astra's distinction, and the reason the
+        // check lives here: G69 (c) reaches the same cold-start behaviour in
+        // seconds, before any intervention could execute, so validating an
+        // assertion about it never needs a sleep.
+        if (seed == 5678) {
+            try testing.expectEqual(@as(u64, 83), first_cross);
+            try testing.expect(cold_ticks > 10_000);
+        } else {
+            try testing.expectEqual(@as(u64, 0), first_cross);
+            try testing.expectEqual(@as(usize, 0), cold_ticks);
+        }
+    }
+    std.debug.print("     DESCRIBED, NOT DIAGNOSED: this says what the detector did on each trajectory. Whether the seeding rule CAUSED it needs the\n", .{});
+    std.debug.print("     recorded surprise sequence replayed through a separately specified initialisation, threshold frozen — a later diagnostic.\n", .{});
+}
+
+test "G69 (d) the initialisation diagnostic, on a fixed surprise sequence" {
+    // G69 (c) DESCRIBED the detector's two behaviours; it did not establish
+    // a cause. This isolates one: **the identical recorded surprise sequence
+    // is replayed through two initialisation rules with the threshold
+    // frozen**, so nothing differs but the seeding. Astra's specification,
+    // and the alternative was written into `tools/obs22_predict.py` before
+    // any of it was measured.
+    //
+    //   RULE A  seed both EWMAs from the FIRST nonzero surprise. The
+    //           incumbent, and a single draw.
+    //   RULE B  seed both from the MEAN of the first 256 nonzero surprises.
+    //           An estimate rather than a draw; 256 is well below the fast
+    //           half-life of 2048 and far above 1.
+    //
+    // **The threshold stays frozen at rule A's calibration**, which is right
+    // for isolating initialisation and wrong for evaluating a policy: rule B
+    // changes the ratio's distribution and a deployed alternative would need
+    // its own calibration. This is a diagnostic. A new trigger policy would
+    // be a separate registered experiment.
+    //
+    // No sleeps. Seconds.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const H_FAST: f64 = 2048;
+    const H_SLOW: f64 = 16384;
+    const SEED_B: usize = 256;
+    const bounds = [_]u64{ 12_000, 30_000, 48_000, 60_000, 90_000, 104_000 };
+    const c = Traj{
+        .total = 104_000,
+        .r = 4_096,
+        .w = 16_384,
+        .n = 8_192,
+        .check = 2_000,
+        .cold_end = 12_000,
+        .change_at = 30_000,
+        .drift_lo = 60_000,
+        .drift_hi = 90_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+
+    const cal = try calibrate(gpa, o, c, worlds, H_FAST, H_SLOW, 0x0CA1, c.cold_end, c.change_at);
+    std.debug.print("\n  G69 (d) [{s}] threshold FROZEN at {d:.5} (rule A's calibration, on both rules)\n", .{
+        @tagName(builtin.mode), cal.thresh,
+    });
+
+    // **Far enough past the change to see whether a quieter rule still
+    // DETECTS it.** An earlier draft stopped at 32 000 — under one fast
+    // half-life after the step — so it could report that rule B removed the
+    // false alarms while saying nothing about whether it had also removed
+    // the true one. 48 000 gives ~9 fast half-lives of post-change signal.
+    const UNTIL: usize = 48_000;
+    const seq = try gpa.alloc(f32, UNTIL);
+    defer gpa.free(seq);
+
+    for ([_]u64{ 1234, 5678 }) |seed| {
+        // Record the sequence ONCE, from the same stream the controller uses.
+        var m = try marl.Model.init(gpa, o);
+        defer m.deinit();
+        var st = rng.Stream.region(seed, 0x4f32_3254, 0);
+        for (0..UNTIL) |i| {
+            const tp = worldAt(c, @intCast(i), worlds[0], worlds[1], worlds[2]);
+            const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+            const v: f64 = marl.truthOf(tp, q);
+            const ev = try m.observe(q, .{@as(f32, @floatCast(v))});
+            seq[i] = ev.surprise;
+        }
+
+        std.debug.print("     ── acquisition {d}\n", .{seed});
+        var ticks: [2]usize = .{ 0, 0 };
+        for ([_]usize{ 1, SEED_B }, 0..) |sf, r| {
+            var trig = Trigger.init(H_FAST, H_SLOW, c.budget);
+            trig.thresh = cal.thresh;
+            trig.seed_from = sf;
+            var first: u64 = 0;
+            var cold: usize = 0;
+            var post: usize = 0;
+            var peak_cold: f64 = 0;
+            var peak_post: f64 = 0;
+            var seeded: f64 = 0;
+            for (seq, 0..) |sv, i| {
+                // The controller evaluates `crosses()` BEFORE the
+                // observation at this index; the replay follows that.
+                if (trig.crosses()) {
+                    if (first == 0) first = i;
+                    if (i < c.cold_end) cold += 1;
+                    if (i >= c.change_at) post += 1;
+                }
+                const was = trig.started;
+                _ = trig.monitor(sv);
+                if (!was and trig.started) seeded = trig.fast;
+                if (i < c.cold_end) peak_cold = @max(peak_cold, trig.ratio());
+                if (i >= c.change_at) peak_post = @max(peak_post, trig.ratio());
+            }
+            ticks[r] = cold;
+            // The SEED value, captured when seeding happens — an earlier
+            // draft printed `trig.fast` at the END of the replay and called
+            // it the seed, which is the converged value and not the seed at
+            // all.
+            std.debug.print("        rule {s}  seed from {d:>3} nonzero -> SEEDED ON {d:.6}  first tick {d}  | cold start: {d:>5} ticks, peak ratio {d:.4}  | after the change: {d:>5} ticks, peak ratio {d:.4}\n", .{
+                if (sf == 1) "A" else "B", sf, seeded, first, cold, peak_cold, post, peak_post,
+            });
+        }
+        // Rule A must reproduce G69 (c) exactly, or the replay is not the
+        // sequence the controller saw.
+        if (seed == 5678) {
+            try testing.expect(ticks[0] > 10_000);
+            std.debug.print("        RULE B changes cold-start ticks {d} -> {d}\n", .{ ticks[0], ticks[1] });
+        } else {
+            try testing.expectEqual(@as(usize, 0), ticks[0]);
+            try testing.expectEqual(@as(usize, 0), ticks[1]);
+        }
+    }
+    std.debug.print("     The sequence is FIXED and the threshold FROZEN, so nothing differs but the initialisation. What this can establish is whether\n", .{});
+    std.debug.print("     seeding accounts for the cold-start behaviour — NOT that rule B is a better policy, which would need its own calibration and\n", .{});
+    std.debug.print("     its own registered experiment.\n", .{});
+    // ── AND A SCOPE LIMIT THAT IS EASY TO MISS. These sequences come from
+    // UNINTERRUPTED LEARNING. G69's own trigger/5678 arm intervened at
+    // 16 384, which changed its model, its query locations and its detector
+    // updates from that point on — so this replay shares only the PREFIX
+    // with it. Matching cold-start counts validates that prefix and nothing
+    // after it. Astra's, from reading the controller.
+    std.debug.print("     SCOPE: these are UNINTERRUPTED-LEARNING sequences. G69's trigger/5678 arm intervened at 16384, so this shares only the PREFIX\n", .{});
+    std.debug.print("     with it — the cold-start agreement validates that prefix, not the post-step trajectory, which in G69 ran on a changed model.\n", .{});
+    std.debug.print("     AND: initialisation dependence does NOT establish that the post-step crossings contain no response to the move. That needs a\n", .{});
+    std.debug.print("     no-move counterfactual, which is G69 (e).\n", .{});
+}
+
+test "G69 (e) the no-move counterfactual: is there a response to the change at all?" {
+    // G69 (d) established that rule A/5678's post-step threshold activity is
+    // INITIALISATION-DEPENDENT. It did not establish that those crossings
+    // contain no response to the move, and an earlier write-up said they
+    // were "not a response to anything" — which does not follow. **A step
+    // can raise surprise while the initialisation decides whether that rise
+    // crosses a threshold; dependence and responsiveness coexist.** Astra's
+    // correction, and this is the control it asks for.
+    //
+    // Fork at the change: MOVE against NO MOVE, identical future query
+    // locations (the same seeded stream continues either way) and identical
+    // detector state at the fork (the prefix is shared by construction).
+    // Compare the fast, slow and ratio TRACES, not only threshold counts —
+    // a response that never crosses is still a response.
+    //
+    // **Deliberately separate from explaining G69's controller**, which
+    // intervened and therefore diverged from these sequences entirely.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const H_FAST: f64 = 2048;
+    const H_SLOW: f64 = 16384;
+    const bounds = [_]u64{ 12_000, 30_000, 48_000, 60_000, 90_000, 104_000 };
+    const c = Traj{
+        .total = 104_000,
+        .r = 4_096,
+        .w = 16_384,
+        .n = 8_192,
+        .check = 2_000,
+        .cold_end = 12_000,
+        .change_at = 30_000,
+        .drift_lo = 60_000,
+        .drift_hi = 90_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+
+    const cal = try calibrate(gpa, o, c, worlds, H_FAST, H_SLOW, 0x0CA1, c.cold_end, c.change_at);
+    std.debug.print("\n  G69 (e) [{s}] threshold {d:.5}; forking at t = {d} into MOVE and NO MOVE, same stream either way\n", .{
+        @tagName(builtin.mode), cal.thresh, c.change_at,
+    });
+
+    const UNTIL: usize = 48_000;
+    const seq = try gpa.alloc(f32, UNTIL * 2); // [move, nomove]
+    defer gpa.free(seq);
+
+    for ([_]u64{ 5678, 1234 }) |seed| {
+        std.debug.print("     ── acquisition {d}\n", .{seed});
+        // Two runs from the same seed, differing ONLY in whether the world
+        // moves at `change_at`. The query locations are identical because
+        // the stream is.
+        for ([_]bool{ true, false }, 0..) |moved, w| {
+            var m = try marl.Model.init(gpa, o);
+            defer m.deinit();
+            var st = rng.Stream.region(seed, 0x4f32_3254, 0);
+            for (0..UNTIL) |i| {
+                const tp = if (moved) worldAt(c, @intCast(i), worlds[0], worlds[1], worlds[2]) else worlds[0];
+                const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+                const v: f64 = marl.truthOf(tp, q);
+                const ev = try m.observe(q, .{@as(f32, @floatCast(v))});
+                seq[w * UNTIL + i] = ev.surprise;
+            }
+        }
+        // The prefix must be identical, or the fork is not a fork.
+        for (0..@intCast(c.change_at)) |i| try testing.expectEqual(seq[i], seq[UNTIL + i]);
+
+        var mean_s: [2]f64 = .{ 0, 0 };
+        for (0..2) |w| {
+            var acc: f64 = 0;
+            for (@intCast(c.change_at)..UNTIL) |i| acc += seq[w * UNTIL + i];
+            mean_s[w] = acc / @as(f64, @floatFromInt(UNTIL - @as(usize, @intCast(c.change_at))));
+        }
+        std.debug.print("        mean surprise over {d}..{d}:  MOVE {d:.6}   NO MOVE {d:.6}   ratio {d:.4}\n", .{
+            c.change_at, UNTIL, mean_s[0], mean_s[1], mean_s[0] / @max(1e-12, mean_s[1]),
+        });
+        // The move raises surprise itself, before any detector sees it.
+        try testing.expect(mean_s[0] > mean_s[1]);
+
+        for ([_]usize{ 1, 256 }) |sf| {
+            var tr: [2]Trigger = undefined;
+            for (0..2) |w| {
+                tr[w] = Trigger.init(H_FAST, H_SLOW, c.budget);
+                tr[w].thresh = cal.thresh;
+                tr[w].seed_from = sf;
+            }
+            std.debug.print("        rule {s}:", .{if (sf == 1) "A" else "B"});
+            var cross: [2]usize = .{ 0, 0 };
+            var peak: [2]f64 = .{ 0, 0 };
+            for (0..UNTIL) |i| {
+                for (0..2) |w| {
+                    if (i >= @as(usize, @intCast(c.change_at)) and tr[w].crosses()) cross[w] += 1;
+                    _ = tr[w].monitor(seq[w * UNTIL + i]);
+                    if (i >= @as(usize, @intCast(c.change_at))) peak[w] = @max(peak[w], tr[w].ratio());
+                }
+                // PAIRED-TIME values are the contemporaneous evidence: the
+                // two branches compared at the SAME instant. A difference of
+                // maxima is a contrast between branches that may fall at
+                // different times, and is not a climb along either one.
+                if (i >= @as(usize, @intCast(c.change_at)) and (i - @as(usize, @intCast(c.change_at))) % 4500 == 0) {
+                    std.debug.print("  t{d}: {d:.4}/{d:.4}", .{ i, tr[0].ratio(), tr[1].ratio() });
+                }
+            }
+            std.debug.print("   | peak {d:.4}/{d:.4}  ticks {d}/{d}  (MOVE/NO MOVE)\n", .{
+                peak[0], peak[1], cross[0], cross[1],
+            });
+            // **The response, if there is one, is the DIFFERENCE** — and it
+            // exists whether or not either side crosses.
+            std.debug.print("           the move raises the MAXIMUM ratio by {d:.4} — a contrast BETWEEN branches, not a climb along either; the paired-time columns above are the contemporaneous evidence\n", .{peak[0] - peak[1]});
+            // ── THE FINDING, asserted. **The statistic RESPONDS to the move
+            // in every cell** — both trajectories, both initialisations —
+            // and what differs is the baseline the response starts from,
+            // which the seeding sets. An earlier write-up called the 5678
+            // crossings "not a response to anything"; this control refutes
+            // that. Dependence and responsiveness coexist.
+            try testing.expect(peak[0] > peak[1]);
+        }
+    }
+    std.debug.print("     Identical prefixes, identical query locations, identical detector state at the fork. What differs is only whether the world moved.\n", .{});
+    std.debug.print("     THE STATISTIC RESPONDS IN EVERY CELL, and only one combination crosses. Initialisation affects the ratio's LEVEL *and* its\n", .{});
+    std.debug.print("     RESPONSE MAGNITUDE — the peak contrasts differ between rules too, and the slow EWMA is the denominator — so 'it sets the\n", .{});
+    std.debug.print("     baseline' is incomplete. Threshold crossings are sensitive to initialisation HISTORY. A fact about this scheme, not a\n", .{});
+    std.debug.print("     proposal for another. And the gap's decay over the traced window is MEASURED, not attributed: separating the learner's\n", .{});
+    std.debug.print("     adaptation from the EWMAs' own adjustment would need its own control.\n", .{});
 }

@@ -1,0 +1,31 @@
+test
++- run test 1/2 passed, 1 failed
+error: 'consolidate.test.G69 when is intervention worth its cost?' failed:   G69 [ReleaseSafe] calibration on seed 0x0CA1, stationary 12000..30000: ratio mean 1.07993, population sd 0.07427 over 18000 samples -> THRESHOLD 1.30274
+     trigger   acq 1234  started 0 (of at most 3)  sleeps 0  crossings 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 3  fired {  }
+     schedule  acq 1234  started 3 (of at most 3)  sleeps 3  crossings 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 1  fired { 26000, 52000, 78000 }
+     informed  acq 1234  started 3 (of at most 3)  sleeps 3  crossings 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 2  fired { 30000, 60000, 90000 }
+     none      acq 1234  started 0 (of at most 3)  sleeps 0  crossings 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 3  fired {  }
+     trigger   acq 5678  started 3 (of at most 3)  sleeps 3  crossings 30173 (cold 11917, settled 4385)  first 83  unready 16301  blocked 4095  budget@drift 1  fired { 16384, 36864, 69651 }
+     schedule  acq 5678  started 3 (of at most 3)  sleeps 3  crossings 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 1  fired { 26000, 52000, 78000 }
+     informed  acq 5678  started 3 (of at most 3)  sleeps 3  crossings 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 2  fired { 30000, 60000, 90000 }
+     none      acq 5678  started 0 (of at most 3)  sleeps 0  crossings 0 (cold 0, settled 0)  first 0  unready 0  blocked 0  budget@drift 3  fired {  }
+     TIME-AVERAGED ERROR (mean RMS over checkpoints, not pooled MSE):
+       trigger   whole 0.09387  drift+tail 0.11328  acquisition spread 0.01689  (0.08542 / 0.10231)
+       schedule  whole 0.22949  drift+tail 0.43382  acquisition spread 0.28581  (0.08658 / 0.37240)
+       informed  whole 0.09079  drift+tail 0.11294  acquisition spread 0.00883  (0.08638 / 0.09520)
+       none      whole 0.08492  drift+tail 0.08828  acquisition spread 0.00101  (0.08542 / 0.08441)
+     INTERVENTIONS BY PHASE, and the error over the two checkpoints after each — REPORTED, never scored as false alarms:
+       trigger   p0:0 p1:0 p2:0 p3:0 p4:0 p5:0   post-intervention RMS:
+       schedule  p0:0 p1:1 p2:0 p3:1 p4:1 p5:0   post-intervention RMS: 0.11234 0.03368 0.10159
+       informed  p0:0 p1:1 p2:0 p3:1 p4:1 p5:0   post-intervention RMS: 0.07540 0.11590 0.10582
+       none      p0:0 p1:0 p2:0 p3:0 p4:0 p5:0   post-intervention RMS:
+expected 0, found 11917
+error: while executing test 'consolidate.test.G69 when is intervention worth its cost?', the following test command failed:
+/home/chrisbe/dev/marl/.zig-cache/o/19e1da4a4de26d635de6cb1ac61e6d18/test --seed=0xe9ebd73d --cache-dir=/home/chrisbe/dev/marl/.zig-cache --listen=- 
+Build Summary: 5/7 steps succeeded; 1 failed; 3/4 tests passed; 1 failed
+test transitive failure
++- run test 1/2 passed, 1 failed
+error: the following build command failed with exit code 1:
+/home/chrisbe/dev/marl/.zig-cache/o/5b0cf0dacd3e887ec3692a0c96d8ee99/build /home/chrisbe/.local/share/zig-0.14.1/zig /home/chrisbe/.local/share/zig-0.14.1/lib /home/chrisbe/dev/marl /home/chrisbe/dev/marl/.zig-cache /home/chrisbe/.cache/zig --seed 0xe9ebd73d -Z01ed5ae489655c07 test -Dtest-filter=G69 when
+zig build test -Dtest-filter="G69 when"  596.63s user 1.38s system 102% cpu 9:45.71 total
+EXIT=1

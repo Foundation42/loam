@@ -4058,4 +4058,64 @@ pub const OBS21_UNAIMED_HITS: f64 = 387;
 /// not a fixed-compute or fixed-representation one.
 pub const OBS21_EARLY_PAYS: f64 = 0;
 
+/// G69: the intervention trigger's threshold, FROZEN on a separate
+/// calibration trajectory before any evaluation. Measured at 1.30274 —
+/// `mean(ratio) + 3*sd(ratio)` = 1.07993 + 3 x 0.07427 over 18 000 samples
+/// of seed 0x0CA1's stationary stretch.
+///
+/// **The mean is 1.08, not 1.00.** A stationary world does not imply a ratio
+/// centred at one, because the learner's own residuals are not stationary —
+/// which is why the rule is `mean + 3 sd` and not `1 + 3 sd`. Three standard
+/// deviations is a REGISTERED HEURISTIC, not a calibrated false-alarm
+/// probability: the checks are thousands and heavily correlated.
+pub const OBS22_THRESHOLD: f64 = 1.30274;
+
+/// G69: Q2, that the detector never wants to fire during a cold start.
+/// **REGISTERED AND REFUTED.** Recorded as a shape; the gate asserts nothing
+/// about it, and a post-hoc regression check lives in G69 (c) where it costs
+/// seconds instead of sleeps.
+///
+/// It holds on one acquisition trajectory (0 above-threshold ticks) and
+/// fails utterly on the other (11 917 of 12 000, from t = 83). The restraint
+/// is a property of the DRAW, not of the statistic.
+///
+/// **And readiness makes an execution test vacuous**: the window is not full
+/// until 16 384, later than the whole cold start, so nothing could execute
+/// there whatever the detector wanted. The claim is therefore asked of
+/// CROSSINGS — Astra's distinction, and the field exists because of it.
+pub const OBS22_COLD_START: f64 = 0;
+
+/// G69: Q6, that intervening beats not intervening. **REGISTERED AND
+/// REFUTED.** `none` wins both objectives — 0.08492 whole against the best
+/// intervening arm's 0.09079, and 0.08828 drift-and-tail against 0.11294.
+///
+/// If one arm loses to `none`, that says THAT placement failed to earn its
+/// cost on THIS trajectory. It does not invalidate OBS-21's conditional
+/// result, which measured a single well-placed intervention at one offset
+/// rather than placements over a whole life.
+pub const OBS22_ACTING_PAYS: f64 = 0;
+
+/// G69 (b): the acceptance rule that prevents a refinement from being
+/// accepted when it ends non-finite or above its starting REPLAY loss.
+/// Recorded as a shape; `Options.guard` defaults false.
+///
+/// One consolidation at t = 82 096 took replay RMS 0.13965 -> 0.35844 and
+/// left the held-out world at 6.72213. OBS-11 registered the null — *a
+/// descent that does not descend is not the thing being measured* — and
+/// nothing in the pipeline noticed.
+///
+/// The localisation, each step refuting an explanation of mine: populations
+/// REGROW between sleeps (645->322->727, 727->363->817), so cumulative
+/// shrinkage is refuted; the full-population fork is WORSE, so compression
+/// is not necessary for the failure; the linear refit alone is BETTER than
+/// skipping the consolidation, so it is not a badly generalising solve; and
+/// an oracle relabelling still diverges, so historical labels are not
+/// necessary either. Guarding recovers entirely, and `guarded` equals
+/// `norefine` on the whole trajectory.
+///
+/// **Recovery establishes that this replay-based acceptance rule prevents
+/// this observed failure.** It does not establish that a descent which does
+/// descend on replay improves the current world.
+pub const OBS22_REFINE_GUARD: f64 = 0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

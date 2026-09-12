@@ -138,6 +138,13 @@ pub fn build(b: *std.Build) void {
             // ordinary while it does. Milliseconds, and nothing else in the
             // suite would notice.
             "G66 (a)", // replay window inversion
+            // OBS-22's trajectory contracts: EWMA initialisation, the
+            // calibration freeze, the budget ceiling, the cooldown counted
+            // in MONITORING observations, and a drift that does not wait for
+            // an intervention. No sleeps; milliseconds. Built BEFORE the
+            // expensive comparison, because OBS-21 discovered its headline
+            // contract was underspecified only on the first full run.
+            "G69 (a)", // trajectory contract
         };
     }
     const run_tests = b.addRunArtifact(tests);
