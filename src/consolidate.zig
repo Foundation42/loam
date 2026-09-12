@@ -96,6 +96,37 @@ pub const Report = struct {
     over_reach: u32,
 };
 
+/// The two candidates a consolidation passes through, duplicated at the
+/// instants they exist, so an experiment can fork from the SAME BYTES rather
+/// than from the same seed.
+///
+/// Astra's contract for OBS-24: a `guarded` branch and a `linear-refit-only`
+/// branch must differ in the REFINEMENT and in nothing else. Running two arms
+/// from one seed and trusting determinism is a weaker guarantee than building
+/// both from one object — and this campaign has already paid for the
+/// difference between "the same by argument" and "the same by assertion"
+/// (OBS-21's ring).
+///
+/// Taking them here, inside the consolidation the campaign actually uses,
+/// means the fork cannot drift from the real code path. A reimplementation
+/// could.
+pub const Split = struct {
+    /// The post-linear-refit candidate: selection done, weights solved,
+    /// nothing descended yet.
+    linear: []marl.Kernel = &.{},
+    /// What the refinement produced, duplicated BEFORE acceptance — so a
+    /// rejected refinement can still be scored against the world. OBS-22 kept
+    /// its replay loss and discarded its kernels, which is why nobody could
+    /// ask what it had done to the current world.
+    attempted: []marl.Kernel = &.{},
+
+    pub fn deinit(self: *Split, gpa: std.mem.Allocator) void {
+        if (self.linear.len != 0) gpa.free(self.linear);
+        if (self.attempted.len != 0) gpa.free(self.attempted);
+        self.* = .{};
+    }
+};
+
 /// Project a kernel back inside what MARL's gather requires: widths within
 /// the floor and ceiling, centre in the cube, and the cutoff box no larger
 /// than one region edge. `marl.Model.clamp`'s, reproduced because it is
@@ -1665,6 +1696,11 @@ pub const Tally = struct {
     /// locations in the identical order, and arms that do draw a PREFIX of
     /// that same sequence. **That is a contract, not a summary**, and
     /// OBS-21's ring is what a gate reporting it as counts costs.
+    /// Summed `Kernel.updates` at the end of a continuation. `adopt` zeroes
+    /// every kernel's counter, so this separates a branch that CONTINUED a
+    /// model from one that was rebuilt out of its kernels — at any scale,
+    /// which a maximum does not.
+    updates_sum: u64 = 0,
     stream_hash: u64 = 1469598103934665603,
     stream_prefix: u64 = 0,
     prefix_at: u64 = 0,
@@ -1823,6 +1859,34 @@ pub const Probe = struct {
     fork_mode: enum { half, skip, full, norefine, guarded, relabel } = .half,
 };
 
+/// Stop an arm just before one of its consolidations and take the LIVE
+/// learning state out, rather than a reconstruction of it.
+///
+/// **Astra's contract, and it is not cosmetic.** A `skip` branch has to
+/// continue the ACTUAL parent. Rebuilding it as `adopt(parent.kernels)` would
+/// reset every kernel's Adam moments `m1`/`m2`, its step counter `t`, its
+/// `updates` and its drift origin `mu0`, and would hand it a fresh `Model` —
+/// fresh `stats`, a fresh model RNG stream, and a fresh `recent` residual
+/// ring, WHICH GATES BIRTHS. That branch would be "adopt without
+/// consolidating", an intervention of its own rather than the control.
+///
+/// `adopt` stays right for the consolidated candidates, because a
+/// consolidation does exactly that. The asymmetry is what the policies
+/// differ by.
+pub const Hand = struct {
+    /// Take the state instead of running the consolidation that would be
+    /// this arm's `stop_before`-th (0-based).
+    stop_before: usize,
+    taken: bool = false,
+    m: marl.Model = undefined,
+    win: Window = undefined,
+    st: rng.Stream = undefined,
+    at: u64 = 0,
+    /// Whether a checkpoint was awaiting the consolidation at that instant.
+    /// Handed out rather than assumed away.
+    pending: bool = false,
+};
+
 /// Run one arm over the whole trajectory.
 ///
 /// `do_sleep` is the injected stub: false runs every part of the controller
@@ -1842,11 +1906,13 @@ pub fn runArm(
     out: *Tally,
     probe: Probe,
     recipe: Recipe,
+    hand: ?*Hand,
 ) !void {
     var m = try marl.Model.init(gpa, o);
-    defer m.deinit();
+    var handed = false;
+    defer if (!handed) m.deinit();
     var win = try Window.init(gpa, c.w);
-    defer win.deinit(gpa);
+    defer if (!handed) win.deinit(gpa);
     const vals = try gpa.alloc([1]f32, probes.len);
     defer gpa.free(vals);
     const pick = try gpa.alloc(usize, c.w);
@@ -1891,6 +1957,21 @@ pub fn runArm(
             if (!ready) out.unready += 1;
             if (ready and !room) out.horizon_blocked += 1;
             if (ready and room and !(plan == .trigger and trig.spent())) {
+                if (hand) |h| {
+                    if (!h.taken and out.started == h.stop_before) {
+                        // Ownership moves to the caller: the model, the
+                        // window and the fresh-draw stream exactly as they
+                        // stand, with nothing reconstructed.
+                        h.m = m;
+                        h.win = win;
+                        h.st = st.*;
+                        h.at = i;
+                        h.pending = pending;
+                        h.taken = true;
+                        handed = true;
+                        return;
+                    }
+                }
                 // **The registered order is observation, then the COMPLETED
                 // intervention's sleep, then the score.** The two halves of
                 // OBS-23's lattice complete at different instants and the
@@ -2004,7 +2085,7 @@ pub fn runArm(
                     if (mode == .norefine) so.steps = 0;
                     if (mode == .guarded or recipe.guard) so.guard = true;
                     var rep: Report = undefined;
-                    var child = try sleepOnReporting(gpa, &m, buf.x[0..c.n], buf.y[0..c.n], keep, so, &rep);
+                    var child = try sleepOnReporting(gpa, &m, buf.x[0..c.n], buf.y[0..c.n], keep, so, &rep, null);
                     errdefer child.deinit();
                     // **A consolidation REPLACES the model, and the child's
                     // birth counter starts at zero**, so the segment's
@@ -2207,7 +2288,7 @@ fn sleepOn(
     keep: usize,
     o: Options,
 ) !marl.Model {
-    return sleepOnReporting(gpa, m, pts, target, keep, o, null);
+    return sleepOnReporting(gpa, m, pts, target, keep, o, null, null);
 }
 
 /// The same consolidation with the refinement's own `Report` handed back —
@@ -2222,6 +2303,7 @@ fn sleepOnReporting(
     keep: usize,
     o: Options,
     report: ?*Report,
+    split: ?*Split,
 ) !marl.Model {
     const reff = try gpa.alloc(f64, m.regions.len);
     defer gpa.free(reff);
@@ -2266,10 +2348,19 @@ fn sleepOnReporting(
     const w = try novelty.refit(gpa, picked, target);
     defer gpa.free(w);
     for (out.items, w) |*k, wv| k.p[marl.PARAMS - 1] = @floatCast(wv);
+    // **The post-linear-refit candidate exists exactly here** — selection
+    // done, weights solved, nothing descended. Duplicated for a fork so that
+    // two branches can be built from the same bytes rather than the same
+    // seed.
+    if (split) |sp| sp.linear = try gpa.dupe(marl.Kernel, out.items);
     var snap: []marl.Kernel = &.{};
     if (o.guard) snap = try gpa.dupe(marl.Kernel, out.items);
     defer if (o.guard) gpa.free(snap);
     var rep = try refine(gpa, out.items, pts, target, m.opts.regions, o);
+    // And here is what the refinement produced, BEFORE acceptance can throw
+    // it away. OBS-22 kept its replay loss and discarded its kernels, so
+    // nobody could ask what it had done to the current world.
+    if (split) |sp| sp.attempted = try gpa.dupe(marl.Kernel, out.items);
     if (o.guard and (!std.math.isFinite(rep.last) or rep.last > rep.first)) {
         @memcpy(out.items, snap);
         rep.rejected = true;
@@ -4688,7 +4779,7 @@ test "G69 (a) the trajectory controller's contracts, driven with a sleep stub" {
             trig.thresh = thresh;
             var out = Tally{};
             var st = rng.Stream.region(4242, 0x4f32_3254, 0); // "O22T"
-            try runArm(g, oo, cc, plan, &trig, ws, pp, false, &st, &out, .{}, .{});
+            try runArm(g, oo, cc, plan, &trig, ws, pp, false, &st, &out, .{}, .{}, null);
             return .{ .t = out, .tr = trig };
         }
     }.go;
@@ -5004,7 +5095,7 @@ test "G69 when is intervention worth its cost?" {
             trig.thresh = cal.thresh;
             var out = Tally{};
             var st = rng.Stream.region(aseed, 0x4f32_3254, 0); // "O22T"
-            try runArm(gpa, o, c, plan, &trig, worlds, pr.p, true, &st, &out, .{}, .{});
+            try runArm(gpa, o, c, plan, &trig, worlds, pr.p, true, &st, &out, .{}, .{}, null);
             tal[mi][ai] = out;
             // The contracts G69 (a) proves cheaply, re-asserted on the real
             // configuration — they are premises, not conveniences.
@@ -5158,7 +5249,7 @@ test "G69 (b) localising the schedule/5678 failure" {
     {
         var trig = Trigger.init(2048, 16384, c.budget);
         var st = rng.Stream.region(SEED, 0x4f32_3254, 0); // "O22T"
-        try runArm(gpa, o, c, .{ .at = &sched }, &trig, worlds, pr.p, true, &st, &tal, .{ .diag = &diag }, .{});
+        try runArm(gpa, o, c, .{ .at = &sched }, &trig, worlds, pr.p, true, &st, &tal, .{ .diag = &diag }, .{}, null);
     }
     try testing.expectEqual(@as(usize, 3), diag.n);
     std.debug.print("     {s:>6} {s:>10} {s:>10} {s:>10} {s:>11} | {s:>7} {s:>7} {s:>7} | {s:>9} {s:>9}\n", .{
@@ -5208,7 +5299,7 @@ test "G69 (b) localising the schedule/5678 failure" {
         var st = rng.Stream.region(SEED, 0x4f32_3254, 0);
         res[k] = Tally{};
         fdiag[k] = Diag{};
-        try runArm(gpa, o, c, .{ .at = &sched }, &trig, worlds, pr.p, true, &st, &res[k], .{ .fork_at = worst, .fork_mode = md, .diag = &fdiag[k] }, .{});
+        try runArm(gpa, o, c, .{ .at = &sched }, &trig, worlds, pr.p, true, &st, &res[k], .{ .fork_at = worst, .fork_mode = md, .diag = &fdiag[k] }, .{}, null);
         const fs = fdiag[k].steps[worst];
         std.debug.print("     {s:<26} {d:>9.5} {d:>11.5} |{d:>12.5} {d:>12.5} {d:>12.5}{s}\n", .{
             mnames[k],                               res[k].mean(), res[k].meanTail(bounds.len),
@@ -5740,7 +5831,7 @@ test "G70 (a) the OBS-23 lattice's contracts, driven with a sleep stub" {
             var out = Tally{ .prefix_at = prefix };
             var st = rng.Stream.region(4242, 0x4f32_3254, 0);
             const plan: Plan = if (at.len == 0) .never else .{ .at = at };
-            try runArm(g, oo, cc, plan, &trig, ws, pp, false, &st, &out, .{}, rec);
+            try runArm(g, oo, cc, plan, &trig, ws, pp, false, &st, &out, .{}, rec, null);
             return out;
         }
     }.go;
@@ -6043,7 +6134,7 @@ test "G70 what does an intervention actually cost?" {
             var out = Tally{ .prefix_at = FRESH_AFTER };
             var st = rng.Stream.region(seed, 0x4f32_3254, 0);
             const plan: Plan = if (plans[a].len == 0) .never else .{ .at = plans[a] };
-            try runArm(gpa, o, c, plan, &trig, worlds, pr.p, true, &st, &out, .{}, recipes[a]);
+            try runArm(gpa, o, c, plan, &trig, worlds, pr.p, true, &st, &out, .{}, recipes[a], null);
             tal[a][j] = out;
         }
     }
@@ -6352,4 +6443,310 @@ test "G70 what does an intervention actually cost?" {
         if (recipes[a].consolidate and plans[a].len != 0) continue;
         for (acq, 0..) |_, j| try testing.expectEqual(@as(u64, @intCast(tal[a][j].k_final)), tal[a][j].births_total);
     }
+}
+
+/// The four points a consolidation passes through, in the TWO measures that
+/// have different labels — and keeping them apart is the whole reason for
+/// having both.
+///
+///   * REPLAY is scored on the selected buffer against ITS OWN STORED
+///     LABELS, exactly as the consolidation fitted them. Historical, drawn
+///     when each point was observed. Nothing is relabelled; there is no
+///     oracle anywhere in this fork. It is the quantity the acceptance rule
+///     reads.
+///   * WORLD is scored on HELD-OUT probes against completion-time truth.
+///
+/// An earlier draft of the registration said both were taken "against the
+/// same completion-time world", which reads as an oracle relabelling of the
+/// replay buffer. Astra caught it before the fork was built.
+pub const Marks = struct {
+    replay: [4]f64 = .{0} ** 4,
+    world: [4]f64 = .{0} ** 4,
+    k: [4]usize = .{0} ** 4,
+    rejected: bool = false,
+    at: u64 = 0,
+    /// Evidence that `skip` continued the PARENT and not a rebuild of it.
+    /// `adopt` zeroes every kernel's `updates` and `t`, so a nonzero maximum
+    /// here is a witness that the learning state survived the fork. A gate
+    /// asserting it fails the day someone reconstructs the control.
+    parent_updates_max: u64 = 0,
+    parent_updates_sum: u64 = 0,
+    parent_births: u64 = 0,
+    /// Whether the refinement STRICTLY lowered replay loss. Acceptance only
+    /// establishes non-increase, so this is measured and reported rather
+    /// than assumed from the fact that nothing was rejected.
+    strict_descent: bool = false,
+
+    pub const PARENT = 0;
+    pub const LINEAR = 1;
+    pub const ATTEMPTED = 2;
+    pub const RETURNED = 3;
+    pub const NAMES = [_][]const u8{ "parent", "linear", "attempted", "returned" };
+};
+
+/// Observe fresh queries to the horizon, scoring at checkpoints. No further
+/// interventions — this is `runArm`'s ordinary tail once a budget is spent,
+/// and every branch of a fork runs THIS function, so they cannot differ in
+/// the continuation itself.
+pub fn continueFrom(
+    m: *marl.Model,
+    c: Traj,
+    worlds: [3]marl.TruthParams,
+    probes: [][3]f32,
+    vals: [][1]f32,
+    win: *Window,
+    st: *rng.Stream,
+    from: u64,
+    pending_in: bool,
+    out: *Tally,
+) !void {
+    var i = from;
+    var pending = pending_in;
+    while (i < c.total) {
+        if (pending) {
+            pending = false;
+            try score(m, c, i, worlds, probes, vals, out);
+        }
+        const tp = worldAt(c, i, worlds[0], worlds[1], worlds[2]);
+        const q = [3]f32{ st.unit(), st.unit(), st.unit() };
+        const v: f64 = marl.truthOf(tp, q);
+        const ev = try m.observe(q, .{@as(f32, @floatCast(v))});
+        win.push(q, v, ev.surprise, ev.cover);
+        out.paid += 1;
+        out.monitored += 1;
+        out.mix(q);
+        i += 1;
+        if (i % c.check == 0) pending = true;
+    }
+    if (pending) try score(m, c, i, worlds, probes, vals, out);
+    out.k_final = m.kernels.items.len;
+    out.births_total += m.stats.births;
+    for (m.kernels.items) |kk| out.updates_sum += kk.updates;
+}
+
+/// OBS-24's fork. Run one arm to the consolidation at `stop_before`, take the
+/// LIVE parent, perform that consolidation ONCE, and continue three branches
+/// from it on identical fresh queries.
+///
+/// `skip` continues the parent object; `linear` and `guarded` are built from
+/// the SAME post-linear-refit bytes, so the refinement is the only thing
+/// between them. That is a construction guarantee, not a seed-matching one.
+pub fn forkThree(
+    gpa: std.mem.Allocator,
+    o: marl.Options,
+    c: Traj,
+    at: []const u64,
+    worlds: [3]marl.TruthParams,
+    probes: [][3]f32,
+    seed: u64,
+    so_in: Options,
+    stop_before: usize,
+    out: *[3]Tally,
+    marks: *Marks,
+) !void {
+    var trig = Trigger.init(2048, 16384, c.budget);
+    var pre = Tally{};
+    var st = rng.Stream.region(seed, 0x4f32_3254, 0);
+    var hand = Hand{ .stop_before = stop_before };
+    try runArm(gpa, o, c, .{ .at = at }, &trig, worlds, probes, true, &st, &pre, .{}, .{ .revisit = false, .consolidate = true, .guard = true }, &hand);
+    std.debug.assert(hand.taken);
+    var parent = hand.m;
+    var win = hand.win;
+    defer win.deinit(gpa);
+    marks.at = hand.at;
+
+    const vals = try gpa.alloc([1]f32, probes.len);
+    defer gpa.free(vals);
+    const now = worldAt(c, hand.at, worlds[0], worlds[1], worlds[2]);
+    for (probes, 0..) |pz, k| vals[k] = .{marl.truthOf(now, pz)};
+
+    // The buffer this consolidation fits, selected ONCE and shared by both
+    // consolidated branches by construction.
+    var buf = try Replay.initWith(gpa, c.n, .err, 0x33);
+    defer buf.deinit(gpa);
+    win.selectInto(&buf);
+    const bx = buf.x[0..c.n];
+    const by = buf.y[0..c.n];
+    const bv = try gpa.alloc([1]f32, c.n);
+    defer gpa.free(bv);
+    for (by, 0..) |yv, k| bv[k] = .{@as(f32, @floatCast(yv))};
+
+    for (parent.kernels.items) |kk| {
+        marks.parent_updates_max = @max(marks.parent_updates_max, kk.updates);
+        marks.parent_updates_sum += kk.updates;
+    }
+    marks.parent_births = parent.stats.births;
+    marks.replay[Marks.PARENT] = try parent.rms(bx, bv, null);
+    marks.world[Marks.PARENT] = try parent.rms(probes, vals, null);
+    marks.k[Marks.PARENT] = parent.kernels.items.len;
+
+    var so = so_in;
+    so.guard = true;
+    var rep: Report = undefined;
+    var split = Split{};
+    defer split.deinit(gpa);
+    const keep: usize = parent.kernels.items.len / 2;
+    var guarded = try sleepOnReporting(gpa, &parent, bx, by, keep, so, &rep, &split);
+    defer guarded.deinit();
+    var linear = try adopt(gpa, o, split.linear);
+    defer linear.deinit();
+    var attempted = try adopt(gpa, o, split.attempted);
+    defer attempted.deinit();
+
+    marks.rejected = rep.rejected;
+    marks.strict_descent = std.math.isFinite(rep.last) and rep.last < rep.first;
+    marks.replay[Marks.LINEAR] = try linear.rms(bx, bv, null);
+    marks.world[Marks.LINEAR] = try linear.rms(probes, vals, null);
+    marks.k[Marks.LINEAR] = linear.kernels.items.len;
+    marks.replay[Marks.ATTEMPTED] = try attempted.rms(bx, bv, null);
+    marks.world[Marks.ATTEMPTED] = try attempted.rms(probes, vals, null);
+    marks.k[Marks.ATTEMPTED] = attempted.kernels.items.len;
+    marks.replay[Marks.RETURNED] = try guarded.rms(bx, bv, null);
+    marks.world[Marks.RETURNED] = try guarded.rms(probes, vals, null);
+    marks.k[Marks.RETURNED] = guarded.kernels.items.len;
+
+    // Identical fresh queries: one stream state, copied three times.
+    const models = [_]*marl.Model{ &parent, &linear, &guarded };
+    for (models, 0..) |mm, b| {
+        var bst = hand.st;
+        // A fresh window per branch. Nothing reads it again — the budget is
+        // spent, so no further consolidation selects from it — and the check
+        // that this is true is an EXECUTION one: the guarded branch has to
+        // reproduce the arm it came from, checkpoint for checkpoint.
+        var bwin = try Window.init(gpa, c.w);
+        defer bwin.deinit(gpa);
+        out[b] = Tally{};
+        try continueFrom(mm, c, worlds, probes, vals, &bwin, &bst, hand.at, hand.pending, &out[b]);
+    }
+    parent.deinit();
+}
+
+test "G71 (a) the OBS-24 fork's contracts, with the refinement stubbed" {
+    // OBS-23 localised the visible damage on acquisition 5678 to a third
+    // consolidation that the guard ACCEPTED — the refinement did not raise
+    // replay loss, and the world went to 0.93 at the next checkpoint. OBS-24
+    // forks that one consolidation.
+    //
+    // `tools/obs24_predict.py` holds the registration. This gate holds the
+    // contracts, with the refinement stubbed to zero steps, and it is the
+    // cheap one: no descent runs at all.
+    //
+    // **Astra's contract, and the reason a seed is not enough.** `guarded`
+    // and `linear` must differ in the refinement and in NOTHING else, so both
+    // are built from the same post-linear-refit bytes rather than from two
+    // runs of the same seed. With the refinement stubbed the two candidates
+    // are identical, and the demand is then the strong one: identical THROUGH
+    // CONTINUATION, checkpoint errors included — not merely at adoption.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 2;
+    o.responsibility = 3;
+    const bounds = [_]u64{ 2_000, 5_000, 6_500, 7_000, 10_000, 12_000 };
+    const c = Traj{
+        .total = 12_000,
+        .r = 1_000,
+        .w = 2_000,
+        .n = 1_000,
+        .check = 500,
+        .cold_end = 2_000,
+        .change_at = 5_000,
+        .drift_lo = 7_000,
+        .drift_hi = 10_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const AT = [_]u64{ 6_000, 8_000, 11_000 }; // the deferred arm's shape
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+    const pr = try marl.probesOf(gpa, wb, 31337, 512);
+    defer {
+        gpa.free(pr.p);
+        gpa.free(pr.y);
+    }
+
+    var tal: [3]Tally = undefined;
+    var marks = Marks{};
+    // THE STUB: zero descent steps. `refine` then returns the loss it started
+    // from, acceptance is trivially satisfied, and the attempted candidate
+    // must equal the linear one byte for byte.
+    var so = Options{ .exact = true };
+    so.steps = 0;
+    try forkThree(gpa, o, c, &AT, worlds, pr.p, 5678, so, 2, &tal, &marks);
+
+    const names = [_][]const u8{ "skip", "linear", "guarded" };
+    std.debug.print("\n  G71 (a) [{s}] forking the third consolidation at t = {d}, refinement STUBBED to {d} steps\n", .{
+        @tagName(builtin.mode), marks.at, so.steps,
+    });
+    std.debug.print("     {s:<11} {s:>10} {s:>10} {s:>8}\n", .{ "point", "replay", "world", "k" });
+    for (Marks.NAMES, 0..) |n, k| std.debug.print("     {s:<11} {d:>10.5} {d:>10.5} {d:>8}\n", .{
+        n, marks.replay[k], marks.world[k], marks.k[k],
+    });
+    std.debug.print("     parent learning state SURVIVED the fork: max kernel updates {d}, births {d} — an `adopt` would have zeroed both\n", .{
+        marks.parent_updates_max, marks.parent_births,
+    });
+    std.debug.print("     {s:<11} {s:>10} {s:>8} {s:>8} {s:>8} {s:>17}\n", .{ "branch", "err_sum", "checks", "k_final", "births", "stream hash" });
+    for (names, 0..) |n, b| std.debug.print("     {s:<11} {d:>10.6} {d:>8} {d:>8} {d:>8} {x:>17}\n", .{
+        n, tal[b].err_sum, tal[b].checks, tal[b].k_final, tal[b].births_total, tal[b].stream_hash,
+    });
+
+    // ── THE FORK POINT. The arm must have been stopped before its third
+    // consolidation, at the placement the registration names.
+    try testing.expectEqual(AT[2], marks.at);
+
+    // ── THE PARENT'S LEARNING STATE SURVIVED. `adopt` zeroes every kernel's
+    // `updates`, so a nonzero maximum witnesses that `skip` continues the
+    // real parent. This assertion fails the day someone rebuilds the control.
+    try testing.expect(marks.parent_updates_max > 0);
+    try testing.expect(marks.parent_births > 0);
+    // The scale-free form, and the one that actually catches a rebuild:
+    // `adopt` zeroes every kernel's counter, so a branch that CONTINUED the
+    // parent must carry at least the parent's summed updates forward, while
+    // the two adopted branches must carry FEWER than that — nothing dies
+    // without a consolidation, so the sum can only grow along a branch.
+    try testing.expect(tal[0].updates_sum >= marks.parent_updates_sum);
+    try testing.expect(tal[1].updates_sum < marks.parent_updates_sum);
+    try testing.expect(tal[2].updates_sum < marks.parent_updates_sum);
+    std.debug.print("     updates: parent {d} at the fork; skip carries {d} forward, the adopted branches {d} — a rebuild of the control would drop to the latter\n", .{
+        marks.parent_updates_sum, tal[0].updates_sum, tal[1].updates_sum,
+    });
+
+    // ── THE STUB IS A NO-OP, so the two consolidated branches adopt the same
+    // kernels — and the demand is that they stay identical THROUGH the
+    // continuation, not merely at adoption.
+    try testing.expect(!marks.rejected);
+    try testing.expect(!marks.strict_descent);
+    try testing.expectEqual(marks.replay[Marks.LINEAR], marks.replay[Marks.ATTEMPTED]);
+    try testing.expectEqual(marks.world[Marks.LINEAR], marks.world[Marks.ATTEMPTED]);
+    try testing.expectEqual(marks.replay[Marks.LINEAR], marks.replay[Marks.RETURNED]);
+    try testing.expectEqual(marks.world[Marks.LINEAR], marks.world[Marks.RETURNED]);
+    try testing.expectEqual(marks.k[Marks.LINEAR], marks.k[Marks.RETURNED]);
+    try testing.expectEqual(tal[1].err_sum, tal[2].err_sum);
+    try testing.expectEqual(tal[1].check_err, tal[2].check_err);
+    try testing.expectEqual(tal[1].k_final, tal[2].k_final);
+    try testing.expectEqual(tal[1].births_total, tal[2].births_total);
+    std.debug.print("     stubbed: linear and guarded identical at every checkpoint, not merely at adoption\n", .{});
+
+    // ── IDENTICAL FRESH QUERIES. All three branches continue from one stream
+    // state, so the locations and their order match across branches — skip
+    // included, even though nothing else about it need match.
+    try testing.expectEqual(tal[0].stream_hash, tal[1].stream_hash);
+    try testing.expectEqual(tal[0].stream_hash, tal[2].stream_hash);
+    try testing.expectEqual(tal[0].checks, tal[1].checks);
+    try testing.expectEqual(tal[0].paid, tal[2].paid);
+    try testing.expectEqual(c.total - marks.at, tal[0].paid);
+
+    // ── AND SKIP IS A DIFFERENT BRANCH. If it matched the consolidated ones
+    // the fork would not be forking anything.
+    try testing.expect(tal[0].err_sum != tal[1].err_sum);
+    std.debug.print("     skip continues the parent and diverges from both consolidated branches, on the same {d} fresh queries\n", .{tal[0].paid});
+
+    // ── THE TWO MEASURES HAVE DIFFERENT LABELS. Replay is scored on the
+    // buffer's OWN stored labels, world on held-out probes against
+    // completion-time truth. Nothing is relabelled and no oracle is used, so
+    // the two are not required to agree and must not be read as one number.
+    std.debug.print("     replay is the buffer's OWN historical labels; world is held-out probes against completion-time truth. No relabelling anywhere\n", .{});
 }

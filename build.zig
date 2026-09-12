@@ -152,6 +152,13 @@ pub fn build(b: *std.Build) void {
             // sleep paths — the immediate one reintroduced OBS-22's
             // score-ordering bug the day it was added. Seconds, no sleeps.
             "G70 (a)", // lattice contract
+            // OBS-24's fork: both consolidated branches built from the
+            // SAME post-linear-refit bytes rather than the same seed, the
+            // control continuing the ACTUAL parent (an `adopt` would reset
+            // Adam moments, update counts and the residual ring that gates
+            // births), and — with the refinement stubbed — the two branches
+            // identical THROUGH CONTINUATION rather than merely at adoption.
+            "G71 (a)", // fork contract
         };
     }
     const run_tests = b.addRunArtifact(tests);
