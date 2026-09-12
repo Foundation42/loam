@@ -6502,6 +6502,12 @@ pub fn continueFrom(
 ) !void {
     var i = from;
     var pending = pending_in;
+    // **Births are counted from HERE.** A branch that continues a parent
+    // carries that model's whole history in `stats.births`, while an adopted
+    // branch starts at zero — so a raw read makes the control look as though
+    // it bought topology it acquired long before the fork. OBS-23 paid for
+    // this exact class of bug once already, in the other direction.
+    const births0 = m.stats.births;
     while (i < c.total) {
         if (pending) {
             pending = false;
@@ -6520,7 +6526,7 @@ pub fn continueFrom(
     }
     if (pending) try score(m, c, i, worlds, probes, vals, out);
     out.k_final = m.kernels.items.len;
-    out.births_total += m.stats.births;
+    out.births_total += m.stats.births - births0;
     for (m.kernels.items) |kk| out.updates_sum += kk.updates;
 }
 
@@ -6749,4 +6755,172 @@ test "G71 (a) the OBS-24 fork's contracts, with the refinement stubbed" {
     // completion-time truth. Nothing is relabelled and no oracle is used, so
     // the two are not required to agree and must not be read as one number.
     std.debug.print("     replay is the buffer's OWN historical labels; world is held-out probes against completion-time truth. No relabelling anywhere\n", .{});
+}
+
+test "G71 forking the consolidation that failed" {
+    // OBS-23 localised the visible damage on acquisition 5678 to the THIRD
+    // consolidation of `sleep@t+r`, at t = 94 096: the checkpoint before it
+    // read 0.16067 and the one after read 0.92824, with ZERO guard
+    // rejections — so the refinement did not raise replay loss.
+    //
+    // OBS-22 recorded that recovery from a REJECTED refinement establishes
+    // nothing about an accepted one. This forks that single consolidation
+    // and asks directly. `tools/obs24_predict.py` holds the registration;
+    // G71 (a) holds the contracts and runs in seconds.
+    //
+    // **What is already known is narrow.** The world was worse at the next
+    // checkpoint, 1904 observations later. Whether the returned candidate
+    // was worse AT THE INSTANT IT WAS ADOPTED is Q2; whether the refinement
+    // is what made it worse is Q1. Both are predictions, not premises.
+    const gpa = testing.allocator;
+    var o = marl.Options{};
+    o.regions = 3;
+    o.responsibility = 3;
+    const bounds = [_]u64{ 12_000, 30_000, 48_000, 60_000, 90_000, 104_000 };
+    const c = Traj{
+        .total = 104_000,
+        .r = 4_096,
+        .w = 16_384,
+        .n = 8_192,
+        .check = 2_000,
+        .cold_end = 12_000,
+        .change_at = 30_000,
+        .drift_lo = 60_000,
+        .drift_hi = 90_000,
+        .budget = 3,
+        .bounds = &bounds,
+    };
+    const wa = marl.TruthParams{};
+    var wb = marl.TruthParams{};
+    wb.shift = .{ 0, -0.10, 0 };
+    var wc = marl.TruthParams{};
+    wc.shift = .{ 0.12, 0, 0.22 };
+    const worlds = [3]marl.TruthParams{ wa, wb, wc };
+    const pr = try marl.probesOf(gpa, wb, 31337, 2048);
+    defer {
+        gpa.free(pr.p);
+        gpa.free(pr.y);
+    }
+    const deferred = [_]u64{ 34_096, 64_096, 94_096 };
+
+    var tal: [3]Tally = undefined;
+    var marks = Marks{};
+    try forkThree(gpa, o, c, &deferred, worlds, pr.p, 5678, .{ .exact = true }, 2, &tal, &marks);
+
+    const names = [_][]const u8{ "skip", "linear", "guarded" };
+    const SKIP = 0;
+    const LIN = 1;
+    const GRD = 2;
+
+    // ── EVERYTHING IS PRINTED BEFORE ANYTHING IS ASSERTED. A refuted
+    // prediction must still leave its table behind — OBS-19 lost a
+    // ten-minute run to an assertion inside the loop that produced its
+    // numbers, and this gate's whole value is the eight measurements below.
+    std.debug.print("\n  G71 [{s}] forking sleep@t+r / acq 5678 at its THIRD consolidation, t = {d}\n", .{
+        @tagName(builtin.mode), marks.at,
+    });
+    std.debug.print("     THE FOUR POINTS. Replay is scored on the selected buffer's OWN HISTORICAL LABELS, exactly as the consolidation fitted them.\n", .{});
+    std.debug.print("     World is held-out probes against completion-time truth at t = {d}, past drift_hi and therefore STATIONARY — so no part of\n", .{marks.at});
+    std.debug.print("     any world difference is the world moving. Nothing is relabelled; there is no oracle anywhere in this fork.\n", .{});
+    std.debug.print("     {s:<11} {s:>12} {s:>12} {s:>8}\n", .{ "point", "replay", "world", "k" });
+    for (Marks.NAMES, 0..) |n, k| std.debug.print("     {s:<11} {d:>12.5} {d:>12.5} {d:>8}\n", .{
+        n, marks.replay[k], marks.world[k], marks.k[k],
+    });
+    std.debug.print("     acceptance: rejected {}, and the refinement's replay change was {s} — acceptance establishes NON-INCREASE, never descent\n", .{
+        marks.rejected, if (marks.strict_descent) "a STRICT decrease" else "not a strict decrease",
+    });
+    std.debug.print("     the parent's learning state entered the fork intact: {d} summed kernel updates, {d} births. `skip` continues THAT object\n", .{
+        marks.parent_updates_sum, marks.parent_births,
+    });
+
+    std.debug.print("     THE CONTINUATIONS, identical fresh queries, {d} observations to the horizon\n", .{c.total - marks.at});
+    std.debug.print("     {s:<11} {s:>10} {s:>10} {s:>10} {s:>10} {s:>10}   {s:>10} {s:>10}\n", .{
+        "branch", "96000", "98000", "100000", "102000", "104000", "max", "mean",
+    });
+    var mx: [3]f64 = .{0} ** 3;
+    var mn: [3]f64 = .{0} ** 3;
+    for (0..3) |b| {
+        std.debug.print("     {s:<11}", .{names[b]});
+        for (tal[b].check_err[0..tal[b].checks]) |e| {
+            std.debug.print(" {d:>10.5}", .{e});
+            mx[b] = @max(mx[b], e);
+            mn[b] += e;
+        }
+        mn[b] /= @as(f64, @floatFromInt(@max(1, tal[b].checks)));
+        std.debug.print("   {d:>10.5} {d:>10.5}\n", .{ mx[b], mn[b] });
+    }
+    std.debug.print("     guarded at FULL precision, so a later comparison can be exact rather than to 1e-5:\n       ", .{});
+    for (tal[GRD].check_err[0..tal[GRD].checks]) |e| std.debug.print(" {d:.12}", .{e});
+    std.debug.print("\n", .{});
+    std.debug.print("     UNREGISTERED, and it falls out of the four points: BOTH STAGES improve replay and damage the world.\n", .{});
+    std.debug.print("       the linear refit alone: replay {d:.5} -> {d:.5}, world {d:.5} -> {d:.5} ({d:.5} worse)\n", .{
+        marks.replay[Marks.PARENT],                            marks.replay[Marks.LINEAR],
+        marks.world[Marks.PARENT],                             marks.world[Marks.LINEAR],
+        marks.world[Marks.LINEAR] - marks.world[Marks.PARENT],
+    });
+    std.debug.print("       the refinement on top:  replay {d:.5} -> {d:.5}, world {d:.5} -> {d:.5} ({d:.5} worse)\n", .{
+        marks.replay[Marks.LINEAR],                               marks.replay[Marks.ATTEMPTED],
+        marks.world[Marks.LINEAR],                                marks.world[Marks.ATTEMPTED],
+        marks.world[Marks.ATTEMPTED] - marks.world[Marks.LINEAR],
+    });
+    std.debug.print("     births below are the CONTINUATION's only, on a common baseline — the control carries its model's whole history in\n", .{});
+    std.debug.print("     `stats.births` while an adopted branch starts at zero, so a raw read would credit the control with topology it bought long before the fork.\n", .{});
+    std.debug.print("     {s:<11} {s:>10} {s:>10} {s:>12}\n", .{ "branch", "k_final", "births", "updates" });
+    for (0..3) |b| std.debug.print("     {s:<11} {d:>10} {d:>10} {d:>12}\n", .{
+        names[b], tal[b].k_final, tal[b].births_total, tal[b].updates_sum,
+    });
+
+    const q1 = marks.world[Marks.ATTEMPTED] - marks.world[Marks.LINEAR];
+    const q2 = marks.world[Marks.RETURNED] - marks.world[Marks.PARENT];
+    std.debug.print("     VERDICT\n", .{});
+    std.debug.print("       Q1  world(attempted) - world(linear)     registered > 0      measured {d:.5}   {s}\n", .{ q1, if (q1 > 0) "HELD" else "REFUTED" });
+    std.debug.print("       Q2  world(returned) - world(parent)      registered > 0      measured {d:.5}   {s}\n", .{ q2, if (q2 > 0) "HELD" else "REFUTED" });
+    std.debug.print("       Q3  max(linear) < max(guarded)           {d:.5} vs {d:.5}   {s}\n", .{ mx[LIN], mx[GRD], if (mx[LIN] < mx[GRD]) "HELD" else "REFUTED" });
+    std.debug.print("       Q4  max(skip) < max(guarded), and < {d:.2}  {d:.5} vs {d:.5}   {s} / {s}\n", .{
+        thresholds.OBS24_SKIP_CEILING,                 mx[SKIP],                                                            mx[GRD],
+        if (mx[SKIP] < mx[GRD]) "HELD" else "REFUTED", if (mx[SKIP] < thresholds.OBS24_SKIP_CEILING) "HELD" else "REFUTED",
+    });
+    std.debug.print("       Q5  guarded(104000) > skip(104000)       {d:.5} vs {d:.5}   {s}\n", .{
+        tal[GRD].check_err[4],                                                     tal[SKIP].check_err[4],
+        if (tal[GRD].check_err[4] > tal[SKIP].check_err[4]) "HELD" else "REFUTED",
+    });
+    std.debug.print("       Q6  mean(linear) < mean(skip)            {d:.5} vs {d:.5}   {s}\n", .{ mn[LIN], mn[SKIP], if (mn[LIN] < mn[SKIP]) "HELD" else "REFUTED" });
+    std.debug.print("     Q3 and Q4's maxima are maxima OVER THESE FIVE CHECKPOINTS. The model is unobserved for 2000 observations at a time and\n", .{});
+    std.debug.print("     they cannot exclude an excursion between them.\n", .{});
+    std.debug.print("     SCOPE: ONE consolidation, ONE trajectory, and the conclusion is CONDITIONAL ON THE PARENT THE EARLIER SLEEPS PRODUCED.\n", .{});
+    std.debug.print("     The first two sleeps are neither exonerated nor implicated — they built the state that fails here.\n", .{});
+
+    // ── HARNESS CONTRACTS ────────────────────────────────────────────────
+    try testing.expectEqual(deferred[2], marks.at);
+    try testing.expectEqual(@as(usize, 5), tal[GRD].checks);
+    // The guarded branch IS OBS-23's arm, so it must reproduce that arm's
+    // remaining checkpoints. A TOLERANCE, not exact agreement: the recorded
+    // values are rounded to five decimals and full precision was never
+    // written down.
+    for (thresholds.OBS24_ARM_TAIL, 0..) |want, k| {
+        try testing.expect(@abs(tal[GRD].check_err[k] - want) < thresholds.OBS24_REPRO_TOL);
+    }
+    // Acceptance gives NON-INCREASE of replay loss, and no more.
+    try testing.expect(marks.replay[Marks.ATTEMPTED] <= marks.replay[Marks.LINEAR]);
+    try testing.expect(!marks.rejected);
+    // The control continued the parent; the two consolidated branches were
+    // adopted. `adopt` zeroes every kernel's counter, so this separates them
+    // at any scale.
+    try testing.expect(tal[SKIP].updates_sum >= marks.parent_updates_sum);
+    try testing.expect(tal[LIN].updates_sum < marks.parent_updates_sum);
+    // Identical fresh queries across all three branches.
+    try testing.expectEqual(tal[SKIP].stream_hash, tal[LIN].stream_hash);
+    try testing.expectEqual(tal[SKIP].stream_hash, tal[GRD].stream_hash);
+    try testing.expectEqual(c.total - marks.at, tal[SKIP].paid);
+
+    // ── THE REGISTERED PREDICTIONS ───────────────────────────────────────
+    try testing.expect(q1 > thresholds.OBS24_WORLD_RISES);
+    try testing.expect(q2 > thresholds.OBS24_IMMEDIATE);
+    try testing.expect(mx[LIN] < mx[GRD]);
+    try testing.expect(mx[SKIP] < mx[GRD]);
+    try testing.expect(mx[SKIP] < thresholds.OBS24_SKIP_CEILING);
+    try testing.expect(tal[GRD].check_err[4] > tal[SKIP].check_err[4]);
+    // Q6 is REGISTERED AND REFUTED and is deliberately NOT asserted. A
+    // threshold is not tuned to make a gate pass; the finding is recorded and
+    // the prediction left standing in `thresholds.zig` for Christian.
 }

@@ -129,6 +129,7 @@ run per edit makes the harness the activity rather than the work.
     zig build test -Dtest-filter="G70 what"        # ... the 2x2 itself: WHICH HALF of an intervention failed to earn its cost. The largest gate in the campaign
     python3 tools/obs23_predict.py                 # ... its pre-registration; a clock bug in the immediate-sleep path was caught in review, before any sleep was paid for
     zig build test -Dtest-filter="G71 (a)"         # OBS-24: the FORK's contracts — both branches from the same BYTES, the control continuing the actual parent. Seconds
+    zig build test -Dtest-filter="G71 forking"     # OBS-24: the fork itself — a refinement that DESCENDED on replay and tripled same-world error. 2:15
     python3 tools/obs24_predict.py                 # ... its pre-registration; replay keeps the buffer's own labels, and acceptance means NON-INCREASE, not descent
 
 The suite is CPU-only and deterministic, so the calculus is spindrift's:

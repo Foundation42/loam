@@ -4224,4 +4224,67 @@ pub const OBS23_CAPACITY_HI: f64 = 0.80;
 /// every arm whether or not the guard is on.
 pub const OBS23_GUARD_REJECTIONS: usize = 0;
 
+/// OBS-24 / G71 — the five checkpoints `sleep@t+r`/5678 reached after its
+/// third consolidation, as OBS-23 PRINTED them: five decimals, rounded.
+///
+/// The guarded branch of the fork IS that arm, so reproducing these is a
+/// CONTRACT ON THE HARNESS rather than a prediction — if the continuation
+/// does not reproduce them it is not the arm's continuation. Checked to
+/// `OBS24_REPRO_TOL`, **a tolerance and not exact agreement**, because full
+/// precision was never written down. G71 prints its own at more digits so a
+/// later comparison can be exact.
+pub const OBS24_ARM_TAIL = [5]f64{ 0.92824, 0.90681, 0.21799, 0.25972, 0.20848 };
+pub const OBS24_REPRO_TOL: f64 = 1e-5;
+
+/// OBS-24 / G71 — Q1, and the measurement OBS-22 named as missing: does the
+/// accepted refinement raise SAME-WORLD error while not raising replay loss?
+/// `world(attempted) > world(linear)`, PREDICTED.
+///
+/// Acceptance establishes only NON-INCREASE of replay loss, so
+/// `replay(attempted) <= replay(linear)` is asserted as the acceptance
+/// CONTRACT; whether the descent was strict is measured and reported apart.
+///
+/// OBS-23 saw the world worse at the next checkpoint, 1904 observations
+/// later. Nothing has measured the candidate itself, which is why this is a
+/// prediction rather than a premise.
+pub const OBS24_WORLD_RISES: f64 = 0;
+
+/// OBS-24 / G71 — Q2: is the damage IMMEDIATE rather than emergent?
+/// `world(returned) > world(parent)`, same instant, same probes, PREDICTED.
+/// Sign only: nothing in OBS-23 scored the model between 94 000 and 96 000,
+/// so no magnitude is derivable.
+pub const OBS24_IMMEDIATE: f64 = 0;
+
+/// OBS-24 / G71 — Q3: is the REFINEMENT responsible?
+/// `max(linear) < max(guarded)` over the FIVE remaining checkpoints.
+/// **A maximum over five samples cannot exclude an excursion between them**;
+/// the model is unobserved for 2000 observations at a time.
+pub const OBS24_REFINEMENT: f64 = 0;
+
+/// OBS-24 / G71 — Q4: does consolidating at all damage, from this parent?
+/// `max(skip) < max(guarded)`, and separately `max(skip) < 0.30` — registered
+/// from the arm's own pre-sleep band of 0.13452..0.23044 with margin, and
+/// refutable alone. Both maxima are over the five checkpoints only.
+pub const OBS24_SKIP_CEILING: f64 = 0.30;
+
+/// OBS-24 / G71 — Q5: is recovery INCOMPLETE within the remaining horizon?
+/// `guarded(104 000) > skip(104 000)`, PREDICTED.
+pub const OBS24_RECOVERY_INCOMPLETE: f64 = 0;
+
+/// OBS-24 / G71 — Q6: does the linear refit ALONE help, against not
+/// consolidating? `mean(linear) < mean(skip)` over the five checkpoints,
+/// PREDICTED from OBS-22's fork where the linear refit beat skipping
+/// (0.09896 against 0.11174). Direction only.
+///
+/// **REGISTERED AND REFUTED. 0.18471 against 0.17569** — the linear refit
+/// alone is a net cost over the remaining horizon. OBS-22's precedent does
+/// not carry to this parent.
+///
+/// The shape is worth more than the sign. `linear` is far worse at the first
+/// checkpoint after the fork (0.27740 against 0.17629) and then RECOVERS,
+/// ending marginally AHEAD of `skip` (0.14011 against 0.14958). A mean over
+/// five checkpoints scores the excursion and the recovery together, and here
+/// they point opposite ways. Reported, not asserted; the bound stands.
+pub const OBS24_LINEAR_HELPS: f64 = 0;
+
 pub const G1_REFERENCE: []const u8 = "364c3aa756ffaf50aa89774ef63d774c690cc4d934725f7436988cc7a0193825";

@@ -8665,3 +8665,78 @@ seeds, NOT independent replication. The evidence is still two acquisition
 trajectories. G70 (a) passes in seconds and sleeps not at all; it is in the smoke
 list. G69 re-run preserved beside OBS-22's own logs. `docs/data/obs23/` holds
 the run.
+
+## OBS-24 / G71 — the refinement that descended, and damaged
+
+OBS-23 localised the visible damage on acquisition 5678 to one consolidation
+at t = 94 096, accepted by the guard. OBS-22 had registered the gap that
+leaves — recovery from a REJECTED refinement establishes nothing about an
+accepted one — and OBS-24 forks that single consolidation. 2 min 15 s, no
+further full-lattice run.
+
+THE CONSTRUCTION, and a seed does not satisfy it. `Split` duplicates the
+post-linear-refit candidate inside the consolidation the campaign actually
+uses, and the attempted refinement beside it — the object OBS-22 discarded
+before anything could score it against the world. `guarded` and `linear` are
+built from those same bytes, so the refinement is the only thing between
+them. A reimplementation could have drifted from the real path.
+
+`Hand` takes the LIVE parent out of the arm for the control. `adopt` zeroes
+every kernel's Adam moments, step counter, `updates` and drift origin, and
+returns a fresh Model with fresh stats, a fresh RNG stream and a fresh
+`recent` residual ring WHICH GATES BIRTHS — a rebuilt control would have been
+"adopt without consolidating", an intervention of its own. `adopt` stays right
+for the consolidated candidates because consolidation does that; the asymmetry
+is what the policies differ by. All three branches then share one
+`continueFrom`, so they cannot differ in the continuation itself.
+
+THE RESULT. Replay on the buffer's own historical labels, world on held-out
+probes against completion-time truth at a stationary instant, no relabelling:
+parent .22300/.16446, linear .12414/.27473, attempted and returned
+.06259/.86959. **The refinement strictly halved replay loss and tripled
+same-world error at the instant of adoption.** Q1 +0.59486 and Q2 +0.70513,
+both held.
+
+AND IT IS NOT THE REFINEMENT ALONE. Unregistered, out of the same four
+points: selection plus the linear refit moved replay .22300 -> .12414 and
+world .16446 -> .27473. **Both stages improve replay and damage the world**,
+the refinement doing 5.4x the damage but not a different kind of it. That
+explains why the acceptance rule cannot see any of it: THE RULE READS THE
+ONLY MEASURE THAT IS IMPROVING. A replay-loss guard is a floor against a
+descent that fails on its own terms and is blind to one that succeeds on them.
+
+Continuations on identical fresh queries: skip max .19722 mean .17569, linear
+.27740/.18471, guarded .92824/.50425. Q3, Q4 (both halves) and Q5 held. Q6
+REFUTED — the linear refit alone is a net cost here where OBS-22's precedent
+had it beating skip — and its SHAPE matters more: linear is far worse at the
+first checkpoint and then recovers to end marginally AHEAD of skip, so a mean
+over five checkpoints scores an excursion and a recovery together. Reported,
+not asserted; the bound stands.
+
+A SECOND BIRTHS BASELINE BUG, the same class as OBS-23's and in the other
+direction. `skip` continues a model created at the second consolidation, so a
+raw `stats.births` credited it with 804 — topology bought long before the
+fork — against adopted branches' 297 and 385. Netted at the fork: skip 240,
+linear 297, guarded 385, while k_final runs 1202 / 778 / 866. The consolidated
+branches BIRTH MORE and END SMALLER, which is OBS-23's regrowth seen locally.
+Twice in two phases makes it a rule: A COUNTER READ ACROSS A FORK NEEDS A
+BASELINE AT THE FORK.
+
+Harness contracts, asserted rather than assumed: the guarded branch
+reproduces OBS-23's arm to a TOLERANCE of 1e-5 — not exact agreement, since
+the recorded values were rounded to five decimals, and full precision is now
+printed; acceptance gives NON-INCREASE only, with strict descent measured
+apart; the control carries at least the parent's summed kernel updates
+forward while the adopted branches carry fewer, which is scale-free where a
+maximum is not; and all three branches draw identical fresh queries. G71 (a)
+drives the whole fork with the refinement stubbed, and demands the two
+consolidated branches be identical THROUGH CONTINUATION rather than at
+adoption. Mutation: rebuilding the control with `adopt` fails it.
+
+Scope in the gate: one consolidation, one trajectory, CONDITIONAL ON THE
+PARENT the earlier sleeps produced, and the maxima are over five checkpoints.
+Nothing says how often a descending refinement harms, only that it can and
+that the acceptance rule cannot detect it when it does.
+
+Validation: G71 EXIT 0 in 2 min 15 s; G71 (a) in the smoke list.
+`docs/data/obs24/` holds the run.

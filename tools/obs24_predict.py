@@ -18,9 +18,16 @@ That is the measurement OBS-22 said it did not have.  OBS-22 established
 that a replay-loss acceptance rule prevents a diverging refinement, and
 recorded explicitly that this does *not* establish that a descent which
 *does* descend on replay improves the current world.  Here is a case where
-it descended, was accepted, and the world went to 0.93.
+it descended, was accepted, and the world was at 0.93 by the next
+checkpoint.
 
 **OBS-24 forks that one consolidation.**  No further full-lattice run.
+
+Note what is and is not already known.  The world was worse at the NEXT
+CHECKPOINT, 1904 observations after the consolidation.  Whether the returned
+candidate was already worse AT THE INSTANT IT WAS ADOPTED is Q2, and whether
+the refinement is what made it worse is Q1.  **Both are predictions here,
+not premises.**
 
     python3 tools/obs24_predict.py
 """
@@ -36,9 +43,10 @@ REMAINING = [96_000, 98_000, 100_000, 102_000, 104_000]
 # The OBS-23 arm's own values at those instants, AS PRINTED — five decimals,
 # rounded. The guarded branch IS that arm, so these are a CONTRACT ON THE
 # HARNESS and not predictions: if the fork does not reproduce them the
-# continuation is not the arm's. **Asserted at the recorded precision**
-# (|difference| < 1e-5), because full precision was never written down; the
-# gate prints its own at more digits so a future comparison can be tighter.
+# continuation is not the arm's. Checked to a **TOLERANCE of 1e-5, which is
+# not exact agreement**: the recorded values are rounded to five decimals and
+# full precision was never written down. The gate prints its own at more
+# digits so a later comparison can be tighter and exact.
 OBS23_GUARDED = [0.92824, 0.90681, 0.21799, 0.25972, 0.20848]
 OBS23_PARENT_AT_94000 = 0.16067
 # The arm's own band over the three checkpoints before the sleep, which is
@@ -172,7 +180,10 @@ Q2_IMMEDIATE = True
 #
 #     So the distinction here is NOT accepted-versus-restored. It is that
 #     OBS-22's refinement INCREASED replay loss (0.13965 -> 0.35844) while
-#     this one did not increase it at all — and damaged the world anyway.
+#     this one did not increase it at all. **Whether it damaged the world is
+#     Q1 — a PREDICTION, not a premise.** OBS-23 saw the world worse at the
+#     next checkpoint, 1904 observations later; nothing has yet measured the
+#     candidate itself.
 Q3_REFINEMENT_RESPONSIBLE = True
 
 # Q4  Does consolidating at all damage, from this parent?
@@ -237,7 +248,8 @@ def main() -> None:
     print()
     print("  HARNESS CONTRACTS, asserted — not predictions")
     print("  " + "-" * 72)
-    print("  guarded reproduces the OBS-23 arm at every remaining checkpoint:")
+    print("  guarded reproduces the OBS-23 arm at every remaining checkpoint,")
+    print("  to a TOLERANCE of 1e-5 — the recorded values are rounded to 5 dp:")
     print("    " + "  ".join(f"{t}:{v:.5f}" for t, v in zip(REMAINING, OBS23_GUARDED)))
     print("  linear's kernels equal the post-linear snapshot BYTE FOR BYTE")
     print("  both branches consolidate from the IDENTICAL selected buffer")

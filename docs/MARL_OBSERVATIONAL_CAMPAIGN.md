@@ -3592,3 +3592,192 @@ feedback-channel caveat, the guard's honest description, the resource
 account, the C6 correction, the attribute-is-not-exonerate distinction, the
 checkpoint trace and its contract, and the phase's own closing statement are
 all Astra's.*
+
+## OBS-24 / G71 — the refinement that descended, and damaged
+
+OBS-23 localised the visible damage on acquisition 5678 to the third
+consolidation of `sleep@t+r`, at t = 94 096: the checkpoint before it read
+0.16067, the one after read 0.92824, and the guard rejected **nothing** — so
+the refinement had not raised replay loss.
+
+OBS-22 had registered exactly this gap and left it open:
+
+> Recovery establishes that this rule prevents *this* failure. It does not
+> establish that a descent which *does* descend on replay improves the
+> current world.
+
+OBS-24 forks that one consolidation. No further full-lattice run — one
+prefix, one sleep, three short continuations, 2 min 15 s.
+
+### The construction, and why a seed does not satisfy it
+
+`guarded` and `linear` must differ in the **refinement and nothing else**.
+Running two arms from one seed and trusting determinism is weaker than
+building both from one object, so `Split` duplicates the post-linear-refit
+candidate *inside the consolidation the campaign actually uses* — the same
+point `Options.guard` already snapshots — and the attempted refinement beside
+it. That second copy is the thing OBS-22 structurally could not see: its
+replay loss survived in `Report.last`, but its kernels were discarded before
+anything scored them against the world.
+
+**`skip` continues the live parent**, not a rebuild of it. `adopt` zeroes
+every kernel's Adam moments, step counter, `updates` and drift origin, and
+hands back a fresh `Model` — fresh stats, a fresh RNG stream, and a fresh
+`recent` residual ring, *which gates births*. A rebuilt control would have
+been "adopt without consolidating", an intervention of its own. `Hand` takes
+the model, window and stream out of the arm instead. `adopt` stays right for
+the two consolidated candidates, because a consolidation does exactly that;
+the asymmetry is what the policies differ by.
+
+All three branches then run the *same* continuation function on identical
+fresh queries, so they cannot differ in the continuation itself.
+
+### The four points
+
+Replay is scored on the selected buffer's **own historical labels**, exactly
+as the consolidation fitted them. World is held-out probes against
+completion-time truth at t = 94 096 — past `drift_hi`, so the world is
+stationary there and no part of any difference below is the world moving.
+Nothing is relabelled; there is no oracle anywhere in this fork.
+
+| point | replay | world | k |
+|---|---|---|---|
+| parent | 0.22300 | 0.16446 | 962 |
+| linear | 0.12414 | 0.27473 | 481 |
+| attempted | **0.06259** | **0.86959** | 481 |
+| returned | 0.06259 | 0.86959 | 481 |
+
+> **A refinement that strictly descends on replay multiplied same-world error
+> by 3.2× at the instant it was adopted.**
+
+Replay halved, 0.12414 → 0.06259. World tripled, 0.27473 → 0.86959. Same
+instant, same probes, stationary world. Q1 held at +0.59486 and Q2 — that the
+damage is *immediate* rather than emergent — held at +0.70513 against the
+parent.
+
+### And it is not the refinement alone
+
+Unregistered, and it falls out of the same four points:
+
+| stage | replay | world |
+|---|---|---|
+| selection + linear refit | 0.22300 → 0.12414 | 0.16446 → **0.27473** (+0.11027) |
+| refinement on top | 0.12414 → 0.06259 | 0.27473 → **0.86959** (+0.59486) |
+
+**Both stages improve replay and damage the world.** The refinement does 5.4×
+the damage of the linear refit, but the sign is the same at every step of the
+consolidation.
+
+That is a sharper statement than "the refinement diverged", and it explains
+why the acceptance rule cannot see any of it: **the rule reads the only
+measure that is improving.** A replay-loss guard is a floor against a descent
+that fails on its own terms, and it is blind by construction to a descent
+that succeeds on them.
+
+### The continuations
+
+Identical fresh queries, 9904 observations to the horizon.
+
+| branch | 96 000 | 98 000 | 100 000 | 102 000 | 104 000 | max | mean |
+|---|---|---|---|---|---|---|---|
+| skip | 0.17629 | 0.19722 | 0.18392 | 0.17146 | 0.14958 | 0.19722 | **0.17569** |
+| linear | 0.27740 | 0.20206 | 0.16810 | 0.13587 | **0.14011** | 0.27740 | 0.18471 |
+| guarded | 0.92824 | 0.90681 | 0.21799 | 0.25972 | 0.20848 | 0.92824 | 0.50425 |
+
+Q3 held — removing the refinement takes the maximum from 0.92824 to 0.27740.
+Q4 held on both halves: `skip` peaks at 0.19722, below `guarded` and below
+the registered 0.30 ceiling. Q5 held — recovery is incomplete, `guarded`
+ending at 0.20848 against `skip`'s 0.14958.
+
+**Q3 and Q4's maxima are maxima over these five checkpoints.** The model is
+unobserved for 2000 observations at a time and they cannot exclude an
+excursion between them.
+
+**Q6 is refuted**: mean(linear) 0.18471 against skip's 0.17569, so OBS-22's
+precedent — where the linear refit alone beat skipping — does not carry to
+this parent. The shape is worth more than the sign: `linear` is far worse at
+the first checkpoint and then recovers, ending marginally *ahead* of `skip`.
+A mean over five checkpoints scores an excursion and a recovery together
+while they point opposite ways. Reported, not asserted; the bound stands.
+
+### The resource column, on a common baseline
+
+| branch | k_final | continuation births | summed updates |
+|---|---|---|---|
+| skip | 1202 | **240** | 581 574 |
+| linear | 778 | 297 | 141 753 |
+| guarded | 866 | 385 | 106 334 |
+
+The consolidated branches **birth more** over the remaining horizon while
+ending with **fewer** kernels — OBS-23's regrowth, seen locally at a single
+consolidation rather than inferred from a trajectory total.
+
+Births had to be netted to a common baseline to say that. `skip` continues a
+model created at the *second* consolidation, so a raw read of `stats.births`
+credited it with 804 — topology bought long before the fork — against the
+adopted branches' 297 and 385. It is the same class of bug as OBS-23's births
+column, in the other direction, and twice in two phases makes it a rule:
+**a counter read across a fork needs a baseline at the fork.**
+
+### The harness, asserted rather than assumed
+
+The `guarded` branch *is* OBS-23's arm, so reproducing its five remaining
+checkpoints is a contract and not a result. It does, to a **tolerance** of
+1e-5 — not exact agreement, because the recorded values were rounded to five
+decimals. G71 now prints its own at full precision so a later comparison can
+be exact:
+
+    0.928242444992  0.906814873219  0.217985928059  0.259724080563  0.208475485444
+
+Also asserted: acceptance gives **non-increase** of replay loss and no more
+(strict descent is measured separately, and here it was strict); the control
+carried at least the parent's summed kernel updates forward while the adopted
+branches carried fewer — scale-free, where a maximum is not; and all three
+branches drew identical fresh queries.
+
+G71 (a) drives the whole fork with the refinement stubbed to zero steps, in
+seconds: the stub is a no-op, so the two consolidated branches must be
+identical *through continuation*, checkpoint errors included, not merely at
+adoption. Mutation: rebuilding the control with `adopt` fails it.
+
+### What OBS-24 records
+
+> At this consolidation, the refinement strictly lowered replay loss and
+> raised same-world error more than threefold at the instant of adoption.
+> Selection and the linear refit moved both measures the same way before it.
+> Removing the refinement removed most of the damage; not consolidating
+> removed all of it; and recovery was incomplete within the remaining
+> horizon.
+
+### Scope
+
+**One consolidation, one trajectory, and conditional on the parent the
+earlier sleeps produced.** The first two sleeps are neither exonerated nor
+implicated — they built the state that fails here. Nothing in this fork says
+how often a descending refinement harms, only that it can, and that the
+acceptance rule cannot detect it when it does.
+
+### Still owed
+
+- **How often.** One case is an existence proof. The same fork at the other
+  two consolidations, and on trajectory 1234, would say whether this is the
+  exception or the rule.
+- **A world-aware acceptance rule** is the obvious response and is *not*
+  registered here: it would need held-out truth at consolidation time, which
+  is an oracle, so the deployable version is a held-out split of the replay
+  buffer and that is its own experiment.
+- **Why the buffer and the world disagree.** The replay buffer is the hard
+  window at 94 096; the probes are drawn over the whole cube. Whether the
+  disagreement is staleness, coverage, or the selection's error weighting is
+  untested.
+- OBS-23's leftovers, unchanged: the magnitude of the targeting divergence,
+  pricing the capacity trade, and `revisit` at other budgets.
+
+Cost: G71 is 2 min 15 s; G71 (a) is seconds and runs no descent at all.
+`docs/data/obs24/` holds the run.
+
+*The shared-candidate construction, the live-parent control, the label
+separation, the non-increase distinction, the rounded-precision tolerance,
+the bounded maxima and the correction that "damaged the world" was a
+prediction rather than a premise are all Astra's.*
+

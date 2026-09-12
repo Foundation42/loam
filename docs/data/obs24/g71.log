@@ -1,0 +1,58 @@
+test
++- run test stderr
+  G71 (a) [ReleaseSafe] forking the third consolidation at t = 11000, refinement STUBBED to 0 steps
+     point           replay      world        k
+     parent         0.14576    0.12309      293
+     linear         0.09540    0.09650      146
+     attempted      0.09540    0.09650      146
+     returned       0.09540    0.09650      146
+     parent learning state SURVIVED the fork: max kernel updates 519, births 171 — an `adopt` would have zeroed both
+     branch         err_sum   checks  k_final   births       stream hash
+     skip          0.349134        3      309       16  4b534cc8c20706d3
+     linear        0.304073        3      205       59  4b534cc8c20706d3
+     guarded       0.304073        3      205       59  4b534cc8c20706d3
+     updates: parent 52877 at the fork; skip carries 75329 forward, the adopted branches 13463 — a rebuild of the control would drop to the latter
+     stubbed: linear and guarded identical at every checkpoint, not merely at adoption
+     skip continues the parent and diverges from both consolidated branches, on the same 1000 fresh queries
+     replay is the buffer's OWN historical labels; world is held-out probes against completion-time truth. No relabelling anywhere
+
+  G71 [ReleaseSafe] forking sleep@t+r / acq 5678 at its THIRD consolidation, t = 94096
+     THE FOUR POINTS. Replay is scored on the selected buffer's OWN HISTORICAL LABELS, exactly as the consolidation fitted them.
+     World is held-out probes against completion-time truth at t = 94096, past drift_hi and therefore STATIONARY — so no part of
+     any world difference is the world moving. Nothing is relabelled; there is no oracle anywhere in this fork.
+     point             replay        world        k
+     parent           0.22300      0.16446      962
+     linear           0.12414      0.27473      481
+     attempted        0.06259      0.86959      481
+     returned         0.06259      0.86959      481
+     acceptance: rejected false, and the refinement's replay change was a STRICT decrease — acceptance establishes NON-INCREASE, never descent
+     the parent's learning state entered the fork intact: 392037 summed kernel updates, 564 births. `skip` continues THAT object
+     THE CONTINUATIONS, identical fresh queries, 9904 observations to the horizon
+     branch           96000      98000     100000     102000     104000          max       mean
+     skip           0.17629    0.19722    0.18392    0.17146    0.14958      0.19722    0.17569
+     linear         0.27740    0.20206    0.16810    0.13587    0.14011      0.27740    0.18471
+     guarded        0.92824    0.90681    0.21799    0.25972    0.20848      0.92824    0.50425
+     guarded at FULL precision, so a later comparison can be exact rather than to 1e-5:
+        0.928242444992 0.906814873219 0.217985928059 0.259724080563 0.208475485444
+     UNREGISTERED, and it falls out of the four points: BOTH STAGES improve replay and damage the world.
+       the linear refit alone: replay 0.22300 -> 0.12414, world 0.16446 -> 0.27473 (0.11027 worse)
+       the refinement on top:  replay 0.12414 -> 0.06259, world 0.27473 -> 0.86959 (0.59486 worse)
+     births below are the CONTINUATION's only, on a common baseline — the control carries its model's whole history in
+     `stats.births` while an adopted branch starts at zero, so a raw read would credit the control with topology it bought long before the fork.
+     branch         k_final     births      updates
+     skip              1202        240       581574
+     linear             778        297       141753
+     guarded            866        385       106334
+     VERDICT
+       Q1  world(attempted) - world(linear)     registered > 0      measured 0.59486   HELD
+       Q2  world(returned) - world(parent)      registered > 0      measured 0.70513   HELD
+       Q3  max(linear) < max(guarded)           0.27740 vs 0.92824   HELD
+       Q4  max(skip) < max(guarded), and < 0.30  0.19722 vs 0.92824   HELD / HELD
+       Q5  guarded(104000) > skip(104000)       0.20848 vs 0.14958   HELD
+       Q6  mean(linear) < mean(skip)            0.18471 vs 0.17569   REFUTED
+     Q3 and Q4's maxima are maxima OVER THESE FIVE CHECKPOINTS. The model is unobserved for 2000 observations at a time and
+     they cannot exclude an excursion between them.
+     SCOPE: ONE consolidation, ONE trajectory, and the conclusion is CONDITIONAL ON THE PARENT THE EARLIER SLEEPS PRODUCED.
+     The first two sleeps are neither exonerated nor implicated — they built the state that fails here.
+zig build test -Dtest-filter="G71"  147.02s user 0.88s system 109% cpu 2:14.74 total
+G71 EXIT=0

@@ -82,7 +82,7 @@ Use `rg -n 'topic' file` then read the surrounding section.
 
 | Need | Read |
 |---|---|
-| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..23; src/consolidate.zig, G58-G70; docs/data/obs22, docs/data/obs23 |
+| Replay policy and consolidation | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-11..24; src/consolidate.zig, G58-G71; docs/data/obs22..obs24 |
 | Complexity and fresh windows | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-4; src/observational_windows.zig, G51; docs/data/obs4 |
 | Adaptive inverse births | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-3; src/adaptive_inferred.zig, G50; docs/data/obs3 |
 | Hidden potential inference | docs/MARL_OBSERVATIONAL_CAMPAIGN.md OBS-2; src/inferred.zig, G49 |
@@ -227,7 +227,7 @@ G66 is the campaign's largest gate — twenty-two sleeps; G67 is ~8:45 with thir
 nine adaptation runs together are ~14 s. Use smoke plus the affected gate at
 commit, not the full suite.
 
-Latest: OBS-23 / G70, WHAT DOES AN INTERVENTION ACTUALLY COST? (2026-09-12).
+Previously: OBS-23 / G70, WHAT DOES AN INTERVENTION ACTUALLY COST? (2026-09-12).
 OBS-22's Q6 refutation was UNATTRIBUTED: "an intervention" is two mechanisms
 — 4,096 targeted revisits paid out of the same horizon, and a consolidation —
 and it measured their sum against zero. This is the 2x2, at OBS-22's
@@ -349,3 +349,57 @@ task handle.
 
 G70 is now the campaign's largest gate at ~16 min; G70 (a) is seconds and
 sleeps not at all.
+
+Latest: OBS-24 / G71, THE REFINEMENT THAT DESCENDED, AND DAMAGED (2026-09-12).
+OBS-23 localised the damage on acq 5678 to ONE consolidation at t = 94,096,
+ACCEPTED by the guard. OBS-22 had registered the gap that leaves: recovery
+from a REJECTED refinement establishes nothing about an accepted one. This
+forks that single consolidation. 2:15, no further full-lattice run.
+
+THE HEADLINE. Replay on the buffer's OWN HISTORICAL LABELS, world on held-out
+probes against completion-time truth at a STATIONARY instant, no relabelling
+anywhere: parent .22300/.16446, linear .12414/.27473, attempted = returned
+.06259/.86959. THE REFINEMENT STRICTLY HALVED REPLAY LOSS AND TRIPLED
+SAME-WORLD ERROR AT THE INSTANT OF ADOPTION. Q1 +0.59486, Q2 +0.70513 — the
+damage is IMMEDIATE, not emergent.
+
+AND NOT THE REFINEMENT ALONE (unregistered, from the same four points).
+Selection plus the linear refit moved replay .22300 -> .12414 and world
+.16446 -> .27473. BOTH STAGES IMPROVE REPLAY AND DAMAGE THE WORLD; the
+refinement does 5.4x the damage, not a different kind. THAT IS WHY THE
+ACCEPTANCE RULE SEES NOTHING — IT READS THE ONLY MEASURE THAT IS IMPROVING.
+A replay-loss guard is a floor against a descent that fails on its own terms,
+and blind to one that succeeds on them.
+
+CONTINUATIONS, identical fresh queries: skip max .19722 mean .17569, linear
+.27740/.18471, guarded .92824/.50425. Q3, Q4 (both halves), Q5 HELD. Q6
+REFUTED (.18471 vs .17569) — OBS-22's precedent does not carry; reported, not
+asserted. Its SHAPE matters more: linear is far worse at the first checkpoint
+then recovers to end AHEAD of skip, so a five-checkpoint mean scores an
+excursion and a recovery together.
+
+CONSTRUCTION CONTRACTS, all Astra's. `Split` duplicates the post-linear
+candidate INSIDE the real consolidation and the attempted refinement beside
+it, so both branches come from the SAME BYTES — a seed is a weaker guarantee.
+`Hand` takes the LIVE parent for the control, because `adopt` zeroes Adam
+moments, step counters, updates and drift origins and returns a fresh model
+with a fresh residual ring WHICH GATES BIRTHS. Reproduction of OBS-23's arm
+is a TOLERANCE check at 1e-5, NOT exact agreement (the recorded values were
+rounded); full precision now printed. Acceptance gives NON-INCREASE only.
+Maxima are over FIVE CHECKPOINTS and cannot exclude an excursion between them.
+
+A SECOND BIRTHS BASELINE BUG, same class as OBS-23's, opposite direction: a
+raw `stats.births` credited `skip` with 804 because it continues a model
+created at the second consolidation. Netted at the fork: skip 240, linear 297,
+guarded 385, with k_final 1202/778/866 — the consolidated branches BIRTH MORE
+and END SMALLER. Twice in two phases: A COUNTER READ ACROSS A FORK NEEDS A
+BASELINE AT THE FORK.
+
+SCOPE: one consolidation, one trajectory, CONDITIONAL ON THE PARENT the
+earlier sleeps produced. Nothing says how often this happens.
+
+Next: the same fork at the other two consolidations and on 1234, to say
+whether this is exception or rule; a world-aware acceptance rule, whose
+deployable form is a HELD-OUT SPLIT of the replay buffer rather than an
+oracle, and is its own experiment; and why the buffer and the world disagree
+(staleness, coverage, or the error weighting — untested).
