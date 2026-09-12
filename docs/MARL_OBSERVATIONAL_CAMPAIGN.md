@@ -3394,7 +3394,13 @@ penalty*; it does not make a consolidation pay.
 > strongly seed-dependent magnitude; the responsible intervention and
 > mechanism remain unlocalised.
 
-Astra's wording, and it is the phase. The checkpoint traces added afterwards
+Astra's wording, and it is the phase. **The claim is a policy contrast at the
+tested placements, not an attribution of every OBS-22 controller's result to
+consolidation** — revisiting alone improved mean trajectory error, and adding
+consolidation worsened it. OBS-22's other arms differ in timing as well, and
+nothing here reaches them.
+
+The checkpoint traces added afterwards
 narrow *where to look* — a 0.93 excursion after the third consolidation on
 5678 — without changing that last clause: appearing after an operation is not
 being caused by it.

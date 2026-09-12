@@ -266,6 +266,11 @@ C1 -.00401, C2 +.03584, C3 +.00989, C4 -.02997, C5 (interaction) -.02596,
 C6 +.02792. Every sign replicates on both trajectories; C2, C5 and C6 have
 between-trajectory differences LARGER than their means.
 
+THE CLAIM IS A POLICY CONTRAST AT THE TESTED PLACEMENTS, not an attribution
+of every OBS-22 controller's result to consolidation: revisiting alone
+improved mean trajectory error, adding consolidation worsened it. OBS-22's
+other arms differ in TIMING as well, and nothing here reaches them.
+
 THE STATEMENT (Astra's): at the tested timings, targeted revisiting improved
 trajectory error on both seeds. Adding consolidation worsened it, although
 revisiting reduced the penalty relative to consolidation alone. Delaying all
@@ -346,6 +351,13 @@ pricing the 12% capacity saving; `revisit` at other budgets.
 PROCESS: `pkill -f` matched its own wrapper AGAIN and killed the cancelling
 command. The rule was already here and was not followed. Use the captured
 task handle.
+
+AND A SECOND VIOLATION OF A RULE ALREADY WRITTEN DOWN (OBS-24): a numerical
+gate was RE-RUN to make a preserved log match PROSE-ONLY edits, including
+edits to printed prose. PROSE CHANGES DO NOT JUSTIFY A NUMERICAL RUN.
+Compile-check the matching gate, preserve the VALIDATED numerical log, and
+annotate the text-only delta beside it. Three identical runs of a fork on one
+seed establish REPRODUCIBILITY, never additional replication.
 
 G70 is now the campaign's largest gate at ~16 min; G70 (a) is seconds and
 sleeps not at all.

@@ -23,6 +23,11 @@ replication: the evidence is still two acquisition trajectories.
 Astra's wording. `revisit` is the first policy in this campaign to beat
 `none` — 0.08090 / 0.08607 against 0.08492 / 0.08828, about 4.7% and 2.5%.
 
+**The claim is a policy contrast at the tested placements, not an attribution
+of every OBS-22 controller's result to consolidation.** Revisiting alone
+improved mean trajectory error; adding consolidation worsened it. OBS-22's
+other arms differ in timing as well, and nothing here reaches them.
+
 `both` reproduces OBS-22's `informed` arm to every digit per trajectory,
 which validates **that arm's numerical continuity** and not the lattice; the
 evidence for the other five paths is G70 (a)'s structural checks.

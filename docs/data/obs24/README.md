@@ -7,8 +7,16 @@
 Two earlier runs of the same fork produced identical measurements. The first
 failed on Q6's assertion, which is now reported rather than asserted, and
 carried an un-netted births column. The second predated the interpretation
-corrections below; this log is verbatim what the gate now prints, and every
-measured value is unchanged across all three.
+corrections below.
+
+**Three identical runs on one seed establish REPRODUCIBILITY, not additional
+replication.** The evidence is still one consolidation on one trajectory.
+
+And the third run should not have happened: it was made to bring this log
+into line with PROSE-ONLY edits, including edits to printed prose, which
+CODEX's existing rule says does not justify a numerical run. The right
+remedy was to compile-check the gate, keep the validated log, and annotate
+the text-only delta.
 
 ## What it establishes
 
