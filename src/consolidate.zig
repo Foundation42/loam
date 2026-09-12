@@ -6852,13 +6852,15 @@ test "G71 forking the consolidation that failed" {
     std.debug.print("     guarded at FULL precision, so a later comparison can be exact rather than to 1e-5:\n       ", .{});
     for (tal[GRD].check_err[0..tal[GRD].checks]) |e| std.debug.print(" {d:.12}", .{e});
     std.debug.print("\n", .{});
-    std.debug.print("     UNREGISTERED, and it falls out of the four points: BOTH STAGES improve replay and damage the world.\n", .{});
-    std.debug.print("       the linear refit alone: replay {d:.5} -> {d:.5}, world {d:.5} -> {d:.5} ({d:.5} worse)\n", .{
+    std.debug.print("     UNREGISTERED, from the same four points: BOTH STAGES REDUCED HISTORICAL REPLAY RMS WHILE INCREASING CURRENT-WORLD RMS.\n", .{});
+    std.debug.print("     The first stage BUNDLES compression, kernel selection and the linear refit — this fork does not separate them. And the second\n", .{});
+    std.debug.print("     increase being larger is a RATIO OF TWO RMS INCREASES: not field disagreement, and not evidence of a shared mechanism.\n", .{});
+    std.debug.print("       selection + compression + linear refit: replay {d:.5} -> {d:.5}, world {d:.5} -> {d:.5} ({d:.5} worse)\n", .{
         marks.replay[Marks.PARENT],                            marks.replay[Marks.LINEAR],
         marks.world[Marks.PARENT],                             marks.world[Marks.LINEAR],
         marks.world[Marks.LINEAR] - marks.world[Marks.PARENT],
     });
-    std.debug.print("       the refinement on top:  replay {d:.5} -> {d:.5}, world {d:.5} -> {d:.5} ({d:.5} worse)\n", .{
+    std.debug.print("       the refinement on top:                  replay {d:.5} -> {d:.5}, world {d:.5} -> {d:.5} ({d:.5} worse)\n", .{
         marks.replay[Marks.LINEAR],                               marks.replay[Marks.ATTEMPTED],
         marks.world[Marks.LINEAR],                                marks.world[Marks.ATTEMPTED],
         marks.world[Marks.ATTEMPTED] - marks.world[Marks.LINEAR],
@@ -6887,6 +6889,9 @@ test "G71 forking the consolidation that failed" {
     std.debug.print("       Q6  mean(linear) < mean(skip)            {d:.5} vs {d:.5}   {s}\n", .{ mn[LIN], mn[SKIP], if (mn[LIN] < mn[SKIP]) "HELD" else "REFUTED" });
     std.debug.print("     Q3 and Q4's maxima are maxima OVER THESE FIVE CHECKPOINTS. The model is unobserved for 2000 observations at a time and\n", .{});
     std.debug.print("     they cannot exclude an excursion between them.\n", .{});
+    std.debug.print("     THE GUARD BEHAVED EXACTLY AS SPECIFIED: the refinement did not raise replay loss, so accepting it was correct. What this\n", .{});
+    std.debug.print("     establishes is about the CRITERION — replay non-increase is INSUFFICIENT for current-world protection — while it remains\n", .{});
+    std.debug.print("     useful against optimisation that worsens its own objective, which is the OBS-22 failure it was introduced to prevent.\n", .{});
     std.debug.print("     SCOPE: ONE consolidation, ONE trajectory, and the conclusion is CONDITIONAL ON THE PARENT THE EARLIER SLEEPS PRODUCED.\n", .{});
     std.debug.print("     The first two sleeps are neither exonerated nor implicated — they built the state that fails here.\n", .{});
 

@@ -3661,18 +3661,34 @@ Unregistered, and it falls out of the same four points:
 
 | stage | replay | world |
 |---|---|---|
-| selection + linear refit | 0.22300 → 0.12414 | 0.16446 → **0.27473** (+0.11027) |
+| selection, compression and the linear refit | 0.22300 → 0.12414 | 0.16446 → **0.27473** (+0.11027) |
 | refinement on top | 0.12414 → 0.06259 | 0.27473 → **0.86959** (+0.59486) |
 
-**Both stages improve replay and damage the world.** The refinement does 5.4×
-the damage of the linear refit, but the sign is the same at every step of the
-consolidation.
+**Both stages reduced historical replay RMS while increasing current-world
+RMS.** That is what was measured, and the whole of it.
 
-That is a sharper statement than "the refinement diverged", and it explains
-why the acceptance rule cannot see any of it: **the rule reads the only
-measure that is improving.** A replay-loss guard is a floor against a descent
-that fails on its own terms, and it is blind by construction to a descent
-that succeeds on them.
+Two things it does *not* say. The first stage bundles **compression, kernel
+selection and the linear refit** together — the fork does not separate them,
+so "the linear refit did this" is not available. And the second stage's
+increase is 5.4 times the first's, which is **a ratio of two RMS increases**:
+it is not a measure of field disagreement, and it is not evidence that the
+two stages fail by a shared mechanism. Reading it as "more of the same kind"
+goes past the measurement.
+
+### What this says about the acceptance rule
+
+**The guard behaved exactly as specified.** It rejects a refinement that
+raises replay loss or ends non-finite; this one did neither, so it was
+accepted, correctly.
+
+What the fork establishes is therefore a statement about the *criterion*, not
+a fault in it:
+
+> Replay non-increase is **insufficient** for current-world protection.
+
+It remains useful for what it was built for — catching optimisation that
+worsens its own objective, which is the OBS-22 failure it was introduced to
+prevent. Both things are true, and the rule keeps its job.
 
 ### The continuations
 
@@ -3742,12 +3758,11 @@ adoption. Mutation: rebuilding the control with `adopt` fails it.
 
 ### What OBS-24 records
 
-> At this consolidation, the refinement strictly lowered replay loss and
-> raised same-world error more than threefold at the instant of adoption.
-> Selection and the linear refit moved both measures the same way before it.
-> Removing the refinement removed most of the damage; not consolidating
-> removed all of it; and recovery was incomplete within the remaining
-> horizon.
+> At this parent, both consolidation stages reduced historical replay RMS
+> while increasing current-world RMS; refinement alone increased world RMS
+> from 0.27473 to 0.86959. Removing the refinement removed most of the
+> damage, not consolidating removed all of it, and recovery was incomplete
+> within the remaining horizon.
 
 ### Scope
 
@@ -3759,17 +3774,28 @@ acceptance rule cannot detect it when it does.
 
 ### Still owed
 
-- **How often.** One case is an existence proof. The same fork at the other
-  two consolidations, and on trajectory 1234, would say whether this is the
-  exception or the rule.
-- **A world-aware acceptance rule** is the obvious response and is *not*
-  registered here: it would need held-out truth at consolidation time, which
-  is an oracle, so the deployable version is a held-out split of the replay
-  buffer and that is its own experiment.
+- **Validation design, and it comes BEFORE replication.** Replication says
+  how often this happens; validation design says whether an available signal
+  could distinguish the harmful update at all. The second is the more useful
+  question and nothing here answers it.
+
+  **A held-out split of the replay buffer is not a world-aware rule**, and
+  calling it one was a mistake. It tests generalisation to *held-out
+  historical evidence*: if those labels are stale relative to the current
+  world, it can approve exactly the change that harmed here. Call it
+  **held-out replay acceptance** and keep **current-world validation** a
+  separate question.
+
+  A recent validation stream could supply current evidence, but its timing,
+  its representativeness and its observation cost all need explicit treatment
+  — it is not free, and this campaign has spent four phases establishing that
+  observations spent one way are not available another.
 - **Why the buffer and the world disagree.** The replay buffer is the hard
   window at 94 096; the probes are drawn over the whole cube. Whether the
   disagreement is staleness, coverage, or the selection's error weighting is
   untested.
+- **How often**, after the above: the same fork at the other two
+  consolidations and on trajectory 1234.
 - OBS-23's leftovers, unchanged: the magnitude of the targeting divergence,
   pricing the capacity trade, and `revisit` at other budgets.
 

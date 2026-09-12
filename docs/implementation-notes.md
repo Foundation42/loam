@@ -8698,12 +8698,18 @@ same-world error at the instant of adoption.** Q1 +0.59486 and Q2 +0.70513,
 both held.
 
 AND IT IS NOT THE REFINEMENT ALONE. Unregistered, out of the same four
-points: selection plus the linear refit moved replay .22300 -> .12414 and
-world .16446 -> .27473. **Both stages improve replay and damage the world**,
-the refinement doing 5.4x the damage but not a different kind of it. That
-explains why the acceptance rule cannot see any of it: THE RULE READS THE
-ONLY MEASURE THAT IS IMPROVING. A replay-loss guard is a floor against a
-descent that fails on its own terms and is blind to one that succeeds on them.
+points: the first stage moved replay .22300 -> .12414 and world .16446 ->
+.27473. BOTH STAGES REDUCED HISTORICAL REPLAY RMS WHILE INCREASING
+CURRENT-WORLD RMS — which is the whole of what was measured. The first stage
+BUNDLES compression, kernel selection and the linear refit and the fork does
+not separate them; and 5.4x is a ratio of two RMS increases, not a measure of
+field disagreement and not evidence of a shared mechanism.
+
+THE GUARD BEHAVED EXACTLY AS SPECIFIED: the refinement did not raise replay
+loss, so acceptance was correct. What this establishes is about the CRITERION
+— REPLAY NON-INCREASE IS INSUFFICIENT FOR CURRENT-WORLD PROTECTION — while it
+remains useful against optimisation that worsens its own objective, which is
+the OBS-22 failure it was introduced for.
 
 Continuations on identical fresh queries: skip max .19722 mean .17569, linear
 .27740/.18471, guarded .92824/.50425. Q3, Q4 (both halves) and Q5 held. Q6

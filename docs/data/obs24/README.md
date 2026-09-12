@@ -4,9 +4,11 @@
 |---|---|
 | `g71.log` | The fork, 2 min 15 s, EXIT 0. One prefix to t = 94 096, one consolidation, three continuations. Includes G71 (a)'s stubbed run above it. |
 
-An earlier run of the same fork produced identical measurements and failed on
-Q6's assertion; Q6 is now reported rather than asserted and the births column
-is netted to a common baseline. Nothing else differs.
+Two earlier runs of the same fork produced identical measurements. The first
+failed on Q6's assertion, which is now reported rather than asserted, and
+carried an un-netted births column. The second predated the interpretation
+corrections below; this log is verbatim what the gate now prints, and every
+measured value is unchanged across all three.
 
 ## What it establishes
 
@@ -27,9 +29,19 @@ Replay is the selected buffer's **own historical labels**. World is held-out
 probes against completion-time truth at t = 94 096, past `drift_hi` and
 therefore stationary. Nothing is relabelled; there is no oracle in this fork.
 
-**Both stages improve replay and damage the world** — the linear refit by
-+0.11027, the refinement by a further +0.59486. That is why the acceptance
-rule sees nothing: it reads the only measure that is improving.
+**Both stages reduced historical replay RMS while increasing current-world
+RMS** — the first by +0.11027, the refinement by a further +0.59486.
+
+The first stage bundles **compression, kernel selection and the linear
+refit**; this fork does not separate them. And 5.4x is a ratio of two RMS
+increases, not a measure of field disagreement and not evidence of a shared
+mechanism.
+
+**The guard behaved exactly as specified** — the refinement did not raise
+replay loss, so accepting it was correct. What this establishes is that
+**replay non-increase is insufficient for current-world protection**, while
+it remains useful against optimisation that worsens its own objective, which
+is the OBS-22 failure it was built for.
 
 ## What may not be said from this log
 
@@ -44,6 +56,10 @@ rule sees nothing: it reads the only measure that is improving.
   worse at the first checkpoint (0.27740 against 0.17629) and then recovers,
   ending marginally AHEAD of `skip` (0.14011 against 0.14958). A mean over
   five checkpoints scores an excursion and a recovery together.
+- **A held-out split of the replay buffer would not be a world-aware rule.**
+  It tests generalisation to held-out HISTORICAL evidence, and stale labels
+  can approve the same harmful change. Held-out replay acceptance and
+  current-world validation are separate questions.
 - **Reproduction of OBS-23's arm is a TOLERANCE check**, 1e-5, not exact
   agreement: the recorded values were rounded to five decimals. Full
   precision is printed here so a later comparison can be exact.

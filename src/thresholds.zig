@@ -4240,6 +4240,12 @@ pub const OBS24_REPRO_TOL: f64 = 1e-5;
 /// accepted refinement raise SAME-WORLD error while not raising replay loss?
 /// `world(attempted) > world(linear)`, PREDICTED.
 ///
+/// **HELD at +0.59486** — replay 0.12414 -> 0.06259 against world 0.27473 ->
+/// 0.86959. The guard behaved exactly as specified in accepting it, so what
+/// this establishes is about the CRITERION: **replay non-increase is
+/// insufficient for current-world protection.** The rule keeps its use
+/// against optimisation that worsens its own objective.
+///
 /// Acceptance establishes only NON-INCREASE of replay loss, so
 /// `replay(attempted) <= replay(linear)` is asserted as the acceptance
 /// CONTRACT; whether the descent was strict is measured and reported apart.

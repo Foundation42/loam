@@ -363,13 +363,19 @@ anywhere: parent .22300/.16446, linear .12414/.27473, attempted = returned
 SAME-WORLD ERROR AT THE INSTANT OF ADOPTION. Q1 +0.59486, Q2 +0.70513 — the
 damage is IMMEDIATE, not emergent.
 
-AND NOT THE REFINEMENT ALONE (unregistered, from the same four points).
-Selection plus the linear refit moved replay .22300 -> .12414 and world
-.16446 -> .27473. BOTH STAGES IMPROVE REPLAY AND DAMAGE THE WORLD; the
-refinement does 5.4x the damage, not a different kind. THAT IS WHY THE
-ACCEPTANCE RULE SEES NOTHING — IT READS THE ONLY MEASURE THAT IS IMPROVING.
-A replay-loss guard is a floor against a descent that fails on its own terms,
-and blind to one that succeeds on them.
+AND NOT THE REFINEMENT ALONE (unregistered, from the same four points). The
+first stage moved replay .22300 -> .12414 and world .16446 -> .27473. BOTH
+STAGES REDUCED HISTORICAL REPLAY RMS WHILE INCREASING CURRENT-WORLD RMS — the
+whole of what was measured. That first stage BUNDLES compression, kernel
+selection and the linear refit and this fork does not separate them; 5.4x is
+a RATIO OF TWO RMS INCREASES, not field disagreement and not evidence of a
+shared mechanism.
+
+THE GUARD BEHAVED EXACTLY AS SPECIFIED — the refinement did not raise replay
+loss, so accepting it was correct. The finding is about the CRITERION: REPLAY
+NON-INCREASE IS INSUFFICIENT FOR CURRENT-WORLD PROTECTION. It keeps its use
+against optimisation that worsens its own objective, the OBS-22 failure it
+was built for.
 
 CONTINUATIONS, identical fresh queries: skip max .19722 mean .17569, linear
 .27740/.18471, guarded .92824/.50425. Q3, Q4 (both halves), Q5 HELD. Q6
@@ -398,8 +404,13 @@ BASELINE AT THE FORK.
 SCOPE: one consolidation, one trajectory, CONDITIONAL ON THE PARENT the
 earlier sleeps produced. Nothing says how often this happens.
 
-Next: the same fork at the other two consolidations and on 1234, to say
-whether this is exception or rule; a world-aware acceptance rule, whose
-deployable form is a HELD-OUT SPLIT of the replay buffer rather than an
-oracle, and is its own experiment; and why the buffer and the world disagree
-(staleness, coverage, or the error weighting — untested).
+Next, and VALIDATION DESIGN COMES BEFORE REPLICATION (Astra): replication says
+how often this happens, validation design says whether an available signal can
+distinguish the harmful update at all. A HELD-OUT SPLIT OF THE REPLAY BUFFER
+IS NOT A WORLD-AWARE RULE — it tests generalisation to held-out HISTORICAL
+evidence, and stale labels can approve the same harmful change. Call it
+HELD-OUT REPLAY ACCEPTANCE; keep CURRENT-WORLD VALIDATION separate. A recent
+validation stream could supply current evidence, but its timing,
+representativeness and OBSERVATION COST need explicit treatment. Then: why the
+buffer and the world disagree (staleness, coverage, or the error weighting);
+then the same fork at the other two consolidations and on 1234.
